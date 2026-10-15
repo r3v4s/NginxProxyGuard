@@ -27,6 +27,12 @@ type AccessListItem struct {
 	Description  string    `json:"description,omitempty"`
 	SortOrder    int       `json:"sort_order"`
 	CreatedAt    time.Time `json:"created_at"`
+
+	// Hostname is set on a domain row (#320). Such a row is stored as
+	// (deny, all, hostname), which every version without domain rows renders
+	// as "deny all": closed. Only the API DTO shows it as an allow row with
+	// kind "hostname"; code that does not know Hostname keeps the row closed.
+	Hostname string `json:"-"`
 }
 
 // CreateAccessListRequest is the request to create an access list

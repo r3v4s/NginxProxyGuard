@@ -138,6 +138,11 @@ type RestoreResult struct {
 	// File restoration
 	FilesRestored int      `json:"files_restored"`
 	FileErrors    []string `json:"file_errors,omitempty"`
+
+	// DNSEntries is what the restore audit records about domain entries
+	// (#320): the names the restored access lists use and which of them need
+	// review, read back after the import. The API response leaves it out.
+	DNSEntries DNSRestoreSummary `json:"-"`
 }
 
 // NewRestoreResult creates a new RestoreResult with default values
@@ -263,6 +268,12 @@ type ExportData struct {
 
 	// DDNS Records (#154)
 	DDNSRecords []DDNSRecordExport `json:"ddns_records,omitempty"`
+
+	// Domain entry state (#320) for the names the exported access lists use.
+	// Only what keeps a restored name closed until an operator has looked at
+	// it travels: review flag and reason, pinned CNAME target, last published
+	// addresses. nil in backups made before domain entries existed.
+	DNSEntryStates []DNSEntryStateExport `json:"dns_entry_states,omitempty"`
 }
 
 // DDNSRecordExport represents a DDNS record for export (#154)
@@ -680,11 +691,37 @@ type AccessListItemData struct {
 	Address     string `json:"address"`
 	Description string `json:"description,omitempty"`
 	SortOrder   int    `json:"sort_order"`
+
+	// Hostname is set on a domain row (#320). The row is exported as it is
+	// stored, (deny, all, hostname), never as the API's allow row: a version
+	// without domain rows then restores it as "deny all" (closed) instead of
+	// skipping an allow it cannot read, which would empty a domain-only list
+	// and open its hosts.
+	Hostname string `json:"hostname,omitempty"`
 }
 
 // AccessListExport represents an access list for export
 type AccessListExport struct {
 	AccessList AccessListData `json:"access_list"`
+}
+
+// DNSEntryStateExport is the part of a dns_entry_states row a backup carries
+// (#320). The import merges it into the live row and never publishes from it:
+// a restored name starts empty and closed, and comes back only on its own
+// answers.
+type DNSEntryStateExport struct {
+	Hostname      string   `json:"hostname"`
+	NeedsReview   bool     `json:"needs_review"`
+	ReviewReason  string   `json:"review_reason,omitempty"`
+	CanonicalName string   `json:"canonical_name,omitempty"`
+	LastApplied   []string `json:"last_applied,omitempty"`
+}
+
+// DNSRestoreSummary lists, after a restore, the domain names the restored
+// access lists use (Names) and those of them in needs_review (NeedsReview).
+type DNSRestoreSummary struct {
+	Names       []string
+	NeedsReview []string
 }
 
 // AuthProviderExport represents a ForwardAuth provider for export (#179)
@@ -984,6 +1021,12 @@ type SystemSettingsExport struct {
 	SystemLogsLevels          json.RawMessage `json:"system_logs_levels,omitempty"`
 	SystemLogsExcludePatterns []string        `json:"system_logs_exclude_patterns"`
 	SystemLogsStdoutExcluded  []string        `json:"system_logs_stdout_excluded"`
+
+	// Domain entry tunables (#320), the stored jsonb object. nil in backups
+	// made before the column existed: the import keeps the live value. A
+	// JSON null arrives as the 4 bytes "null"; the import reads it, like any
+	// value, through ParseDNSEntrySettings.
+	DNSEntrySettings json.RawMessage `json:"dns_entry_settings,omitempty"`
 }
 
 // LogSettingsExport represents the log_settings table for export. Only the
