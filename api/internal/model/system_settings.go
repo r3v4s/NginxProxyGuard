@@ -119,6 +119,11 @@ type SystemSettings struct {
 	SystemLogsExcludePatterns []string        `json:"system_logs_exclude_patterns" db:"system_logs_exclude_patterns"` // TEXT[]
 	SystemLogsStdoutExcluded  []string        `json:"system_logs_stdout_excluded" db:"system_logs_stdout_excluded"`   // TEXT[]
 
+	// Domain entry tunables (#320), one jsonb object as stored. Read it with
+	// ParseDNSEntrySettings. The json tag keeps it in the Valkey copy of this
+	// row.
+	DNSEntrySettings json.RawMessage `json:"dns_entry_settings" db:"dns_entry_settings"`
+
 	CreatedAt time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt time.Time `json:"updated_at" db:"updated_at"`
 }
@@ -230,6 +235,12 @@ type SystemSettingsResponse struct {
 	SystemLogsExcludePatterns []string        `json:"system_logs_exclude_patterns"`
 	SystemLogsStdoutExcluded  []string        `json:"system_logs_stdout_excluded"`
 
+	// Domain entry tunables (#320) as stored, normalized. Never the effective
+	// value under NPG_DNS_ENTRIES_DISABLED: a form that saved that back would
+	// keep the feature off after the switch is removed. GET /dns-entries
+	// reports the effective value.
+	DNSEntrySettings DNSEntrySettings `json:"dns_entry_settings"`
+
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -316,6 +327,7 @@ func (s *SystemSettings) ToResponse() *SystemSettingsResponse {
 		SystemLogsLevels:          s.SystemLogsLevels,
 		SystemLogsExcludePatterns: s.SystemLogsExcludePatterns,
 		SystemLogsStdoutExcluded:  s.SystemLogsStdoutExcluded,
+		DNSEntrySettings:          ParseDNSEntrySettings(s.DNSEntrySettings),
 		UpdatedAt:                 s.UpdatedAt,
 	}
 
@@ -447,6 +459,10 @@ type UpdateSystemSettingsRequest struct {
 	SystemLogsLevels          *json.RawMessage `json:"system_logs_levels,omitempty"`
 	SystemLogsExcludePatterns *[]string        `json:"system_logs_exclude_patterns,omitempty"`
 	SystemLogsStdoutExcluded  *[]string        `json:"system_logs_stdout_excluded,omitempty"`
+
+	// Domain entry tunables (#320): a partial object merged over the stored
+	// value (MergeDNSEntrySettings). A missing or null field changes nothing.
+	DNSEntrySettings *json.RawMessage `json:"dns_entry_settings,omitempty"`
 }
 
 // GeoIPStatus represents the status of GeoIP databases

@@ -428,6 +428,16 @@ type DNSApplyState struct {
 	NextRetryAt      *time.Time `json:"next_retry_at"`
 }
 
+// DNSEntryOverview is the body of GET /dns-entries.
+type DNSEntryOverview struct {
+	Settings           DNSEntrySettings        `json:"settings"`             // effective: NPG_DNS_ENTRIES_DISABLED applied
+	EnvDisabled        bool                    `json:"env_disabled"`         // NPG_DNS_ENTRIES_DISABLED is set
+	EnvIntervalSeconds *int                    `json:"env_interval_seconds"` // nil when NPG_DNS_ENTRIES_INTERVAL is unset
+	TotalNames         int                     `json:"total_names"`          // distinct used names, against max_total
+	Apply              DNSApplyState           `json:"apply"`
+	Entries            []DNSEntryOverviewEntry `json:"entries"` // sorted by hostname
+}
+
 // DNSApplyResponse is the 200 body of POST /dns-entries/apply.
 type DNSApplyResponse struct {
 	Outcome      string  `json:"outcome"`
