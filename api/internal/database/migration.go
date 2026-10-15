@@ -1729,6 +1729,85 @@ END $$`,
 			desc: "dashboard_stats_hourly.timed_requests",
 			sql:  `ALTER TABLE public.dashboard_stats_hourly ADD COLUMN IF NOT EXISTS timed_requests bigint DEFAULT 0 NOT NULL`,
 		},
+		// Domain entries in access lists (#320): an allowed DNS name is a
+		// placeholder row (deny, all, hostname), which a version without the
+		// column renders as "deny all". The column and its CHECK go in one
+		// entry, so the column never exists without the CHECK. ADD CONSTRAINT
+		// has no IF NOT EXISTS, and a fresh install already has the CHECK from
+		// the CREATE TABLE in 001_init.sql, so it is added only while no
+		// constraint of that name exists. migration_dns_entries_test.go holds
+		// the two copies of the CHECK and of the index equal.
+		{
+			desc: "access_list_items.hostname + access_list_items_hostname_check (#320)",
+			sql: `ALTER TABLE public.access_list_items ADD COLUMN IF NOT EXISTS hostname character varying(253);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'access_list_items_hostname_check'
+           AND conrelid = 'public.access_list_items'::regclass
+    ) THEN
+        ALTER TABLE public.access_list_items
+            ADD CONSTRAINT access_list_items_hostname_check CHECK (hostname IS NULL OR (directive = 'deny' AND address = 'all' AND hostname ~ '^[a-z0-9.-]{1,253}$'));
+    END IF;
+END $$;`,
+		},
+		{
+			desc: "idx_access_list_items_hostname (#320)",
+			sql:  `CREATE INDEX IF NOT EXISTS idx_access_list_items_hostname ON public.access_list_items USING btree (hostname) WHERE (hostname IS NOT NULL)`,
+		},
+		{
+			// State of every DNS name the IP lists use (#320). One row per
+			// name, shared by every list that uses it, so no foreign keys. A
+			// fresh install gets the same statement from the executable end of
+			// 001_init.sql (migration_dns_entries_test.go holds the copies
+			// equal).
+			desc: "dns_entry_states (#320)",
+			sql: `CREATE TABLE IF NOT EXISTS public.dns_entry_states (
+    hostname character varying(253) NOT NULL,
+    status character varying(20) DEFAULT 'pending'::character varying NOT NULL,
+    review_reason character varying(20),
+    disabled boolean DEFAULT false NOT NULL,
+    unused_since timestamp with time zone,
+    published text[] DEFAULT '{}'::text[] NOT NULL,
+    last_applied text[] DEFAULT '{}'::text[] NOT NULL,
+    empty_cause character varying(12),
+    generation bigint DEFAULT 0 NOT NULL,
+    applied_generation bigint DEFAULT 0 NOT NULL,
+    revoke_pending_since timestamp with time zone,
+    candidate text[],
+    candidate_seen smallint DEFAULT 0 NOT NULL,
+    replace_open boolean DEFAULT false NOT NULL,
+    v4_state character varying(16),
+    v6_state character varying(16),
+    v4_code character varying(32),
+    v6_code character varying(32),
+    v4_observed text[],
+    v6_observed text[],
+    v4_answer_at timestamp with time zone,
+    v6_answer_at timestamp with time zone,
+    v4_notfound smallint DEFAULT 0 NOT NULL,
+    v6_notfound smallint DEFAULT 0 NOT NULL,
+    canonical_name character varying(253),
+    canonical_seen character varying(253),
+    warnings text[] DEFAULT '{}'::text[] NOT NULL,
+    change_times bigint[] DEFAULT '{}'::bigint[] NOT NULL,
+    last_checked_at timestamp with time zone,
+    last_changed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT dns_entry_states_pkey PRIMARY KEY (hostname),
+    CONSTRAINT chk_dns_entry_states_status CHECK (status IN ('pending', 'ok', 'stale', 'expired', 'rejected', 'not_found', 'needs_review')),
+    CONSTRAINT chk_dns_entry_states_empty_cause CHECK (empty_cause IS NULL OR empty_cause IN ('replace', 'lapse', 'disabled', 'restored', 'unused')),
+    CONSTRAINT chk_dns_entry_states_hostname CHECK (hostname ~ '^[a-z0-9.-]{1,253}$')
+);`,
+		},
+		// Tunables of the DNS names in IP lists (#320), read as
+		// model.DNSEntrySettings: '{}' is every default.
+		{
+			desc: "system_settings.dns_entry_settings (#320)",
+			sql:  `ALTER TABLE public.system_settings ADD COLUMN IF NOT EXISTS dns_entry_settings jsonb DEFAULT '{}'::jsonb NOT NULL`,
+		},
 	}
 	for _, a := range upgrades {
 		if _, err := db.Exec(a.sql); err != nil {

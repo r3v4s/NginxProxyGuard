@@ -205,7 +205,9 @@ CREATE TABLE IF NOT EXISTS public.access_list_items (
     description text,
     sort_order integer DEFAULT 0,
     created_at timestamp with time zone DEFAULT now(),
-    CONSTRAINT access_list_items_directive_check CHECK (((directive)::text = ANY ((ARRAY['allow'::character varying, 'deny'::character varying])::text[])))
+    hostname character varying(253),
+    CONSTRAINT access_list_items_directive_check CHECK (((directive)::text = ANY ((ARRAY['allow'::character varying, 'deny'::character varying])::text[]))),
+    CONSTRAINT access_list_items_hostname_check CHECK (hostname IS NULL OR (directive = 'deny' AND address = 'all' AND hostname ~ '^[a-z0-9.-]{1,253}$'))
 );
 CREATE TABLE IF NOT EXISTS public.access_lists (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -2495,7 +2497,8 @@ geckodriver'::text,
     ddns_check_interval_minutes integer DEFAULT 5 NOT NULL,
     trusted_proxy_cidrs text DEFAULT ''::text NOT NULL,
     trusted_proxy_preset text DEFAULT 'none'::text NOT NULL,
-    real_ip_header text DEFAULT 'X-Forwarded-For'::text NOT NULL
+    real_ip_header text DEFAULT 'X-Forwarded-For'::text NOT NULL,
+    dns_entry_settings jsonb DEFAULT '{}'::jsonb NOT NULL
 );
 COMMENT ON COLUMN public.system_settings.access_log_retention_days IS 'Retention period for access logs in days (default: 3 years)';
 COMMENT ON COLUMN public.system_settings.waf_log_retention_days IS 'Retention period for WAF/ModSecurity logs in days (default: 3 months)';
@@ -3027,6 +3030,7 @@ ALTER TABLE ONLY public.waf_rule_snapshot_details
     ADD CONSTRAINT waf_rule_snapshot_details_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.waf_rule_snapshots
     ADD CONSTRAINT waf_rule_snapshots_pkey PRIMARY KEY (id);
+CREATE INDEX IF NOT EXISTS idx_access_list_items_hostname ON public.access_list_items USING btree (hostname) WHERE (hostname IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_access_list_items_list_id ON public.access_list_items USING btree (access_list_id);
 CREATE INDEX IF NOT EXISTS idx_api_token_usage_created_at ON public.api_token_usage USING btree (created_at);
 CREATE INDEX IF NOT EXISTS idx_api_token_usage_token_id ON public.api_token_usage USING btree (token_id);
@@ -4734,3 +4738,68 @@ ALTER TABLE public.system_settings ADD COLUMN IF NOT EXISTS raw_log_archive_rete
 -- total_requests also counts instant answers, which have no time, and those left out.
 -- The hourly rollup fills it; the last 25 hours are rebuilt at every boot.
 ALTER TABLE public.dashboard_stats_hourly ADD COLUMN IF NOT EXISTS timed_requests bigint DEFAULT 0 NOT NULL;
+
+-- Domain entries in access lists (#320): an allowed DNS name is stored as a placeholder
+-- row (directive 'deny', address 'all', hostname = the name). A version that does not
+-- know the column renders that row as "deny all", so a downgrade, or a backup restored
+-- into an older version, closes the list instead of opening it. The CREATE TABLE above
+-- has the column and its CHECK, the index block has the index; this adds the column to
+-- tables created before it existed.
+ALTER TABLE public.access_list_items ADD COLUMN IF NOT EXISTS hostname character varying(253);
+-- DOCUMENTATION ONLY: database/migration.go `upgrades` adds the column and the CHECK in
+-- one entry (the CHECK only while no constraint of that name exists, so a fresh install,
+-- which has it from the CREATE TABLE above, logs no failed upgrade), then the index:
+--   ALTER TABLE public.access_list_items ADD CONSTRAINT access_list_items_hostname_check CHECK (...);
+--   CREATE INDEX IF NOT EXISTS idx_access_list_items_hostname ON public.access_list_items USING btree (hostname) WHERE (hostname IS NOT NULL);
+
+-- State of every DNS name the IP lists use (#320): the addresses the include files
+-- publish, the review state and its reason, the pinned CNAME target, the last published
+-- addresses and the generation nginx was last seen to load. One row per name, shared by
+-- every list that uses the name, so no foreign keys. Backups carry only the review state,
+-- the CNAME pin and the last published addresses; the rest is rebuilt by the scheduler.
+-- EXECUTABLE: a fresh install runs this whole file once, which creates it here; the
+-- identical copy in database/migration.go `upgrades` creates it on existing installs.
+CREATE TABLE IF NOT EXISTS public.dns_entry_states (
+    hostname character varying(253) NOT NULL,
+    status character varying(20) DEFAULT 'pending'::character varying NOT NULL,
+    review_reason character varying(20),
+    disabled boolean DEFAULT false NOT NULL,
+    unused_since timestamp with time zone,
+    published text[] DEFAULT '{}'::text[] NOT NULL,
+    last_applied text[] DEFAULT '{}'::text[] NOT NULL,
+    empty_cause character varying(12),
+    generation bigint DEFAULT 0 NOT NULL,
+    applied_generation bigint DEFAULT 0 NOT NULL,
+    revoke_pending_since timestamp with time zone,
+    candidate text[],
+    candidate_seen smallint DEFAULT 0 NOT NULL,
+    replace_open boolean DEFAULT false NOT NULL,
+    v4_state character varying(16),
+    v6_state character varying(16),
+    v4_code character varying(32),
+    v6_code character varying(32),
+    v4_observed text[],
+    v6_observed text[],
+    v4_answer_at timestamp with time zone,
+    v6_answer_at timestamp with time zone,
+    v4_notfound smallint DEFAULT 0 NOT NULL,
+    v6_notfound smallint DEFAULT 0 NOT NULL,
+    canonical_name character varying(253),
+    canonical_seen character varying(253),
+    warnings text[] DEFAULT '{}'::text[] NOT NULL,
+    change_times bigint[] DEFAULT '{}'::bigint[] NOT NULL,
+    last_checked_at timestamp with time zone,
+    last_changed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT dns_entry_states_pkey PRIMARY KEY (hostname),
+    CONSTRAINT chk_dns_entry_states_status CHECK (status IN ('pending', 'ok', 'stale', 'expired', 'rejected', 'not_found', 'needs_review')),
+    CONSTRAINT chk_dns_entry_states_empty_cause CHECK (empty_cause IS NULL OR empty_cause IN ('replace', 'lapse', 'disabled', 'restored', 'unused')),
+    CONSTRAINT chk_dns_entry_states_hostname CHECK (hostname ~ '^[a-z0-9.-]{1,253}$')
+);
+
+-- Tunables of the DNS names in IP lists (#320): the on/off switch, the check interval, the
+-- minimum gap between the reloads DNS changes cause, the grace for failed lookups and the
+-- limits. One JSON object read as model.DNSEntrySettings: a missing key takes its default
+-- and a value out of range is clamped when read, so '{}' means every default.
+ALTER TABLE public.system_settings ADD COLUMN IF NOT EXISTS dns_entry_settings jsonb DEFAULT '{}'::jsonb NOT NULL;
