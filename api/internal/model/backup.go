@@ -1022,10 +1022,10 @@ type SystemSettingsExport struct {
 	SystemLogsExcludePatterns []string        `json:"system_logs_exclude_patterns"`
 	SystemLogsStdoutExcluded  []string        `json:"system_logs_stdout_excluded"`
 
-	// Domain entry tunables (#320), the stored jsonb object. nil in backups
-	// made before the column existed: the import keeps the live value. A
-	// JSON null arrives as the 4 bytes "null"; the import reads it, like any
-	// value, through ParseDNSEntrySettings.
+	// Domain entry tunables (#320), the stored jsonb object. The import keeps
+	// the live value when this is nil (a backup made before the column
+	// existed) or a JSON null (the 4 bytes "null"). Any other value is read
+	// through ParseDNSEntrySettings, so "{}" restores the defaults.
 	DNSEntrySettings json.RawMessage `json:"dns_entry_settings,omitempty"`
 }
 
