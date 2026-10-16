@@ -86,7 +86,10 @@ func (r *BackupRepository) exportAccessLists(ctx context.Context) ([]model.Acces
 		exports = append(exports, model.AccessListExport{AccessList: al})
 	}
 
-	return exports, nil
+	// A read that broke off part way fails the backup too: the lists it never
+	// reached would be missing from the backup, and their hosts would be
+	// restored pointing at no list, which leaves them open (#320).
+	return exports, rows.Err()
 }
 
 func (r *BackupRepository) getAccessListItems(ctx context.Context, accessListID string) ([]model.AccessListItemData, error) {

@@ -216,19 +216,49 @@ func TestExportAccessListsKeepsDomainRowsAsStored(t *testing.T) {
 	}
 }
 
-// A list whose rules cannot be read fails the backup. Exported without its
-// rules it would restore with none, which leaves its hosts open.
+// A list whose rules cannot be read fails the backup, and so does a read of
+// the lists or of a list's rules that breaks off part way. Exported without
+// its rules a list would restore with none, which leaves its hosts open; a
+// list missing from the backup leaves its hosts pointing at no list, which
+// opens them too.
 func TestExportAccessListsFailsWhenRulesCannotBeRead(t *testing.T) {
-	repo, mock := newBackupRepoMock(t)
-	const listID = "00000000-0000-0000-0000-0000000000a4"
-	mock.ExpectQuery(`FROM access_lists ORDER BY created_at`).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "description", "satisfy_any", "pass_auth"}).
-			AddRow(listID, "partners", nil, true, false))
-	mock.ExpectQuery(`FROM access_list_items`).WithArgs(listID).
-		WillReturnError(errors.New(`pq: column "hostname" does not exist`))
-
-	if lists, err := repo.exportAccessLists(context.Background()); err == nil {
-		t.Fatalf("export = %+v, want an error", lists)
+	const listID, otherID = "00000000-0000-0000-0000-0000000000a4", "00000000-0000-0000-0000-0000000000a5"
+	lists := func() *sqlmock.Rows {
+		return sqlmock.NewRows([]string{"id", "name", "description", "satisfy_any", "pass_auth"}).
+			AddRow(listID, "partners", nil, true, false)
+	}
+	rules := func() *sqlmock.Rows {
+		return sqlmock.NewRows([]string{"directive", "address", "description", "sort_order", "hostname"}).
+			AddRow("allow", "192.0.2.10", nil, 0, nil)
+	}
+	brokenOff := errors.New("driver: bad connection")
+	for _, tc := range []struct {
+		name   string
+		expect func(mock sqlmock.Sqlmock)
+	}{
+		{"rules cannot be read", func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery(`FROM access_lists ORDER BY created_at`).WillReturnRows(lists())
+			mock.ExpectQuery(`FROM access_list_items`).WithArgs(listID).
+				WillReturnError(errors.New(`pq: column "hostname" does not exist`))
+		}},
+		{"read of the rules breaks off", func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery(`FROM access_lists ORDER BY created_at`).WillReturnRows(lists())
+			mock.ExpectQuery(`FROM access_list_items`).WithArgs(listID).
+				WillReturnRows(rules().AddRow("deny", "all", nil, 1, "partner.example.com").RowError(1, brokenOff))
+		}},
+		{"read of the lists breaks off", func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery(`FROM access_lists ORDER BY created_at`).
+				WillReturnRows(lists().AddRow(otherID, "office", nil, false, false).RowError(1, brokenOff))
+			mock.ExpectQuery(`FROM access_list_items`).WithArgs(listID).WillReturnRows(rules())
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, mock := newBackupRepoMock(t)
+			tc.expect(mock)
+			if got, err := repo.exportAccessLists(context.Background()); err == nil {
+				t.Fatalf("export = %+v, want an error", got)
+			}
+		})
 	}
 }
 
