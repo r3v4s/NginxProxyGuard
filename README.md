@@ -88,6 +88,7 @@ HSTS, X-Frame-Options, X-Content-Type-Options, X-XSS-Protection, Referrer-Policy
 
 ### 📋 Access Lists
 IP-based access control lists for whitelisting or blacklisting. Support for CIDR notation.
+Allow rules also accept a domain name (such as a DDNS name): only the addresses it currently resolves to are allowed.
 
 ### 💾 Backup & Restore
 Full configuration backup including certificates, settings, and database. Scheduled auto-backup support.
