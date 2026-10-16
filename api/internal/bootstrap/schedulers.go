@@ -26,6 +26,7 @@ type Schedulers struct {
 	NotifyDispatch     *scheduler.NotificationDispatchScheduler
 	NotifyDigest       *scheduler.NotificationDigestScheduler
 	DiskGuard          *scheduler.DiskGuardScheduler // nil when disabled
+	DNSEntries         *scheduler.DNSEntryScheduler
 }
 
 // ddnsIntervalFn returns a function the DDNS scheduler consults each cycle so a
@@ -119,6 +120,11 @@ func NewSchedulers(cfg *config.Config, db *database.DB, nginxManager *nginx.Mana
 	if svcs.DiskGuard != nil {
 		s.DiskGuard = scheduler.NewDiskGuardScheduler(svcs.diskGuardCtx, svcs.diskGuardCancel, svcs.DiskGuard, diskGuardInterval())
 	}
+	// Domain entries (#320). Built and started even under
+	// NPG_DNS_ENTRIES_DISABLED: the service's checks keep the files empty.
+	if svcs.DNSEntries != nil {
+		s.DNSEntries = scheduler.NewDNSEntryScheduler(svcs.DNSEntries)
+	}
 
 	return s
 }
@@ -138,6 +144,9 @@ func (s *Schedulers) Start() {
 	if s.DiskGuard != nil {
 		s.DiskGuard.Start()
 	}
+	if s.DNSEntries != nil {
+		s.DNSEntries.Start()
+	}
 }
 
 // Stop signals every scheduler to stop.
@@ -155,6 +164,9 @@ func (s *Schedulers) Stop() {
 	s.DDNS.Stop()
 	if s.DiskGuard != nil {
 		s.DiskGuard.Stop()
+	}
+	if s.DNSEntries != nil {
+		s.DNSEntries.Stop()
 	}
 	// LogRotateScheduler and BackupScheduler also expose Stop, but the
 	// original main.go did not call them on shutdown. Keep the original

@@ -55,6 +55,7 @@ type Repositories struct {
 	DDNS               *repository.DDNSRepository
 	CloudflareTunnel   *repository.CloudflareTunnelRepository
 	RawLogReclaim      *repository.RawLogReclaimRepository
+	DNSEntry           *repository.DNSEntryRepository
 }
 
 // InitRepositories instantiates every repository and, if a cache is
@@ -105,6 +106,7 @@ func InitRepositories(db *database.DB, redisCache *cache.RedisClient) *Repositor
 		DDNS:               repository.NewDDNSRepository(db),
 		CloudflareTunnel:   repository.NewCloudflareTunnelRepository(db.DB),
 		RawLogReclaim:      repository.NewRawLogReclaimRepository(db.DB),
+		DNSEntry:           repository.NewDNSEntryRepository(db.DB),
 	}
 
 	if redisCache != nil {

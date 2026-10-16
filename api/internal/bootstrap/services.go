@@ -48,6 +48,7 @@ type Services struct {
 	DiskGuard          *service.DiskGuard // nil when NPG_DISK_GUARD_DISABLED
 	RawLogReclaim      *service.RawLogReclaimService
 	RawLogArchiver     *service.RawLogArchiver
+	DNSEntries         *service.DNSEntryService
 
 	// Ends whatever DiskGuard started; cancelled by its scheduler's Stop.
 	diskGuardCtx    context.Context
@@ -233,6 +234,10 @@ func InitServices(
 	// Opt-in removal of the raw_log copies kept in old compressed logs.
 	svcs.RawLogReclaim = service.NewRawLogReclaimService(repos.RawLogReclaim, rawLogReclaimOptions())
 
+	// Domain entries in access lists (#320): after ProxyHost and Audit, which
+	// it uses; its reload hooks go in before InitHandlers can reload.
+	initDNSEntries(nginxManager, repos, svcs)
+
 	return svcs
 }
 
@@ -278,6 +283,7 @@ func wireServiceCallbacks(svcs *Services, repos *Repositories) {
 	svcs.NginxReloader.SetNotificationService(svcs.Notification)
 	svcs.Auth.SetNotificationService(svcs.Notification)
 	svcs.SSO.SetNotificationService(svcs.Notification)
+	svcs.DNSEntries.SetNotificationService(svcs.Notification)
 
 	// Certificate: regenerate proxy-host configs after a cert is ready.
 	//
@@ -363,6 +369,12 @@ func wireServiceCallbacks(svcs *Services, repos *Repositories) {
 		svcs.LogCollector.SetRedirectHostRepo(repos.RedirectHost)
 		svcs.Fail2ban.SetConfiguredHostResolver(svcs.LogCollector.IsConfiguredHost)
 		svcs.LogCollector.SetSystemSettingsRepo(repos.SystemSettings)
+		// A host whose access list holds domain entries does not count the
+		// list's own 403s for clients outside it (#320). The nil check keeps a
+		// nil service from becoming a non-nil interface.
+		if svcs.DNSEntries != nil {
+			svcs.LogCollector.SetFail2banExemption(svcs.DNSEntries)
+		}
 	}
 
 	// Raw log reclaim: DiskGuard measures the database's disk before each day

@@ -96,6 +96,11 @@ services:
       NPG_CANARY_BOOT_DELAY: "3s"
       # Raw log archive specs: a rotated file may move as soon as it exists.
       NPG_RAW_LOG_ARCHIVE_SETTLE: "0s"
+      # Domain entry specs: check names every 5 s instead of every minute.
+      NPG_DNS_ENTRIES_INTERVAL: "5s"
+      # No spec covers DDNS, and its scheduler asks public IP services for this
+      # machine's address at every start and interval.
+      NPG_DDNS_DISABLED: "1"
       # Off-default cloudflared metrics port (must match the nginx service env):
       # a dev NPG instance on the same host-network box would otherwise answer
       # the e2e stack's /ready probe on 20241.

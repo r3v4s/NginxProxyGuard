@@ -101,6 +101,9 @@ func runStartup(ctx context.Context, c *Container) ([]nginx.DeferredStep, error)
 	if err := c.Nginx.EnsureFilterSubscriptionFiles(); err != nil {
 		log.Printf("[Startup] Warning: failed to ensure filter subscription files: %v", err)
 	}
+	// Domain include files before any step below writes or reloads
+	// nginx config.
+	startDNSEntries(ctx, c)
 
 	directIPAction := loadGlobalSettingsForStartup(ctx, c)
 
