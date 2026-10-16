@@ -98,7 +98,7 @@
       "sso": "SSO",
       "notifications": "알림",
       "trustedProxies": "신뢰 프록시",
-      "dnsEntries": "도메인 예외(DDNS)"
+      "dnsEntries": "도메인 항목(DDNS)"
     }
   },
   "loading": "로딩 중...",
