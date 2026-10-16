@@ -43,6 +43,7 @@ const LAZY_NAMESPACES = [
   'exploitLogs',
   'filterSubscription',
   'ddns',
+  'dnsEntries',
 ] as const
 
 export const ALL_NAMESPACES = [...EAGER_NAMESPACES, ...LAZY_NAMESPACES]

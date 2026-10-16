@@ -45,14 +45,21 @@ export class ApiError extends Error {
    * nginx_reload_rejected).
    */
   id?: string
+  /**
+   * The request field a 400 is about, such as "items[2].address" (#320). The
+   * index counts the items of the request as sent, so a form maps it back to its
+   * own row.
+   */
+  field?: string
 
-  constructor(message: string, status: number, details?: string, code?: string, id?: string) {
+  constructor(message: string, status: number, details?: string, code?: string, id?: string, field?: string) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.details = details
     this.code = code
     this.id = id
+    this.field = field
   }
 }
 
@@ -111,8 +118,8 @@ export async function handleResponse<T>(response: Response): Promise<T> {
         required ? `Required permission: ${required}` : details
       )
     }
-    const body = errorData as { code?: string; id?: string } | null
-    throw new ApiError(message, response.status, details, body?.code, body?.id)
+    const body = errorData as { code?: string; id?: string; field?: string } | null
+    throw new ApiError(message, response.status, details, body?.code, body?.id, body?.field)
   }
   // Handle empty responses (204 No Content)
   if (response.status === 204) {
@@ -164,7 +171,7 @@ export async function apiDelete(url: string): Promise<void> {
       )
     }
     const error = await response.json().catch(() => ({ error: 'Unknown error' }))
-    throw new ApiError(error.error || `HTTP ${response.status}`, response.status, error.details, error.code)
+    throw new ApiError(error.error || `HTTP ${response.status}`, response.status, error.details, error.code, undefined, error.field)
   }
 }
 

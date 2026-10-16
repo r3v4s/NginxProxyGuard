@@ -1,57 +1,35 @@
 import { AccessList, CreateAccessListRequest, RedirectHost, CreateRedirectHostRequest, GeoRestriction, CreateGeoRestrictionRequest } from '../types/access';
+import type { DNSConfirmRequest, DNSEntryStatus } from '../types/dnsEntries';
 import { getAuthHeaders } from './auth';
+import { apiDelete, apiGet, apiPost, apiPut } from './client';
 
 const API_BASE = '/api/v1';
 
-// Access Lists
+// Access Lists go through the shared client: a 409 nginx_reload_rejected keeps
+// its code (isNginxReloadRefusal), and a 400 keeps the rule it names (field).
 export async function getAccessLists(page = 1, perPage = 20): Promise<{ data: AccessList[]; total: number }> {
-  const res = await fetch(`${API_BASE}/access-lists?page=${page}&per_page=${perPage}`, {
-    headers: getAuthHeaders(),
-  });
-  if (!res.ok) throw new Error('Failed to fetch access lists');
-  return res.json();
+  return apiGet<{ data: AccessList[]; total: number }>(`${API_BASE}/access-lists?page=${page}&per_page=${perPage}`);
 }
 
 export async function getAccessList(id: string): Promise<AccessList> {
-  const res = await fetch(`${API_BASE}/access-lists/${id}`, {
-    headers: getAuthHeaders(),
-  });
-  if (!res.ok) throw new Error('Failed to fetch access list');
-  return res.json();
+  return apiGet<AccessList>(`${API_BASE}/access-lists/${id}`);
 }
 
 export async function createAccessList(data: CreateAccessListRequest): Promise<AccessList> {
-  const res = await fetch(`${API_BASE}/access-lists`, {
-    method: 'POST',
-    headers: getAuthHeaders(),
-    body: JSON.stringify(data),
-  });
-  if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.error || 'Failed to create access list');
-  }
-  return res.json();
+  return apiPost<AccessList>(`${API_BASE}/access-lists`, data);
 }
 
 export async function updateAccessList(id: string, data: Partial<CreateAccessListRequest>): Promise<AccessList> {
-  const res = await fetch(`${API_BASE}/access-lists/${id}`, {
-    method: 'PUT',
-    headers: getAuthHeaders(),
-    body: JSON.stringify(data),
-  });
-  if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.error || 'Failed to update access list');
-  }
-  return res.json();
+  return apiPut<AccessList>(`${API_BASE}/access-lists/${id}`, data);
 }
 
 export async function deleteAccessList(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/access-lists/${id}`, {
-    method: 'DELETE',
-    headers: getAuthHeaders(),
-  });
-  if (!res.ok) throw new Error('Failed to delete access list');
+  return apiDelete(`${API_BASE}/access-lists/${id}`);
+}
+
+/** Allows a domain in review again, with the values the operator was shown (#320). */
+export async function confirmAccessListDNS(listId: string, body: DNSConfirmRequest): Promise<DNSEntryStatus> {
+  return apiPost<DNSEntryStatus>(`${API_BASE}/access-lists/${listId}/dns-confirm`, body);
 }
 
 // Redirect Hosts

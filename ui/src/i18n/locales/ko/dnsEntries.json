@@ -1,0 +1,130 @@
+{
+  "status": {
+    "pending": "확인 중",
+    "ok": "허용 중",
+    "stale": "유지 중 (조회 실패)",
+    "expired": "유예 초과",
+    "rejected": "거부된 주소",
+    "not_found": "찾을 수 없음",
+    "needs_review": "검토 필요",
+    "unknown": "아직 확인 안 함",
+    "disabled": "기능 꺼짐",
+    "disabledHelp": "도메인 항목 기능이 꺼져 있어 다시 켤 때까지 이 도메인으로는 아무도 허용되지 않습니다.",
+    "revokePending": "NPG에서 뺐지만 nginx에는 아직 허용됨",
+    "revokePendingHelp": "NPG는 이 도메인의 주소를 뺐지만 nginx가 아직 그 변경을 읽지 않았습니다. 그 주소의 클라이언트는 아직 들어올 수 있습니다."
+  },
+  "review": {
+    "cname_changed": "CNAME 대상이 {{from}}에서 {{to}}(으)로 바뀌었습니다.",
+    "reappeared": "예전에 없던 주소로 다시 나타났습니다.",
+    "unstable": "24시간 안에 주소가 너무 자주 바뀌었습니다."
+  },
+  "warnings": {
+    "self_ip": "이 서버의 IP",
+    "banned": "현재 차단됨",
+    "cgnat": "CGNAT 대역",
+    "partial_rejected": "일부 주소 거부",
+    "ipv6_listen": "IPv6 미확인",
+    "duplicate": "주소 중복"
+  },
+  "warningHelp": {
+    "self_ip": "이 도메인이 이 서버 자신의 공인 IP를 가리킵니다. 헤어핀 NAT 뒤에서는 내부 사용자 전체가 이 주소로 보일 수 있습니다.",
+    "banned": "이 주소에 활성 차단(밴)이 있습니다. 밴이 이기므로 이 클라이언트는 계속 막힙니다.",
+    "cgnat": "100.64.0.0/10 (Tailscale, 통신사 CGNAT). 허용되지만 여러 기기가 한 주소를 함께 쓸 수 있습니다.",
+    "partial_rejected": "응답의 일부 주소가 사설·예약·CDN 주소라서 뺐습니다.",
+    "ipv6_listen": "이 서버는 IPv6 접속을 받지만 이 도메인에는 쓸 수 있는 IPv6 주소가 없습니다. IPv6로 접속한 클라이언트는 403을 받습니다.",
+    "duplicate": "같은 목록의 다른 도메인이 같은 주소를 허용합니다."
+  },
+  "families": {
+    "ipv4": "IPv4",
+    "ipv6": "IPv6"
+  },
+  "familyState": {
+    "ok": "정상",
+    "not_found": "레코드 없음",
+    "transient": "조회 실패",
+    "rejected": "거부",
+    "unknown": "확인 전"
+  },
+  "errorCodes": {
+    "timeout": "시간 초과",
+    "servfail": "DNS 서버 오류",
+    "refused": "DNS 서버가 거부",
+    "network": "네트워크 오류",
+    "not_found": "레코드 없음",
+    "reserved": "예약 주소",
+    "loopback": "루프백 주소",
+    "private": "사설 주소",
+    "link_local": "링크 로컬 주소",
+    "multicast": "멀티캐스트 주소",
+    "cdn": "CDN 주소",
+    "too_many": "주소가 너무 많음",
+    "cname_failed": "CNAME 조회 실패",
+    "cname_indeterminate": "CNAME 대상 판단 불가"
+  },
+  "blocked": {
+    "blocked": "다른 설정 파일 때문에 nginx -t가 실패합니다",
+    "failed": "nginx 리로드가 실패했습니다",
+    "rejected": "nginx가 리로드를 거부했습니다",
+    "not_up": "nginx가 아직 실행되지 않았습니다",
+    "file": "({{file}})"
+  },
+  "list": {
+    "noAddresses": "허용된 주소 없음",
+    "more": "+{{count}}",
+    "pending": "적용 대기: {{addresses}}",
+    "pendingAt": "{{time}}에 적용 예정: {{addresses}}",
+    "notApplied": "nginx가 아직 최신 주소를 읽지 않았습니다",
+    "notAppliedBecause": "아직 적용되지 않음: {{reason}}",
+    "checkedAt": "{{time}} 확인",
+    "neverChecked": "아직 확인 안 함",
+    "staleUntil": "{{time}}까지 유지",
+    "canonical": "CNAME → {{name}}",
+    "family": "{{family}}: {{state}}",
+    "familyWithCode": "{{family}}: {{state}} ({{code}})",
+    "lastError": "마지막 오류: {{code}}"
+  },
+  "actions": {
+    "confirm": "다시 허용"
+  },
+  "confirm": {
+    "title": "{{name}}을(를) 다시 허용할까요?",
+    "observed": "지금 이 서버가 조회한 주소",
+    "noObserved": "아직 쓸 수 있는 조회 결과가 없습니다. 다음 확인을 기다린 뒤 다시 시도하세요.",
+    "canonical": "CNAME 대상: {{name}}",
+    "pinned": "이전에 승인한 대상: {{name}}",
+    "serverDecides": "확인을 누른 순간 서버가 조회한 값만 허용합니다. 그 사이 응답이 바뀌었으면 다시 묻습니다.",
+    "submit": "다시 허용",
+    "submitting": "확인 중...",
+    "lookupUnavailable": "서버가 지금 이 도메인을 조회하지 못해 아무것도 허용하지 않았습니다. 잠시 뒤 다시 시도하세요.",
+    "observationChanged": "DNS 응답이 바뀌어 아무것도 허용하지 않았습니다. 위 주소가 새 응답입니다. 확인하고 다시 허용하세요.",
+    "notInReview": "이 도메인은 더 이상 검토가 필요하지 않습니다.",
+    "failed": "도메인을 다시 허용하지 못했습니다."
+  },
+  "loginBypass": {
+    "title": "도메인이 로그인을 건너뛸 수 있습니다",
+    "list": "이 목록에는 도메인 항목과 '조건 완화(Satisfy Any)'가 있습니다. 로그인(ForwardAuth, auth_request, auth_basic)이 있는 다음 호스트에서는 도메인 주소의 클라이언트가 로그인 없이 들어옵니다:",
+    "count": "이 목록을 쓰는 로그인 호스트 {{count}}곳에 해당합니다.",
+    "host": "이 호스트에는 로그인이 있고, 고른 접근 목록에는 도메인 항목과 '조건 완화(Satisfy Any)'가 있습니다. 그 도메인 주소의 클라이언트는 로그인 없이 들어옵니다. 둘 다 요구하려면 목록의 조건 완화를 끄세요.",
+    "more": "외 {{count}}곳"
+  },
+  "nameErrors": {
+    "empty": "도메인 이름을 입력하세요.",
+    "too_long": "도메인 이름은 253자까지입니다.",
+    "label": "점 사이의 각 부분은 영문자·숫자·하이픈 1~63자여야 합니다.",
+    "hyphen": "점 사이의 부분은 하이픈으로 시작하거나 끝날 수 없습니다.",
+    "single_label": "partner.example.com처럼 점이 있는 전체 도메인을 입력하세요.",
+    "tld": "마지막 부분은 영문자(또는 xn-- 이름)여야 합니다.",
+    "looks_like_ip": "IP 주소처럼 보이지만 올바른 IP 주소가 아닙니다.",
+    "wildcard": "와일드카드(*)는 쓸 수 없습니다.",
+    "underscore": "도메인 이름에 밑줄(_)은 쓸 수 없습니다.",
+    "url_or_port": "스킴·포트·경로·%·@ 없이 도메인 이름만 입력하세요.",
+    "whitespace": "공백이나 보이지 않는 문자는 쓸 수 없습니다.",
+    "non_ascii": "이 이름은 바뀌지 않은 채로 xn-- 형식으로 바꿀 수 없습니다.",
+    "internal_suffix": "로컬 이름(.local, .lan, .internal 등)은 인터넷에서 조회되지 않습니다."
+  },
+  "guide": {
+    "common": "도메인은 주기(기본 1분)마다 다시 조회합니다. 주소가 바뀌면 레코드 TTL + 조회 주기 + 최소 반영 간격 뒤에 반영됩니다(빠지는 주소는 바로 막습니다). 이 도메인의 DNS를 바꿀 수 있는 사람(DDNS 계정 주인)이 이 예외를 통제합니다.",
+    "ipv6": "공유기 DDNS의 AAAA 레코드는 보통 공유기 자신의 주소라, 상대 PC의 IPv6 접속과 맞지 않습니다. 상대가 IPv4로 접속하게 하거나, 상대 기기 자체가 자기 주소를 갱신하는 DDNS를 쓰세요. 이 서버는 IPv6로도 접속을 받습니다.",
+    "review": "이 도메인이 다른 곳을 가리키게 됐습니다(CNAME 변경, 예전에 없던 주소로 다시 나타남, 너무 잦은 변경). 탈취일 수 있어 확인할 때까지 허용하지 않습니다."
+  }
+}

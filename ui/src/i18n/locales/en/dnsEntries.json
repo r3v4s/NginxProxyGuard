@@ -1,0 +1,130 @@
+{
+  "status": {
+    "pending": "Resolving",
+    "ok": "Allowed",
+    "stale": "Kept (lookups failing)",
+    "expired": "Expired",
+    "rejected": "Address refused",
+    "not_found": "Not found",
+    "needs_review": "Needs review",
+    "unknown": "Not checked yet",
+    "disabled": "Feature off",
+    "disabledHelp": "Domain entries are turned off, so this domain lets no one in until they are turned on again.",
+    "revokePending": "Removed, nginx still allows",
+    "revokePendingHelp": "NPG removed an address of this domain, but nginx has not loaded the change yet. Clients at that address still get in."
+  },
+  "review": {
+    "cname_changed": "The CNAME target changed from {{from}} to {{to}}.",
+    "reappeared": "It came back with an address it never had before.",
+    "unstable": "Its addresses changed too often in 24 hours."
+  },
+  "warnings": {
+    "self_ip": "This server's IP",
+    "banned": "Banned now",
+    "cgnat": "CGNAT range",
+    "partial_rejected": "Some addresses refused",
+    "ipv6_listen": "IPv6 not covered",
+    "duplicate": "Shared address"
+  },
+  "warningHelp": {
+    "self_ip": "The domain points at this server's own public IP. Behind hairpin NAT, every internal user can appear as this address.",
+    "banned": "An active ban covers this address. Bans win, so this client stays blocked.",
+    "cgnat": "100.64.0.0/10 (Tailscale, carrier-grade NAT). Allowed, but many devices can share one address.",
+    "partial_rejected": "Some addresses in the answer were private, reserved or CDN addresses and were left out.",
+    "ipv6_listen": "This server accepts IPv6 connections, but the domain has no usable IPv6 address. A client that connects over IPv6 gets 403.",
+    "duplicate": "Another domain in the same list allows the same address."
+  },
+  "families": {
+    "ipv4": "IPv4",
+    "ipv6": "IPv6"
+  },
+  "familyState": {
+    "ok": "OK",
+    "not_found": "no record",
+    "transient": "lookup failing",
+    "rejected": "refused",
+    "unknown": "not checked"
+  },
+  "errorCodes": {
+    "timeout": "timed out",
+    "servfail": "DNS server failure",
+    "refused": "refused by the DNS server",
+    "network": "network error",
+    "not_found": "no such record",
+    "reserved": "reserved address",
+    "loopback": "loopback address",
+    "private": "private address",
+    "link_local": "link-local address",
+    "multicast": "multicast address",
+    "cdn": "CDN address",
+    "too_many": "too many addresses",
+    "cname_failed": "CNAME lookup failed",
+    "cname_indeterminate": "CNAME target unclear"
+  },
+  "blocked": {
+    "blocked": "nginx -t fails because of another configuration file",
+    "failed": "the nginx reload failed",
+    "rejected": "nginx refused the reload",
+    "not_up": "nginx is not running yet",
+    "file": "({{file}})"
+  },
+  "list": {
+    "noAddresses": "No address allowed",
+    "more": "+{{count}}",
+    "pending": "Waiting to apply: {{addresses}}",
+    "pendingAt": "Applies at {{time}}: {{addresses}}",
+    "notApplied": "nginx has not loaded the latest addresses yet",
+    "notAppliedBecause": "Not applied yet: {{reason}}",
+    "checkedAt": "Checked {{time}}",
+    "neverChecked": "Not checked yet",
+    "staleUntil": "Kept until {{time}}",
+    "canonical": "CNAME → {{name}}",
+    "family": "{{family}}: {{state}}",
+    "familyWithCode": "{{family}}: {{state}} ({{code}})",
+    "lastError": "Last error: {{code}}"
+  },
+  "actions": {
+    "confirm": "Allow again"
+  },
+  "confirm": {
+    "title": "Allow {{name}} again?",
+    "observed": "Addresses this server resolves now",
+    "noObserved": "Nothing usable resolved yet. Wait for the next check and try again.",
+    "canonical": "CNAME target: {{name}}",
+    "pinned": "Approved before: {{name}}",
+    "serverDecides": "Only what the server resolves when you confirm is allowed. If the answer changed in the meantime, you are asked again.",
+    "submit": "Allow again",
+    "submitting": "Checking...",
+    "lookupUnavailable": "The server could not resolve this domain just now, so nothing was allowed. Try again in a minute.",
+    "observationChanged": "The DNS answer changed, so nothing was allowed. The addresses above now show the new answer: check them and confirm again.",
+    "notInReview": "This domain no longer needs review.",
+    "failed": "Could not allow the domain again."
+  },
+  "loginBypass": {
+    "title": "Domains can skip the login",
+    "list": "This list has domain entries and Satisfy Any. On these hosts with a login (ForwardAuth, auth_request or auth_basic), a client at a domain's address gets in without logging in:",
+    "count": "This applies to {{count}} host(s) with a login that use this list.",
+    "host": "This host has a login, and its access list has domain entries with Satisfy Any. A client at one of those domains' addresses gets in without logging in. Turn off Satisfy Any on the list to require both.",
+    "more": "+{{count}} more"
+  },
+  "nameErrors": {
+    "empty": "Enter a domain name.",
+    "too_long": "A domain name can be at most 253 characters.",
+    "label": "Each part between dots must be 1-63 letters, digits or hyphens.",
+    "hyphen": "A part between dots cannot start or end with a hyphen.",
+    "single_label": "Enter a full domain name with a dot, such as partner.example.com.",
+    "tld": "The last part must be letters (or an xn-- name).",
+    "looks_like_ip": "This looks like an IP address but is not a valid one.",
+    "wildcard": "Wildcards (*) are not supported.",
+    "underscore": "Underscores (_) are not allowed in a domain name.",
+    "url_or_port": "Enter only the domain name, without a scheme, port, path, % or @.",
+    "whitespace": "Spaces and invisible characters are not allowed.",
+    "non_ascii": "This name could not be converted to its xn-- form without changing it.",
+    "internal_suffix": "Local names (.local, .lan, .internal, ...) cannot be resolved on the internet."
+  },
+  "guide": {
+    "common": "Domains are looked up again on a schedule (every minute by default). A changed address takes effect after the record's TTL, the check interval and the minimum apply gap; an address that goes away is blocked at once. Whoever controls this domain's DNS (the DDNS account owner) controls this exception.",
+    "ipv6": "A router's DDNS AAAA record is usually the router's own address, so it does not match the other side's PC over IPv6. Have the other side connect over IPv4, or use a DDNS client on that device that updates its own address. This server also accepts IPv6 connections.",
+    "review": "This domain now points somewhere else (a changed CNAME, an address it never had, or too many changes). It may have been taken over, so it lets no one in until you confirm."
+  }
+}

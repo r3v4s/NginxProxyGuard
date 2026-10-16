@@ -14,6 +14,9 @@ import { useTranslation } from 'react-i18next'
 import { HelpTip } from '../../common/HelpTip'
 import { Link } from 'react-router-dom'
 import { getFail2ban, updateFail2ban } from '../../../api/security'
+import type { AccessListItem } from '../../../types/access'
+import { DnsLoginBypassWarning } from '../../common/dns/DnsLoginBypassWarning'
+import { advancedConfigHasAuth } from '../../common/dns/advancedConfigAuth'
 
 interface SecurityTabProps {
   hostId?: string
@@ -39,11 +42,13 @@ interface SecurityTabProps {
     id: string
     name: string
     satisfy_any: boolean
+    items?: Array<Pick<AccessListItem, 'kind'>>
   }>
   availableAuthProviders: Array<{
     id: string
     name: string
     type: string
+    enabled?: boolean
   }>
   geoipStatus: { status: string } | undefined
   countryCodes: Record<string, string> | undefined
@@ -82,6 +87,17 @@ export function SecurityTabContent({
   // exclusion: when a provider is selected the challenge toggles are
   // disabled; when a challenge is enabled the provider is cleared.
   const challengeActive = geoData.challenge_mode || cloudProviderChallengeMode
+
+  // #320: with a login on this host, a satisfy-any list's domain entries let a
+  // client at a domain's address in without logging in. The form cannot see the
+  // global challenge that suppresses "satisfy any", so it may warn where nginx
+  // would still ask for the login.
+  const selectedAccessList = availableAccessLists.find((list) => list.id === formData.access_list_id)
+  const selectedAuthProvider = availableAuthProviders.find((p) => p.id === formData.auth_provider_id)
+  const domainsSkipLogin =
+    !!selectedAccessList?.satisfy_any &&
+    (selectedAccessList.items ?? []).some((item) => item.kind === 'hostname') &&
+    (selectedAuthProvider?.enabled === true || advancedConfigHasAuth(formData.advanced_config))
 
   const clearAuthProvider = () =>
     setFormData((prev) => ({ ...prev, auth_provider_id: undefined, auth_bypass_paths: [] }))
@@ -316,6 +332,8 @@ export function SecurityTabContent({
         </p>
       </div>
       </CollapsibleSection>
+
+      {domainsSkipLogin && <DnsLoginBypassWarning forThisHost />}
 
       {/* Auth Provider (ForwardAuth / SSO) */}
       <CollapsibleSection title={t('form.security.authProvider', 'Auth Provider (SSO)')}>

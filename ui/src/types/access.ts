@@ -1,3 +1,8 @@
+import type { DNSEntryStatus, DNSHostRef } from './dnsEntries';
+
+/** How the API classified a stored rule (#320). */
+export type AccessListItemKind = 'address' | 'hostname' | 'legacy';
+
 export interface AccessListItem {
   id: string;
   access_list_id: string;
@@ -6,6 +11,11 @@ export interface AccessListItem {
   description?: string;
   sort_order: number;
   created_at: string;
+  kind?: AccessListItemKind;
+  /** Legacy rows only: "ignored" (an allow nginx never got) or "deny_all" (enforced as deny all). */
+  effect?: 'ignored' | 'deny_all';
+  /** Domain rows only; omitted when unknown (the server could not read the state). */
+  dns?: DNSEntryStatus | null;
 }
 
 export interface AccessList {
@@ -15,6 +25,8 @@ export interface AccessList {
   satisfy_any: boolean;
   pass_auth: boolean;
   items: AccessListItem[];
+  /** Hosts with a login that this list lets a domain's address skip; hosts is null without proxy:read. */
+  login_bypass_hosts?: { count: number; hosts: DNSHostRef[] | null };
   created_at: string;
   updated_at: string;
 }
@@ -29,6 +41,7 @@ export interface CreateAccessListRequest {
     address: string;
     description?: string;
     sort_order?: number;
+    kind?: AccessListItemKind;
   }[];
 }
 

@@ -21,10 +21,20 @@
         "satisfyAny": "조건 완화 (OR 로직)",
         "passAuth": "인증 헤더 전달",
         "accessRules": "접근 규칙",
-        "ipPlaceholder": "IP 주소 또는 CIDR (예: 192.168.1.0/24)",
+        "ipPlaceholder": "IP, CIDR 또는 도메인 (예: 192.0.2.0/24, partner.example.com)",
         "ruleDescription": "설명 (선택)",
         "allow": "허용",
-        "deny": "차단"
+        "deny": "차단",
+        "domainBadge": "도메인",
+        "domainAllowOnly": "도메인은 허용에만 쓸 수 있습니다",
+        "asciiName": "{{name}}(으)로 저장됩니다",
+        "domainsAfterIPs": "도메인은 모든 IP 규칙 다음에 확인합니다. 여기서 차단한 IP는 계속 차단됩니다.",
+        "legacyTitle": "적용되지 않는 항목",
+        "legacyHelp": "이전 버전에서 IP 대신 이름으로 저장된 항목입니다. 옮기거나 지우기 전까지 그대로 남습니다.",
+        "legacyIgnored": "적용 안 됨",
+        "legacyDenyAll": "모두 차단으로 적용됨",
+        "moveToDomain": "도메인으로 옮기기",
+        "removeLegacy": "항목 삭제"
     },
     "list": {
         "title": "접근 목록 (IP 허용/차단)",
@@ -37,18 +47,33 @@
         "expand": "[+]",
         "collapse": "[-]",
         "satisfyAny": "조건 완화",
-        "passAuth": "인증 전달"
+        "passAuth": "인증 전달",
+        "domainsTitle": "도메인 허용 (IP 규칙 다음에 확인)",
+        "needsReview": "검토 필요"
     },
     "messages": {
         "deleteConfirm": "이 접근 목록을 삭제하시겠습니까?",
         "loadError": "접근 목록을 불러오는데 실패했습니다",
-        "saveError": "접근 목록 저장 실패"
+        "saveError": "접근 목록 저장 실패",
+        "deleteError": "접근 목록 삭제 실패",
+        "fixRules": "표시된 규칙을 고친 뒤 다시 저장하세요.",
+        "reloadRejectedSave": "접근 목록은 저장됐지만 nginx가 새 설정을 받아들이지 않았습니다. 아래 이유를 확인하세요.",
+        "reloadRejectedDelete": "접근 목록은 삭제됐지만 nginx가 새 설정을 받아들이지 않았습니다. 아래 이유를 확인하세요.",
+        "reloadRejectedConfirm": "도메인은 다시 허용됐지만 nginx가 새 설정을 받아들이지 않았습니다. 아래 이유를 확인하세요."
+    },
+    "errors": {
+        "hostname_needs_kind": "도메인은 도메인 항목으로 넣으세요.",
+        "deny_hostname": "도메인은 허용에만 쓸 수 있습니다. 차단은 IP 주소로 하세요.",
+        "duplicate_hostname": "이미 목록에 있는 도메인입니다.",
+        "deny_all_with_hostname": "이 목록의 '모두 차단(deny all)' 규칙 때문에 어떤 도메인도 맞지 않습니다. 그 규칙이나 도메인을 지우세요.",
+        "legacy_not_in_list": "이 옛 규칙은 더 이상 목록에 없습니다. 목록을 다시 불러온 뒤 저장하세요.",
+        "limit": "도메인이 너무 많습니다: {{detail}}"
     },
     "help": {
         "name": "접근 목록의 이름을 입력하세요.",
         "description": "이 접근 목록에 대한 설명을 입력하세요.",
         "satisfyAny": "활성화시, 하위 규칙 중 하나라도 만족하면 접근이 허용됩니다 (OR 로직). 비활성화시 기본적으로 모든 규칙이 검사됩니다.",
         "passAuth": "Basic 인증 헤더를 업스트림 서버로 전달합니다.",
-        "accessRules": "허용 또는 차단할 IP 대역과 규칙을 정의합니다."
+        "accessRules": "IP 주소와 대역을 허용·차단하거나, 도메인(DDNS 이름 등)을 허용합니다. 도메인은 IP 규칙 다음에 확인합니다."
     }
 }

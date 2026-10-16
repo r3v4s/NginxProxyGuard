@@ -61,6 +61,7 @@ export type LocaleParity = {
   exploitLogs: Same<Keys<typeof import('./locales/ko/exploitLogs.json')>, Keys<typeof import('./locales/en/exploitLogs.json')>>
   filterSubscription: Same<Keys<typeof import('./locales/ko/filterSubscription.json')>, Keys<typeof import('./locales/en/filterSubscription.json')>>
   ddns: Same<Keys<typeof import('./locales/ko/ddns.json')>, Keys<typeof import('./locales/en/ddns.json')>>
+  dnsEntries: Same<Keys<typeof import('./locales/ko/dnsEntries.json')>, Keys<typeof import('./locales/en/dnsEntries.json')>>
 }
 
 // A namespace added to ALL_NAMESPACES without a line above fails here, so a
