@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -151,8 +152,9 @@ func TestDNSLoginBypassHosts(t *testing.T) {
 }
 
 // Building the host index costs about a dozen queries per host, so a
-// check rebuilds it only when there is none, it is 5 minutes old, or
-// something marked it (a list save, a settings change, a reload nginx took).
+// check rebuilds it only when there is none or it is 5 minutes old. A mark
+// (a list save, a settings change, a reload nginx took) rebuilds it at once,
+// in the background, and the check after that does not build it again.
 func TestDNSHostIndexIsRebuiltEveryFiveMinutesOrWhenMarked(t *testing.T) {
 	r, _ := dnsGateRig(t)
 	r.svc.lastGC = r.clock.Now()
@@ -177,17 +179,150 @@ func TestDNSHostIndexIsRebuiltEveryFiveMinutesOrWhenMarked(t *testing.T) {
 	hooks := r.svc.ReloadHooks()
 	hooks.After(hooks.Before(), nginx.ReloadAccepted, nil) // e.g. a host save's reload
 	r.settle()
-	r.clock.Advance(time.Minute)
-	r.tick(t)
 	taken := r.svc.hostIdx.Load()
 	if taken == aged {
-		t.Fatal("a check after a reload nginx took must rebuild the host index")
+		t.Fatal("a reload nginx took must rebuild the host index at once")
+	}
+	r.clock.Advance(time.Minute)
+	r.tick(t)
+	if r.svc.hostIdx.Load() != taken {
+		t.Fatal("the check after that rebuild must not build the host index again")
 	}
 
 	r.svc.SettingsChanged(context.Background(), model.DefaultDNSEntrySettings(), model.DefaultDNSEntrySettings())
-	r.clock.Advance(time.Minute)
-	r.tick(t)
+	r.settle()
 	if r.svc.hostIdx.Load() == taken {
-		t.Fatal("a check after a settings change must rebuild the host index")
+		t.Fatal("a settings change must rebuild the host index at once")
+	}
+}
+
+// dnsBlockingHosts holds every read of list A's hosts until it is opened, so
+// a test can look at the fail2ban gate while a rebuild of the host index
+// runs. Each build reads list A once: reads counts the builds, most the
+// builds that ever ran at once.
+type dnsBlockingHosts struct {
+	*dnsTestHosts
+	started chan struct{} // one value each time a read of list A begins
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	reads   int
+	running int
+	most    int
+}
+
+func newDNSBlockingHosts(t *testing.T, h *dnsTestHosts) *dnsBlockingHosts {
+	b := &dnsBlockingHosts{dnsTestHosts: h, started: make(chan struct{}, 16), release: make(chan struct{})}
+	t.Cleanup(b.open) // runs before the rig waits for its goroutines
+	return b
+}
+
+func (b *dnsBlockingHosts) GetByAccessListID(ctx context.Context, accessListID string) ([]model.ProxyHost, error) {
+	if accessListID == dnsTestListA {
+		b.mu.Lock()
+		b.reads++
+		b.running++
+		b.most = max(b.most, b.running)
+		b.mu.Unlock()
+		b.started <- struct{}{}
+		<-b.release
+		b.mu.Lock()
+		b.running--
+		b.mu.Unlock()
+	}
+	return b.dnsTestHosts.GetByAccessListID(ctx, accessListID)
+}
+
+// open lets every read go on.
+func (b *dnsBlockingHosts) open() { b.once.Do(func() { close(b.release) }) }
+
+// waitBuild waits until a rebuild reads list A's hosts.
+func (b *dnsBlockingHosts) waitBuild(t *testing.T) {
+	t.Helper()
+	select {
+	case <-b.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no rebuild of the host index started")
+	}
+}
+
+func (b *dnsBlockingHosts) counts() (reads, most int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.reads, b.most
+}
+
+// After a reload the index may no longer say what a host renders. Until a
+// rebuild that began after the reload is in place, the gate leaves nothing
+// out: every 403 is counted.
+func TestDNSMarkedHostIndexExemptsNothingUntilItIsRebuilt(t *testing.T) {
+	r, h := dnsGateRig(t)
+	ctx := context.Background()
+	if !r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99") {
+		t.Fatal("before the reload, the list's own 403 must be left out")
+	}
+	hosts := newDNSBlockingHosts(t, h)
+	r.svc.hosts = hosts
+
+	hooks := r.svc.ReloadHooks()
+	hooks.After(hooks.Before(), nginx.ReloadAccepted, nil) // a host save's reload
+	hosts.waitBuild(t)
+	if r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99") {
+		t.Fatal("while the host index is rebuilt after a reload, a 403 must be counted")
+	}
+	hosts.open()
+	r.settle()
+	if !r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99") {
+		t.Fatal("once the rebuild is in place, the list's own 403 must be left out again")
+	}
+}
+
+// A burst of reloads (SyncAll, a run of saves) marks the index again and
+// again. Marks made while a rebuild runs start no rebuild of their own:
+// exactly one more rebuild, after the running one, covers them all.
+func TestDNSMarksDuringARebuildShareOneMoreRebuild(t *testing.T) {
+	r, h := dnsGateRig(t)
+	hosts := newDNSBlockingHosts(t, h)
+	r.svc.hosts = hosts
+
+	r.svc.markHostIndexDirty()
+	hosts.waitBuild(t)
+	for i := 0; i < 5; i++ {
+		r.svc.markHostIndexDirty()
+	}
+	hosts.open()
+	r.settle()
+
+	if reads, most := hosts.counts(); reads != 2 || most != 1 {
+		t.Fatalf("%d rebuilds, at most %d at once; want the running one and exactly one more for the five marks, never two at once", reads, most)
+	}
+	if !r.svc.ExemptAccessDenial(context.Background(), dnsGateH1, "203.0.113.99") {
+		t.Fatal("after the rebuilds the index must be current again")
+	}
+}
+
+// A host save that changes what the host renders reloads nginx, and the
+// reload rebuilds the host index at once, without waiting for a check: a
+// host that dropped its domain list stops being exempt, the others stay.
+func TestDNSAReloadRebuildsTheHostIndexAtOnce(t *testing.T) {
+	r, h := dnsGateRig(t)
+	ctx := context.Background()
+	var kept []model.ProxyHost
+	for _, host := range h.byList[dnsTestListA] {
+		if host.ID != dnsGateH1 {
+			kept = append(kept, host)
+		}
+	}
+	h.byList[dnsTestListA] = kept // app1 no longer uses list A
+
+	hooks := r.svc.ReloadHooks()
+	hooks.After(hooks.Before(), nginx.ReloadAccepted, nil) // app1's save reloads nginx
+	r.settle()
+
+	if r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99") {
+		t.Error("app1 dropped its domain list: its 403s must be counted")
+	}
+	if !r.svc.ExemptAccessDenial(ctx, dnsGateH4, "203.0.113.99") {
+		t.Error("app4 still uses its list: once the index is rebuilt, its list's own 403 must be left out")
 	}
 }

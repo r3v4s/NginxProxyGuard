@@ -90,8 +90,9 @@ type DNSEntryService struct {
 	reviewAnnounced map[string]bool // names in review already announced (empty after a restart)
 	reviewClosing   map[string]bool // closes that failed, retried each tick (value: confirmed)
 
-	hostIdx      atomic.Pointer[dnsHostIndex] // rebuilt by Tick and SyncScope, read lock-free
-	hostIdxDirty atomic.Bool                  // the next check rebuilds the host index
+	hostIdx         atomic.Pointer[dnsHostIndex] // rebuilt by Tick, SyncScope and every mark, read lock-free
+	hostIdxMarks    atomic.Int64                 // marks so far: an index whose build began before the latest is stale
+	hostIdxBuilding atomic.Bool                  // a background rebuild runs
 }
 
 // DNSEntryOptions are the service's settings that do not come from the
