@@ -20,10 +20,12 @@ var restoredCanonical = regexp.MustCompile(`^[a-z0-9.-]{1,253}$`)
 // answers, through the empty-state escape rule.
 //
 // The record is checked first: a hostname that fails the name rules makes it
-// unusable (ok=false); a review reason outside cname_changed, reappeared and
-// unstable means not in review; a pin that does not fit
-// ^[a-z0-9.-]{1,253}$ after NormalizeCanonical is dropped; last_applied keeps
-// only addresses that parse and that p allows, unmapped, sorted, unique.
+// unusable (ok=false); a record in review whose reason is not cname_changed,
+// reappeared or unstable (a newer version's reason, a hand-edited file, none
+// at all) is in review as reappeared, so it still waits for a confirmation;
+// a pin that does not fit ^[a-z0-9.-]{1,253}$ after NormalizeCanonical is
+// dropped; last_applied keeps only addresses that parse and that p allows,
+// unmapped, sorted, unique.
 //
 //   - No row: needs_review with the record's reason when it is in review,
 //     else pending; nothing published; pin and last_applied from the record,
@@ -41,8 +43,12 @@ func MergeRestored(existing *model.DNSEntryState, rec model.DNSEntryStateExport,
 		return model.DNSEntryState{}, false
 	}
 	review := ""
-	if rec.NeedsReview && isReviewReason(rec.ReviewReason) {
+	if rec.NeedsReview {
 		review = rec.ReviewReason
+		if !isReviewReason(review) {
+			// An unknown or missing reason still waits for a confirmation.
+			review = model.DNSReviewReappeared
+		}
 	}
 	canonical := NormalizeCanonical(rec.CanonicalName)
 	if !restoredCanonical.MatchString(canonical) {

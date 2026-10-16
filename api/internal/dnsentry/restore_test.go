@@ -33,14 +33,11 @@ func TestMergeRestoredIntoNoRow(t *testing.T) {
 		t.Fatalf("default policy: %+v", def)
 	}
 
-	for _, rec := range []model.DNSEntryStateExport{
-		{Hostname: host, NeedsReview: true, ReviewReason: "policy_changed"}, // a reason this version does not know
-		{Hostname: host, NeedsReview: true},
-		{Hostname: host, ReviewReason: "unstable"}, // a reason without the flag
-	} {
-		if st, _ := MergeRestored(nil, rec, docsAsPublic(), at(0)); st.Status != model.DNSStatusPending || st.ReviewReason != "" {
-			t.Errorf("record %+v: status %q reason %q; want not in review", rec, st.Status, st.ReviewReason)
-		}
+	// A reason without the flag is not a review. (The flag with a reason this
+	// version does not know is: TestMergeRestoredKeepsAReviewWhoseReasonIsUnknown.)
+	noFlag := model.DNSEntryStateExport{Hostname: host, ReviewReason: "unstable"}
+	if st, _ := MergeRestored(nil, noFlag, docsAsPublic(), at(0)); st.Status != model.DNSStatusPending || st.ReviewReason != "" {
+		t.Errorf("record %+v: status %q reason %q; want not in review", noFlag, st.Status, st.ReviewReason)
 	}
 
 	for _, pin := range []string{"_edge.example.net", "edge example.net", ""} {
@@ -137,6 +134,44 @@ func TestMergeRestoredKeepsAReviewTheBackupPredates(t *testing.T) {
 	for i, o := range []Observation{moved, back} {
 		if next, _ := decide(t, merged, o, input(at(2*time.Hour), nil)); next.Status != model.DNSStatusNeedsReview || len(next.Published) != 0 {
 			t.Fatalf("answer %d after the restore: %+v; want still closed until confirmed", i, next)
+		}
+	}
+}
+
+// A record in review whose reason this version does not know (a newer
+// version's backup, a hand-edited file), or that has none, still waits for a
+// confirmation: it is restored in review as reappeared, never as a name that
+// publishes on its own answers. A row already in review keeps its own
+// reason; a published row is closed as for any record in review.
+func TestMergeRestoredKeepsAReviewWhoseReasonIsUnknown(t *testing.T) {
+	const old = "203.0.113.10"
+	for _, reason := range []string{"policy_changed", ""} {
+		rec := model.DNSEntryStateExport{Hostname: host, NeedsReview: true, ReviewReason: reason, LastApplied: []string{old}}
+
+		restored, ok := MergeRestored(nil, rec, docsAsPublic(), at(0))
+		if !ok || restored.Status != model.DNSStatusNeedsReview || restored.ReviewReason != model.DNSReviewReappeared ||
+			len(restored.Published) != 0 {
+			t.Errorf("reason %q, no row: %+v; want in review (reappeared), nothing published", reason, restored)
+		}
+		// Its own answers, the old address twice, do not publish it.
+		next := restored
+		for i := 1; i <= 2; i++ {
+			next, _ = decide(t, next, v4Only(old), input(at(time.Duration(i)*time.Hour), nil))
+		}
+		if next.Status != model.DNSStatusNeedsReview || len(next.Published) != 0 {
+			t.Errorf("reason %q, two answers after the restore: %+v; want still closed until confirmed", reason, next)
+		}
+
+		inReview, _ := EnterReview(published(old), model.DNSReviewCNAMEChanged, at(-time.Hour))
+		if st, _ := MergeRestored(&inReview, rec, docsAsPublic(), at(0)); st.Status != model.DNSStatusNeedsReview ||
+			st.ReviewReason != model.DNSReviewCNAMEChanged || len(st.Published) != 0 || st.Generation != inReview.Generation {
+			t.Errorf("reason %q, row in review: %+v; want still in review (cname_changed), nothing published", reason, st)
+		}
+
+		live := published(old)
+		if st, _ := MergeRestored(&live, rec, docsAsPublic(), at(0)); st.Status != model.DNSStatusNeedsReview ||
+			st.ReviewReason != model.DNSReviewReappeared || len(st.Published) != 0 || st.RevokePendingSince == nil {
+			t.Errorf("reason %q, published row: %+v; want closed for review (reappeared), revoked", reason, st)
 		}
 	}
 }
