@@ -388,3 +388,46 @@ func TestDNSGarbageCollection(t *testing.T) {
 		t.Errorf("disk table = %v, want the removed file forgotten", r.svc.disk)
 	}
 }
+
+// A name unused for more than 7 days whose revocation nginx never took (every
+// reload refused) keeps its row: deleting it would end the revoke alert as
+// recovered while nginx still allows the addresses. A row with a generation
+// nginx has not taken stays too. The transaction checks again what the read
+// before it saw: a revocation recorded in between keeps the row.
+func TestDNSGarbageCollectionKeepsWhatNginxMayStillAllow(t *testing.T) {
+	r := newDNSTestRig(t)
+	ctx := context.Background()
+	eightDays := dnsTestStart.Add(-8 * 24 * time.Hour)
+	revoking := dnsOKRow("gone.example.com", 6)
+	revoking.AppliedGeneration, revoking.UnusedSince, revoking.RevokePendingSince = 5, &eightDays, &eightDays
+	unapplied := dnsOKRow("waiting.example.com", 4)
+	unapplied.AppliedGeneration, unapplied.UnusedSince = 3, &eightDays
+	late := dnsOKRow("late.example.com", 2)
+	late.UnusedSince = &eightDays
+	for _, st := range []model.DNSEntryState{revoking, unapplied, late} {
+		r.store.put(st)
+	}
+	// The revoke alert is failing: an apply failed while the revocation waits.
+	r.svc.evaluateApplyAlerts(ctx, &nginx.DNSApplyResult{Outcome: "blocked", BlockingFile: "proxy_host_x.conf"})
+	// late's revocation is recorded after the cleanup read the rows.
+	r.store.beforeTx = func(f *dnsTestStore) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		st := f.rows["late.example.com"]
+		st.Generation, st.RevokePendingSince = 3, &eightDays
+		f.rows["late.example.com"] = st
+	}
+
+	r.svc.collectGarbage(ctx)
+	r.store.beforeTx = nil
+	r.svc.evaluateApplyAlerts(ctx, nil)
+
+	for _, name := range []string{"gone.example.com", "waiting.example.com", "late.example.com"} {
+		if _, ok := r.store.row(name); !ok {
+			t.Errorf("%s: row deleted while nginx may still allow its addresses", name)
+		}
+	}
+	if dnsAlerted(r, "revoke", false) {
+		t.Errorf("alerts = %+v, want the revoke alert still failing: no reload took the revocation", r.events.snapshot().alerts)
+	}
+}
