@@ -2420,7 +2420,25 @@ paths:
             name missing or too long; a line break or control character in `name`,
             `description` or a rule's `description` (at most 1000 bytes); or a rule whose
             `directive` is not `allow` or `deny`, or whose `address` is not an IP address,
-            a CIDR range or `all` (surrounding spaces are trimmed)
+            a CIDR range or `all` (surrounding spaces are trimmed). A domain needs
+            `kind: hostname` and `directive: allow`.
+
+            A refused rule answers `{error, field, code}`, all strings. `field` is the
+            rule's path by its position in the request (`items[2].address`). `code` is
+            `hostname_needs_kind`, `deny_hostname`, `duplicate_hostname`,
+            `deny_all_with_hostname` (a `deny all` rule, or an old rule that works as one,
+            next to domains, which are checked after the address rules and would never
+            match; `field` names that rule), `legacy_not_in_list` (a `kind: legacy` rule
+            the list does not hold), `limit` (more domains than the DNS entry settings
+            allow; `field` is `items` or `dns_entry_settings.max_total`), or the name rule
+            a domain breaks (`empty`, `too_long`, `label`, `hyphen`, `single_label`,
+            `tld`, `looks_like_ip`, `wildcard`, `underscore`, `url_or_port`, `whitespace`,
+            `non_ascii`, `internal_suffix`). An address or description error has no
+            `code`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /access-lists/{id}:
     get:
       tags: [Access Lists]
@@ -2474,9 +2492,28 @@ paths:
               schema:
                 $ref: '#/components/schemas/AccessList'
         '400':
-          description: A field sent fails the checks described for POST /access-lists
+          description: |
+            A field sent fails the checks described for POST /access-lists. A rule sent
+            back as it was read keeps what it is: one with `kind: legacy`, or without
+            `kind`, equal to a stored legacy rule (same `directive` and `address`) stays
+            that legacy rule as it is, and an `allow` without `kind` of a domain this list
+            has stays that domain. A `kind: legacy` rule the list does not hold is
+            refused (`legacy_not_in_list`); `kind: address` takes only an IP address, a
+            CIDR range or `all`. Any other name needs `kind: hostname`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           description: Access list not found
+        '409':
+          description: |
+            `code` is `nginx_reload_rejected`: the list is saved, but the running nginx
+            refused to load the hosts' configs; `details` is nginx's message.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
     delete:
       tags: [Access Lists]
@@ -2498,6 +2535,105 @@ paths:
           description: Access list deleted
         '404':
           description: Access list not found
+        '409':
+          description: |
+            `code` is `nginx_reload_rejected`: the list is deleted, but the running nginx
+            refused to load the hosts' configs without it; `details` is nginx's message.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /access-lists/{id}/dns-confirm:
+    post:
+      tags: [Access Lists]
+      summary: Allow a domain that waits for review again
+      description: |
+        A domain enters review (`status: needs_review`, nothing allowed) when its CNAME
+        target changed, when it came back with an address it never had after being
+        empty, or when it changed too often. This looks the name up again (at most
+        3 s) and, when the answer is still what the client showed
+        (`expected_addresses`, `expected_canonical_name`), publishes that answer and
+        applies it to nginx. A value the client sends is never published. A domain has
+        one state for every list that uses it, so the caller needs the write
+        permission of each of them.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccessListDNSConfirm'
+      responses:
+        '200':
+          description: The domain's state after the confirm
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSEntryStatus'
+        '400':
+          description: |
+            `code` is `not_in_list` (this list has no such domain) or `not_in_review`
+            (the domain does not wait for review).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: |
+            The domain is also used where the caller may not make changes. `required`
+            lists the missing permissions, or the use itself when no permission covers
+            it. Without `access:write` the route answers first, as every route does, with
+            `required` as one string.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  required:
+                    description: The missing permissions.
+        '404':
+          description: Access list not found
+        '409':
+          description: |
+            Nothing was allowed: `code` is `lookup_unavailable` (the domain could not be
+            looked up just now; try again) or `observation_changed` (it answers
+            differently now; `observed` holds the new answer, to show and confirm, and
+            the domain's state shows it too). Or
+            `code` is `nginx_reload_rejected`: the domain is allowed again, but the
+            running nginx refused to load it; `details` is nginx's message.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                    enum: [lookup_unavailable, observation_changed, nginx_reload_rejected]
+                  details:
+                    type: string
+                  observed:
+                    type: object
+                    properties:
+                      addresses:
+                        type: array
+                        items:
+                          type: string
+                      canonical_name:
+                        type: string
+                        nullable: true
 
   # ============================================================================
   # Banned IPs
@@ -11020,9 +11156,12 @@ components:
           type: string
         details:
           type: string
+        field:
+          type: string
+          description: "The request field a 400 is about, by its position in the request (access lists: items[2].address)."
         code:
           type: string
-          description: "Machine-readable reason, when there is one. nginx_reload_rejected (409): the change is saved, but the running nginx refused to load it; details holds nginx's message."
+          description: "Machine-readable reason, when there is one. nginx_reload_rejected (409): the change is saved, but the running nginx refused to load it; details holds nginx's message. Access list rules (400, with field): hostname_needs_kind, deny_hostname, duplicate_hostname, deny_all_with_hostname, legacy_not_in_list, limit, or the code of a domain name rule. POST /access-lists/{id}/dns-confirm: not_in_list, not_in_review (400); lookup_unavailable, observation_changed (409)."
         id:
           type: string
           format: uuid
@@ -12439,6 +12578,21 @@ components:
             a list with items always ends in an implicit `deny all`.
           items:
             $ref: '#/components/schemas/AccessListItem'
+        login_bypass_hosts:
+          type: object
+          description: |
+            Hosts where this list lets its domains in without the host's login: the list
+            is `satisfy any` and the host asks for a login (an auth provider, or
+            `auth_request`/`auth_basic` in its Advanced Config). `count` is 0 for a list
+            without domains. `hosts` is null without `proxy:read`.
+          properties:
+            count:
+              type: integer
+            hosts:
+              type: array
+              nullable: true
+              items:
+                $ref: '#/components/schemas/DNSHostRef'
         created_at:
           type: string
           format: date-time
@@ -15427,17 +15581,35 @@ components:
         directive:
           type: string
           enum: [allow, deny]
+          description: Always allow for a domain rule.
         address:
           type: string
-          description: IP, CIDR, or the literal "all"
+          description: IP, CIDR, or the literal "all"; the domain of a hostname rule; the stored text of a legacy rule
         description:
           type: string
         sort_order:
           type: integer
-          description: Rule order; nginx evaluates allow/deny top-down
+          description: Rule order; nginx evaluates allow/deny top-down, and checks domains after the address rules
         created_at:
           type: string
           format: date-time
+        kind:
+          type: string
+          enum: [address, hostname, legacy]
+          description: |
+            address - an IP address, a CIDR range or all. hostname - a domain (DDNS) whose
+            addresses nginx allows, checked after every address rule of the list. legacy -
+            a name an older version saved as a plain rule; it does not work as a domain
+            (see effect) and stays as it is when the list is saved back, until it is
+            deleted or sent with kind hostname.
+        effect:
+          type: string
+          enum: [ignored, deny_all]
+          description: Legacy rules only. ignored - an allow the config leaves out; deny_all - a deny the config writes as deny all in its place.
+        dns:
+          description: Hostname rules only. Omitted when unknown (the state could not be read).
+          allOf:
+            - $ref: '#/components/schemas/DNSEntryStatus'
     AccessListListResponse:
       type: object
       properties:
@@ -15462,11 +15634,26 @@ components:
           enum: [allow, deny]
         address:
           type: string
-          description: IP, CIDR, or the literal "all"
+          description: IP, CIDR, or the literal "all"; a domain with kind hostname
         description:
           type: string
         sort_order:
           type: integer
+          description: |
+            Rules are stored in the order nginx checks them: by sort_order, then position
+            in the request, address and legacy rules first and domains after. sort_order
+            is renumbered from 0.
+        kind:
+          type: string
+          enum: [address, hostname, legacy]
+          default: address
+          description: |
+            hostname makes address a domain (allow only; stored in lower case without a
+            trailing dot). address takes an IP address, a CIDR range or all. legacy sends
+            a stored legacy rule back as it was read and keeps it as it is; one the list
+            does not hold is refused. Without kind, address must be an IP address, a CIDR
+            range or all, except a rule sent back as it was read (see PUT
+            /access-lists/{id}).
     UpdateAccessList:
       type: object
       description: >-
@@ -15485,6 +15672,139 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CreateAccessListItem'
+    AccessListDNSConfirm:
+      type: object
+      required: [hostname, expected_addresses]
+      properties:
+        hostname:
+          type: string
+          example: partner.example.com
+        expected_addresses:
+          type: array
+          items:
+            type: string
+          description: The addresses the client showed (observed_addresses of the domain's state).
+        expected_canonical_name:
+          type: string
+          description: The CNAME target the client showed (observed_canonical_name), when there is one.
+    DNSEntryStatus:
+      type: object
+      description: |
+        The state of one domain (DDNS) name, shared by every list that uses it. Nothing in
+        it is a value a client sent.
+      properties:
+        hostname:
+          type: string
+          example: partner.example.com
+        status:
+          type: string
+          enum: [pending, ok, stale, expired, rejected, not_found, needs_review]
+          description: |
+            pending - not answered yet. stale - the last lookups failed and the previous
+            addresses are kept for a while. expired, rejected and not_found - nothing is
+            allowed. needs_review - nothing is allowed until an operator confirms the
+            domain (POST /access-lists/{id}/dns-confirm).
+        review_reason:
+          type: string
+          nullable: true
+          enum: [cname_changed, reappeared, unstable]
+        disabled:
+          type: boolean
+          description: The feature is off (DNS entry settings or NPG_DNS_ENTRIES_DISABLED), so nothing is allowed.
+        addresses:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: The addresses nginx is to allow for the domain.
+        pending_addresses:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: A new answer that waits to be published.
+        next_apply_at:
+          type: string
+          format: date-time
+          nullable: true
+        applied:
+          type: boolean
+          description: nginx took the current addresses.
+        revoke_pending:
+          type: boolean
+          description: An address was taken out, but nginx has not taken that yet and may still allow it.
+        blocked_reason:
+          type: string
+          nullable: true
+          enum: [blocked, failed, rejected, not_up]
+          description: Why the last apply failed, while a change of this domain waits for it.
+        blocking_file:
+          type: string
+          nullable: true
+          description: The config file that made nginx -t fail; null without proxy:read.
+        observed_addresses:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: The last answer after the address policy, which a confirm shows.
+        canonical_name:
+          type: string
+          nullable: true
+          description: The CNAME target pinned when the domain was first published or confirmed.
+        observed_canonical_name:
+          type: string
+          nullable: true
+        families:
+          type: object
+          description: The last answer per address family.
+          properties:
+            ipv4:
+              $ref: '#/components/schemas/DNSFamilyStatus'
+            ipv6:
+              $ref: '#/components/schemas/DNSFamilyStatus'
+        warnings:
+          type: array
+          nullable: true
+          items:
+            type: string
+            enum: [self_ip, banned, cgnat, partial_rejected, ipv6_listen, duplicate]
+          description: banned needs waf:read and self_ip ddns:read; without them they are left out.
+        error_code:
+          type: string
+          nullable: true
+        stale_until:
+          type: string
+          format: date-time
+          nullable: true
+        last_checked_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_changed_at:
+          type: string
+          format: date-time
+          nullable: true
+    DNSFamilyStatus:
+      type: object
+      description: The last answer of one address family (A or AAAA).
+      properties:
+        state:
+          type: string
+          enum: [unknown, ok, not_found, transient, rejected]
+          description: unknown before the first answer; ok, not found, a temporary failure, or rejected by the address policy.
+        code:
+          type: string
+          description: The reason as a code (timeout, servfail, refused, network, not_found, reserved, loopback, private, link_local, multicast, cdn, too_many).
+    DNSHostRef:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        domain:
+          type: string
+          description: The host's first domain name.
     BannedIP:
       type: object
       properties:

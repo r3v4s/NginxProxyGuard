@@ -66,3 +66,43 @@ func TestAccessListChangesRecordsAReorder(t *testing.T) {
 		t.Errorf("changes = %#v, want %#v", got, want)
 	}
 }
+
+// A domain rule is stored as (deny, all, name): the audit names it by its
+// domain, so adding or removing one is not lost among "deny all"
+// rules.
+func TestAccessListChangesNameDomainRulesByTheirDomain(t *testing.T) {
+	before := &model.AccessList{Name: "partners", Items: []model.AccessListItem{
+		{Directive: "allow", Address: "192.0.2.10"},
+		{Directive: "deny", Address: "all", Hostname: "old.example.com"},
+	}}
+	after := &model.AccessList{Name: "partners", Items: []model.AccessListItem{
+		{Directive: "allow", Address: "192.0.2.10"},
+		{Directive: "deny", Address: "all", Hostname: "new.example.com"},
+	}}
+	want := map[string]interface{}{
+		"added":   []string{"allow new.example.com (domain)"},
+		"removed": []string{"allow old.example.com (domain)"},
+	}
+	if got := accessListChanges(before, after); !reflect.DeepEqual(got, want) {
+		t.Errorf("changes = %#v, want %#v", got, want)
+	}
+}
+
+// Moving a legacy rule to a domain is what turns an old name into a working
+// one, so it is recorded as moved_to_domain.
+func TestAccessListChangesRecordALegacyRuleMovedToADomain(t *testing.T) {
+	before := &model.AccessList{Name: "partners", Items: []model.AccessListItem{
+		{Directive: "allow", Address: "Partner.Example.com"},
+	}}
+	after := &model.AccessList{Name: "partners", Items: []model.AccessListItem{
+		{Directive: "deny", Address: "all", Hostname: "partner.example.com"},
+	}}
+	want := map[string]interface{}{
+		"added":           []string{"allow partner.example.com (domain)"},
+		"removed":         []string{"allow Partner.Example.com"},
+		"moved_to_domain": []string{"partner.example.com"},
+	}
+	if got := accessListChanges(before, after); !reflect.DeepEqual(got, want) {
+		t.Errorf("changes = %#v, want %#v", got, want)
+	}
+}

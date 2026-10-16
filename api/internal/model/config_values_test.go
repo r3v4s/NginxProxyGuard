@@ -99,7 +99,7 @@ func TestValidateAccessListRequest_RejectsLineBreaksAndBadRules(t *testing.T) {
 
 			// The same values in an update.
 			update := UpdateAccessListRequest{Name: &tc.req.Name, Description: &tc.req.Description, Items: tc.req.Items}
-			if err := ValidateUpdateAccessListRequest(&update); !errors.Is(err, ErrInvalidInput) {
+			if err := ValidateUpdateAccessListRequest(&update, nil); !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("update: got %v, want ErrInvalidInput", err)
 			}
 		})
@@ -107,11 +107,11 @@ func TestValidateAccessListRequest_RejectsLineBreaksAndBadRules(t *testing.T) {
 }
 
 func TestValidateUpdateAccessListRequest_ChecksOnlyWhatIsSent(t *testing.T) {
-	if err := ValidateUpdateAccessListRequest(&UpdateAccessListRequest{}); err != nil {
+	if err := ValidateUpdateAccessListRequest(&UpdateAccessListRequest{}, nil); err != nil {
 		t.Errorf("empty update rejected: %v", err)
 	}
 	name := "renamed"
-	if err := ValidateUpdateAccessListRequest(&UpdateAccessListRequest{Name: &name}); err != nil {
+	if err := ValidateUpdateAccessListRequest(&UpdateAccessListRequest{Name: &name}, nil); err != nil {
 		t.Errorf("rename rejected: %v", err)
 	}
 }

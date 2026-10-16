@@ -675,6 +675,9 @@ func registerAccessListRoutes(v1 *echo.Group, h *handler.AccessListHandler) {
 	g.GET("/:id", h.Get, proxyRead)
 	g.PUT("/:id", h.Update, proxyWrite)
 	g.DELETE("/:id", h.Delete, proxyDelete)
+	// Allows a domain that waits for review again (#320). The token scope is
+	// the list PUT's; the handler also checks every other list using the name.
+	g.POST("/:id/dns-confirm", h.ConfirmDNS, proxyWrite)
 }
 
 // registerAuthProviderRoutes wires the ForwardAuth provider CRUD (#179). Auth

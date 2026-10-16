@@ -99,14 +99,29 @@ func TestAccessListWrites_RejectLineBreaksAndBadRules(t *testing.T) {
 		{"address with a separator", `{"name":"n","items":[{"directive":"allow","address":"192.0.2.1;"}]}`, "items[0].address"},
 		{"two addresses", `{"name":"n","items":[{"directive":"allow","address":"192.0.2.1"},{"directive":"deny","address":"192.0.2.2 192.0.2.3"}]}`, "items[1].address"},
 	}
+	const id = "00000000-0000-0000-0000-000000000001"
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			db, _ := newMockDB(t)
+			db, mock := newMockDB(t)
 			h := NewAccessListHandler(repository.NewAccessListRepository(&database.DB{DB: db}), nil, nil)
 			expectRejected(t, callJSON(t, h.Create, http.MethodPost, tc.body), tc.field)
-			expectRejected(t, callJSON(t, h.Update, http.MethodPut, tc.body, "id", "00000000-0000-0000-0000-000000000001"), tc.field)
+			// An update reads the stored rules first (a rule sent back as it
+			// was read keeps what it is), then refuses before writing.
+			expectStoredAccessList(mock, id)
+			expectRejected(t, callJSON(t, h.Update, http.MethodPut, tc.body, "id", id), tc.field)
 		})
 	}
+}
+
+// expectStoredAccessList expects an update's read of list id, which has no
+// rules.
+func expectStoredAccessList(mock sqlmock.Sqlmock, id string) {
+	now := time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(`FROM access_lists WHERE id`).WithArgs(id).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "description", "satisfy_any", "pass_auth", "created_at", "updated_at"}).
+			AddRow(id, "n", "", true, false, now, now))
+	mock.ExpectQuery(`FROM access_list_items`).WithArgs(id).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 }
 
 func TestAccessListCreate_SavesValidRulesTrimmed(t *testing.T) {

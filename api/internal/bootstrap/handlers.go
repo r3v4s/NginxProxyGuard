@@ -54,6 +54,7 @@ func InitHandlers(
 	h := &Handlers{}
 
 	h.ProxyHost = handler.NewProxyHostHandler(svcs.ProxyHost, svcs.Audit, svcs.DNSProvider, repos.DDNS)
+	h.ProxyHost.SetAccessLists(repos.AccessList)
 	h.DNSProvider = handler.NewDNSProviderHandler(svcs.DNSProvider)
 	h.Certificate = handler.NewCertificateHandler(svcs.Certificate, svcs.Audit)
 	h.Log = handler.NewLogHandler(repos.Log, redisCache, repos.RateLimit)
@@ -61,6 +62,7 @@ func InitHandlers(
 	h.WAF = handler.NewWAFHandler(repos.WAF, repos.ProxyHost, repos.Geo, repos.GlobalWAF, nginxManager, repos.Log)
 	h.ExploitBlockRule = handler.NewExploitBlockRuleHandler(repos.ExploitBlockRule, repos.ProxyHost, svcs.ProxyHost)
 	h.AccessList = handler.NewAccessListHandler(repos.AccessList, svcs.ProxyHost, svcs.Audit)
+	h.AccessList.SetDNSEntries(svcs.DNSEntries)
 	h.AuthProvider = handler.NewAuthProviderHandler(svcs.AuthProvider)
 	h.RedirectHost = handler.NewRedirectHostHandler(repos.RedirectHost, nginxManager, svcs.Audit)
 	h.Geo = handler.NewGeoHandler(

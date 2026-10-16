@@ -19,6 +19,9 @@ type ProxyHostHandler struct {
 	service *service.ProxyHostService
 	audit   *service.AuditService
 	tester  *service.ProxyHostTester
+	// accessLists names a newly linked access list's domains in the
+	// update audit (SetAccessLists, proxy_host_audit.go); nil names none.
+	accessLists accessListReader
 }
 
 func NewProxyHostHandler(svc *service.ProxyHostService, audit *service.AuditService, dnsProvider *service.DNSProviderService, ddnsRepo *repository.DDNSRepository) *ProxyHostHandler {
@@ -296,24 +299,6 @@ func (h *ProxyHostHandler) Update(c echo.Context) error {
 	h.auditUpdate(c, id, existingHost, host, &req)
 
 	return c.JSON(http.StatusOK, host)
-}
-
-// auditUpdate records the update of host id, which was existingHost before
-// req and is host after it.
-func (h *ProxyHostHandler) auditUpdate(c echo.Context, id string, existingHost, host *model.ProxyHost, req *model.UpdateProxyHostRequest) {
-	if existingHost == nil {
-		return
-	}
-	auditCtx := service.ContextWithAudit(c.Request().Context(), c)
-	// Check if it's just an enable/disable toggle
-	if req.Enabled != nil && existingHost.Enabled != *req.Enabled {
-		h.audit.LogProxyHostToggle(auditCtx, host.DomainNames, *req.Enabled)
-	} else {
-		changes := map[string]interface{}{
-			"id": id,
-		}
-		h.audit.LogProxyHostUpdate(auditCtx, host.DomainNames, changes)
-	}
 }
 
 func (h *ProxyHostHandler) Delete(c echo.Context) error {

@@ -122,6 +122,7 @@ var routePermissions = map[string]string{
 	"DELETE /api/v1/access-lists/:id": "access:write",
 	"GET /api/v1/access-lists/:id": "access:read",
 	"PUT /api/v1/access-lists/:id": "access:write",
+	"POST /api/v1/access-lists/:id/dns-confirm": "access:write",
 	"GET /api/v1/api-tokens": "apitoken:read",
 	"POST /api/v1/api-tokens": "apitoken:write",
 	"DELETE /api/v1/api-tokens/:id": "apitoken:write",
