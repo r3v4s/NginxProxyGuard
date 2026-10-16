@@ -1,4 +1,4 @@
-import { test, expect, type APIRequestContext, type Browser, type Page } from '@playwright/test';
+import { test, expect, type APIRequestContext, type Browser, type Page, type Response } from '@playwright/test';
 import { execFileSync } from 'child_process';
 import * as net from 'net';
 import { AccessListPage } from '../../pages';
@@ -45,6 +45,8 @@ const REVIEW_NEW_IP = '100.64.32.21';
 // Where review.e2e.example goes while an "Allow again" dialog is open.
 const REVIEW_AGAIN_IP = '100.64.32.22';
 const REVIEW_MOVED_IP = '100.64.32.23';
+// Where review.e2e.example goes before it is allowed again from the domain overview.
+const REVIEW_OVERVIEW_IP = '100.64.32.24';
 // A client no list of this file allows.
 const OUTSIDER = '100.64.32.11';
 // Built-in roles (database/migration.go).
@@ -84,6 +86,30 @@ async function eventually(fn: () => Promise<boolean>, what: string, ms = 20000) 
     await new Promise((r) => setTimeout(r, 500));
   }
   throw new Error(`never: ${what}`);
+}
+
+/**
+ * Has the open page read the access lists again in the background, as it does
+ * when its tab is shown again and the data it holds is older than 30 s.
+ */
+async function refetchListsInBackground(page: Page): Promise<void> {
+  let refetched = false;
+  const seen = (res: Response) => {
+    if (res.request().method() === 'GET' && new URL(res.url()).pathname === '/api/v1/access-lists') refetched = true;
+  };
+  page.on('response', seen);
+  try {
+    await eventually(
+      async () => {
+        await page.evaluate(() => window.dispatchEvent(new Event('visibilitychange')));
+        return refetched;
+      },
+      'the page reads the access lists again',
+      60_000,
+    );
+  } finally {
+    page.off('response', seen);
+  }
 }
 
 function uuid(id: string): string {
@@ -562,7 +588,10 @@ test.describe('Domain entries in access lists (#320)', () => {
       'a check sees the moved address',
       40_000,
     );
-    // The dialog still offers what it read: the server refuses that with a 409 and the dialog reads the name again.
+    // The page reads the lists again behind the dialog: the dialog keeps the answer it showed.
+    await refetchListsInBackground(page);
+    await expect(dialog).toContainText(REVIEW_AGAIN_IP);
+    // It still offers what it read: the server refuses that with a 409 and the dialog reads the name again.
     await expect(dialog).not.toContainText(REVIEW_MOVED_IP);
     const allow = dialog.getByRole('button', { name: /^(allow again|다시 허용)$/i });
     const refused = page.waitForResponse((res) => res.url().includes('/dns-confirm') && res.request().method() === 'POST');
@@ -636,10 +665,49 @@ test.describe('Domain entries in access lists (#320)', () => {
     expect(refused.status()).toBe(400);
     expect((await refused.json()).error).toContain('dns_entry_settings.check_interval_seconds');
     expect((await read()).check_interval_seconds).toBe(before.check_interval_seconds);
-    // "Apply now" runs the applier once and says what nginx did.
-    const applied = await request.post(`${API}/api/v1/dns-entries/apply`, { headers });
-    expect(applied.status()).toBe(200);
-    expect(['accepted', 'signalled', 'unconfirmed']).toContain((await applied.json()).outcome);
+    // "Apply now" runs the applier once and says on the screen what nginx did.
+    const notices: Record<string, RegExp> = {
+      accepted: /nginx loaded the domain entry files|nginx가 도메인 항목 파일을 읽었습니다/,
+      signalled: /nginx was told to reload the domain entry files|nginx에 도메인 항목 파일을 다시 읽으라고 보냈습니다/,
+      unconfirmed: /not confirmed yet that it took the files|파일을 읽었는지 아직 확인하지 못했습니다/,
+    };
+    await page.goto(ROUTES.settingsDnsEntries);
+    const applied = page.waitForResponse((res) => res.url().includes('/api/v1/dns-entries/apply') && res.request().method() === 'POST');
+    await page.getByTestId('dns-entries-apply').click();
+    const response = await applied;
+    expect(response.status()).toBe(200);
+    const outcome = (await response.json()).outcome as string;
+    expect(Object.keys(notices)).toContain(outcome);
+    await expect(page.getByTestId('dns-entry-notice')).toContainText(notices[outcome]);
+  });
+
+  test('"Allow again" on the domain overview allows a domain in review', async ({ page, request }) => {
+    test.setTimeout(150_000);
+    const overviewOf = async () => {
+      const res = await request.get(`${API}/api/v1/dns-entries`, { headers });
+      return ((await res.json()).entries ?? []).find((e: { hostname: string }) => e.hostname === REVIEW) as
+        | DNSEntryStatusData
+        | undefined;
+    };
+    // The lists of the review tests still use it, allowed at REVIEW_MOVED_IP. Into
+    // review again: refused, then an address it never had.
+    setHostsEntry(REVIEW, '127.0.0.1');
+    await eventually(async () => (await overviewOf())?.status === 'rejected', 'the loopback answer is refused', 40_000);
+    setHostsEntry(REVIEW, REVIEW_OVERVIEW_IP);
+    await eventually(async () => (await overviewOf())?.status === 'needs_review', 'the new address waits for review', 40_000);
+
+    await page.goto(ROUTES.settingsDnsEntries);
+    const row = page.locator(`tr[data-testid="dns-overview-row"][data-hostname="${REVIEW}"]`);
+    await expect(row.locator('[data-status="needs_review"]')).toBeVisible({ timeout: 15_000 });
+    await row.getByRole('button', { name: /^(allow again|다시 허용)$/i }).click();
+    const dialog = page.getByRole('dialog', { name: new RegExp(REVIEW.replace(/\./g, '\\.')) });
+    await expect(dialog).toContainText(REVIEW_OVERVIEW_IP);
+    await dialog.getByRole('button', { name: /^(allow again|다시 허용)$/i }).click();
+    await expect(dialog).toBeHidden({ timeout: 15_000 });
+    await expect(page.getByTestId('dns-entry-notice')).toContainText(/is allowed again|다시 허용했습니다/);
+    await expect(row.locator('[data-status="ok"]')).toBeVisible({ timeout: 15_000 });
+    const confirmed = await overviewOf();
+    expect(confirmed?.addresses).toEqual([REVIEW_OVERVIEW_IP]);
   });
 
   test('on a phone the list card and the domain overview fit the screen', async ({ page }, testInfo) => {
