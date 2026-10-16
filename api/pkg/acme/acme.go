@@ -310,7 +310,7 @@ func (s *Service) ObtainCertificate(email string, domains []string, provider *mo
 		return nil, nil, fmt.Errorf("failed to create DNS provider: %w", err)
 	}
 
-	err = client.Challenge.SetDNS01Provider(dnsProvider)
+	err = client.Challenge.SetDNS01Provider(dnsProvider, dns01ChallengeOptions(provider.ProviderType)...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to set DNS provider: %w", err)
 	}
@@ -368,7 +368,7 @@ func (s *Service) RenewCertificate(certPEM, keyPEM string, provider *model.DNSPr
 		return nil, fmt.Errorf("failed to create DNS provider: %w", err)
 	}
 
-	err = client.Challenge.SetDNS01Provider(dnsProvider)
+	err = client.Challenge.SetDNS01Provider(dnsProvider, dns01ChallengeOptions(provider.ProviderType)...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set DNS provider: %w", err)
 	}
@@ -738,6 +738,8 @@ func (s *Service) createDNSProvider(provider *model.DNSProvider) (challenge.Prov
 		}
 
 		cfg := dynu.NewDefaultConfig()
+		cfg.PropagationTimeout = dynuPropagationTimeout
+		cfg.PollingInterval = dynuPollingInterval
 		cfg.APIKey = creds.APIKey
 		return dynu.NewDNSProviderConfig(cfg)
 

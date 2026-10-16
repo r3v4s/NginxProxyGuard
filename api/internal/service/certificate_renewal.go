@@ -198,7 +198,7 @@ func (s *CertificateService) renewLetsEncrypt(ctx context.Context, cert *model.C
 		}
 
 		if renewErr != nil {
-			s.updateRenewalError(ctx, cert.ID, diagnoseDNS01Error(renewErr))
+			s.updateRenewalError(ctx, cert.ID, diagnoseDNS01Error(renewErr, dnsProvider.ProviderType))
 			return
 		}
 	} else {
@@ -499,14 +499,20 @@ func (s *CertificateService) saveHistory(cert *model.Certificate, action, status
 	}
 }
 
-// diagnoseDNS01Error provides user-friendly error messages for DNS-01 challenge failures
-func diagnoseDNS01Error(err error) string {
+// diagnoseDNS01Error provides user-friendly error messages for DNS-01 challenge failures.
+// providerType is the type of the certificate's DNS provider: the API token
+// permissions named for a record that is not seen in time are Cloudflare's.
+func diagnoseDNS01Error(err error, providerType string) string {
 	msg := err.Error()
 
 	if strings.Contains(msg, "time limit exceeded") || strings.Contains(msg, "propagation") {
-		return fmt.Sprintf("DNS propagation timeout: DNS record was not detected within the time limit. "+
-			"This usually means the API token lacks Zone:Read permission, or DNS propagation is slow. "+
-			"Please verify your API token has both Zone:DNS:Edit and Zone:Zone:Read permissions. Original error: %v", err)
+		if providerType == model.DNSProviderCloudflare {
+			return fmt.Sprintf("DNS propagation timeout: DNS record was not detected within the time limit. "+
+				"This usually means the API token lacks Zone:Read permission, or DNS propagation is slow. "+
+				"Please verify your API token has both Zone:DNS:Edit and Zone:Zone:Read permissions. Original error: %v", err)
+		}
+		return fmt.Sprintf("DNS propagation timeout: the DNS record could not be confirmed within the time limit. "+
+			"DNS propagation may be slow, or the DNS provider's nameservers are not responding. Original error: %v", err)
 	}
 
 	if strings.Contains(msg, "401") || strings.Contains(msg, "403") || strings.Contains(msg, "Unauthorized") {

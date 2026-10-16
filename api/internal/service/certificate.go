@@ -211,7 +211,7 @@ func (s *CertificateService) obtainLetsEncryptCert(certID string, domains []stri
 
 		result, user, err = acmeService.ObtainCertificate(acmeEmail, domains, dnsProvider, nil)
 		if err != nil {
-			s.updateCertError(ctx, certID, diagnoseDNS01Error(err))
+			s.updateCertError(ctx, certID, diagnoseDNS01Error(err, dnsProvider.ProviderType))
 			return
 		}
 	} else {
