@@ -24,28 +24,60 @@ interface DnsConfirmDialogProps {
   onClose: () => void;
 }
 
+/** What the dialog shows of the server's answer, and sends back as expected. */
+interface Observation {
+  addresses: string[];
+  canonical: string | null;
+}
+
+function observationOf(status: DNSEntryStatus): Observation {
+  return { addresses: status.observed_addresses ?? [], canonical: status.observed_canonical_name ?? null };
+}
+
+/** An answer the operator can approve: one with an address. Anything else is not held. */
+function heldOf(status: DNSEntryStatus): Observation | null {
+  const observation = observationOf(status);
+  return observation.addresses.length > 0 ? observation : null;
+}
+
 /**
  * "Allow again" for a domain in review (#320). It shows what the
- * server resolves now and sends exactly that as the expected values; the server
+ * server resolved and sends exactly that as the expected values; the server
  * resolves again and publishes only its own answer. A changed answer or a failed
  * lookup is a 409: the dialog re-reads the data and stays open.
+ *
+ * The answer shown is held from the moment the dialog opens: a background
+ * refetch (the poll, a tab shown again) never swaps what the operator is about
+ * to approve. Only after the server refused a confirm does the dialog show the
+ * screen's newest answer, under the notice that says so, and hold the next one
+ * that arrives (the re-read it asked for). A click holds what it sends.
  */
 export function DnsConfirmDialog({ status, onSubmit, onRefetch, onFinished, onClose }: DnsConfirmDialogProps) {
   const { t } = useTranslation(['dnsEntries', 'common']);
   const [submitting, setSubmitting] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [error, setError] = useState<{ message: string; details?: string } | null>(null);
+  // null: nothing held, show the caller's latest data (nothing approvable yet,
+  // or the server refused what was held).
+  const [held, setHeld] = useState<Observation | null>(() => heldOf(status));
+  const [seen, setSeen] = useState(status);
+  if (status !== seen) {
+    setSeen(status);
+    if (held === null) setHeld(heldOf(status));
+  }
 
-  const observed = status.observed_addresses ?? [];
+  const shown = held ?? observationOf(status);
+  const observed = shown.addresses;
   const inReview = status.status === 'needs_review';
   const canSubmit = inReview && observed.length > 0 && !submitting;
 
   const submit = async () => {
+    setHeld(shown);
     setSubmitting(true);
     setNotice(null);
     setError(null);
     const req: DNSConfirmRequest = { hostname: status.hostname, expected_addresses: observed };
-    if (status.observed_canonical_name) req.expected_canonical_name = status.observed_canonical_name;
+    if (shown.canonical) req.expected_canonical_name = shown.canonical;
     try {
       await onSubmit(req);
       onFinished();
@@ -57,6 +89,7 @@ export function DnsConfirmDialog({ status, onSubmit, onRefetch, onFinished, onCl
         (err.code === 'lookup_unavailable' || err.code === 'observation_changed' || err.code === 'not_in_review')
       ) {
         setNotice(err.code);
+        setHeld(null);
         onRefetch();
       } else {
         setError({
@@ -79,7 +112,7 @@ export function DnsConfirmDialog({ status, onSubmit, onRefetch, onFinished, onCl
           <p className="mt-2 text-sm text-orange-700 dark:text-orange-300">
             {t(`review.${status.review_reason}`, {
               from: status.canonical_name || '-',
-              to: status.observed_canonical_name || '-',
+              to: shown.canonical || '-',
             })}
           </p>
         )}
@@ -99,12 +132,12 @@ export function DnsConfirmDialog({ status, onSubmit, onRefetch, onFinished, onCl
         ) : (
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{t('confirm.noObserved')}</p>
         )}
-        {status.observed_canonical_name && (
+        {shown.canonical && (
           <p className="mt-2 break-all text-xs text-slate-600 dark:text-slate-300">
-            {t('confirm.canonical', { name: status.observed_canonical_name })}
+            {t('confirm.canonical', { name: shown.canonical })}
           </p>
         )}
-        {status.canonical_name && status.canonical_name !== status.observed_canonical_name && (
+        {status.canonical_name && status.canonical_name !== shown.canonical && (
           <p className="mt-1 break-all text-xs text-slate-500 dark:text-slate-400">
             {t('confirm.pinned', { name: status.canonical_name })}
           </p>
