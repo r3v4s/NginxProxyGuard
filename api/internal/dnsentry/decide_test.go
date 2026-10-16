@@ -273,6 +273,128 @@ func TestDecideReplacementRevokesAtOnceAndCountsOnce(t *testing.T) {
 	}
 }
 
+// A check on which a family fails within the grace, or answers "not found"
+// fewer times than not_found_checks, does not end a replacement in progress:
+// that family's part of the answer is only what it already publishes, which
+// hides the address the replacement waits for. The replacement stays open and
+// counts once, the name shows as ok or stale (never not_found, never review),
+// and the new address still needs two sightings after that check, and the
+// reload gap.
+func TestDecideKeepsAReplacementOpenThroughAFailedCheck(t *testing.T) {
+	const a, b, x = "203.0.113.10", "203.0.113.20", "203.0.113.11"
+	cases := []struct {
+		name       string
+		from, to   []string    // published before, and the new answer
+		kept       []string    // what stays published while the replacement waits
+		cause      string      // EmptyCause while the replacement waits
+		failed     Observation // the check between the first sighting and the next
+		failStatus string
+	}{
+		{"a timeout", []string{a}, []string{b}, nil, model.DNSEmptyReplace,
+			seen(failingObs("timeout"), notFoundObs()), model.DNSStatusStale},
+		{"one not found", []string{a}, []string{b}, nil, model.DNSEmptyReplace,
+			seen(notFoundObs(), notFoundObs()), model.DNSStatusOK},
+		{"part of the addresses and a timeout", []string{a, x}, []string{a, b}, []string{a}, "",
+			seen(failingObs("timeout"), notFoundObs()), model.DNSStatusStale},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inProgress := func(check string, s model.DNSEntryState, eff Effects) {
+				t.Helper()
+				switch s.Status {
+				case model.DNSStatusNotFound, model.DNSStatusExpired, model.DNSStatusRejected, model.DNSStatusNeedsReview:
+					t.Fatalf("%s: status %q; want the replacement shown in progress: %+v", check, s.Status, s)
+				}
+				if eff.EnteredReview != "" {
+					t.Fatalf("%s: entered review %q", check, eff.EnteredReview)
+				}
+			}
+			first, eff := decide(t, published(tc.from...), v4Only(tc.to...), input(at(0), nil))
+			inProgress("first sighting", first, eff)
+			if !first.ReplaceOpen || !eff.Recorded || !sameList(first.Published, tc.kept...) {
+				t.Fatalf("first sighting: %+v; want the replacement open and recorded", first)
+			}
+			reload := at(5 * time.Second) // the reload that took the revocation
+			failed, eff := decide(t, first, tc.failed, input(at(time.Minute), &reload))
+			inProgress("failed check", failed, eff)
+			if failed.Status != tc.failStatus || !failed.ReplaceOpen || failed.EmptyCause != tc.cause ||
+				!sameList(failed.Published, tc.kept...) || eff.Recorded || failed.CandidateSeen != 0 {
+				t.Fatalf("failed check: %+v; want %s, the replacement still open (empty cause %q), %v kept, nothing recorded, no sighting",
+					failed, tc.failStatus, tc.cause, tc.kept)
+			}
+			// The gap has passed by the next sighting, which counts as the first.
+			next, eff := decide(t, failed, v4Only(tc.to...), input(reload.Add(5*time.Minute), &reload))
+			inProgress("next sighting", next, eff)
+			if !sameList(next.Published, tc.kept...) || next.CandidateSeen != 1 {
+				t.Fatalf("next sighting: %+v; want seen once, still waiting", next)
+			}
+			done, eff := decide(t, next, v4Only(tc.to...), input(reload.Add(6*time.Minute), &reload))
+			inProgress("second sighting", done, eff)
+			if !sameList(done.Published, tc.to...) || done.ReplaceOpen || done.EmptyCause != "" || eff.Recorded || done.Status != model.DNSStatusOK {
+				t.Fatalf("second sighting: %+v; want the new addresses published, the replacement closed, not recorded again", done)
+			}
+			if len(done.ChangeTimes) != 1 || !done.ChangeTimes[0].Equal(t0) {
+				t.Fatalf("change times = %v, want the one replacement", done.ChangeTimes)
+			}
+		})
+	}
+}
+
+// A family that really ends does end a replacement in progress: "not found"
+// as often as not_found_checks, or failing past the grace. The name is then
+// empty because of its answers ("lapse"), so an address it never published
+// needs review.
+func TestDecideReplacementLapsesWhenAFamilyEnds(t *testing.T) {
+	const a, b, c = "203.0.113.10", "203.0.113.20", "203.0.113.30"
+	cases := []struct {
+		name   string
+		end    func(t *testing.T, s model.DNSEntryState) model.DNSEntryState
+		status string
+	}{
+		{"not found at the threshold", func(t *testing.T, s model.DNSEntryState) model.DNSEntryState {
+			// The first "not found" is debounced; the second reaches
+			// not_found_checks (2).
+			for i := 1; i <= 2; i++ {
+				s, _ = decide(t, s, seen(notFoundObs(), notFoundObs()), input(at(time.Duration(i)*time.Minute), nil))
+			}
+			return s
+		}, model.DNSStatusNotFound},
+		{"past the grace", func(t *testing.T, s model.DNSEntryState) model.DNSEntryState {
+			s, _ = decide(t, s, seen(failingObs("timeout"), notFoundObs()), input(at(25*time.Hour), nil))
+			return s
+		}, model.DNSStatusExpired},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			replacing, _ := decide(t, published(a), v4Only(b), input(at(0), nil))
+			ended := tc.end(t, replacing)
+			if len(ended.Published) != 0 || ended.EmptyCause != model.DNSEmptyLapse || ended.ReplaceOpen || ended.Status != tc.status {
+				t.Fatalf("ended: %+v; want nothing published, lapse, the replacement closed, %s", ended, tc.status)
+			}
+			next, eff := decide(t, ended, v4Only(c), input(at(26*time.Hour), nil))
+			if next.Status != model.DNSStatusNeedsReview || next.ReviewReason != model.DNSReviewReappeared || eff.EnteredReview != model.DNSReviewReappeared {
+				t.Fatalf("a new address afterwards: %+v; want review (reappeared)", next)
+			}
+		})
+	}
+}
+
+// Outside a replacement a failing family changes nothing: a name that lapsed
+// keeps its status and stays empty; it is not shown as stale.
+func TestDecideKeepsALapsedNameThroughAFailedCheck(t *testing.T) {
+	lapsed := published("203.0.113.10")
+	for i := 0; i < 2; i++ {
+		lapsed, _ = decide(t, lapsed, seen(notFoundObs(), notFoundObs()), input(at(time.Duration(i)*time.Minute), nil))
+	}
+	if lapsed.Status != model.DNSStatusNotFound || lapsed.EmptyCause != model.DNSEmptyLapse {
+		t.Fatalf("setup: %+v", lapsed)
+	}
+	next, _ := decide(t, lapsed, seen(failingObs("timeout"), notFoundObs()), input(at(2*time.Minute), nil))
+	if next.Status != model.DNSStatusNotFound || next.EmptyCause != model.DNSEmptyLapse || next.ReplaceOpen || len(next.Published) != 0 {
+		t.Fatalf("a lapsed name and a timeout: %+v; want still not_found and lapse", next)
+	}
+}
+
 // An added address needs the same candidate twice; after a restart the first
 // apply needs no gap.
 func TestDecideAdditionNeedsTwoObservations(t *testing.T) {

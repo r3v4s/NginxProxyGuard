@@ -68,6 +68,8 @@ func (e *ObservationChangedError) Is(target error) bool { return target == ErrOb
 // updates the families, then the name's status and
 // what it publishes. Revocations are immediate; an addition needs the same
 // candidate twice in a row with a determinate CNAME and the reload gap. A
+// check on which a family fails within the grace or answers a debounced "not
+// found" does not end a replacement in progress. A
 // name in review only records what it sees. Decide never publishes for a
 // name that is switched off or unused.
 func Decide(prev model.DNSEntryState, obs Observation, in Input) (model.DNSEntryState, Effects) {
@@ -106,12 +108,16 @@ func Decide(prev model.DNSEntryState, obs Observation, in Input) (model.DNSEntry
 			}
 		}
 	}
-	if len(published) == 0 && len(candidate) == 0 && n.EmptyCause == model.DNSEmptyReplace {
+	// A replacement left with nothing to add lapses, unless the check held: a
+	// held family's part of the candidate is only what it publishes, so the
+	// address the replacement waits for may still come.
+	if len(published) == 0 && len(candidate) == 0 && n.EmptyCause == model.DNSEmptyReplace && !c.held {
 		n.EmptyCause = model.DNSEmptyLapse
 	}
 
 	// Additions.
-	switch adds := minus(candidate, published); {
+	adds := minus(candidate, published)
+	switch {
 	case len(adds) == 0:
 		n.Candidate, n.CandidateSeen = candidate, 0
 	case len(published) == 0 && len(prev.LastApplied) > 0 && escapesEmptyState(n.EmptyCause) && !subset(candidate, prev.LastApplied):
@@ -142,7 +148,9 @@ func Decide(prev model.DNSEntryState, obs Observation, in Input) (model.DNSEntry
 		}
 	}
 	n.Published = published
-	if sameSet(published, candidate) {
+	// A replacement ends once its whole candidate is published; a held check
+	// with nothing to add leaves it open, so it still counts once.
+	if sameSet(published, candidate) && !(c.held && len(adds) == 0) {
 		n.ReplaceOpen = false
 	}
 
@@ -309,6 +317,7 @@ type transition struct {
 	now      time.Time
 	recorded bool
 	entered  string
+	held     bool // a family kept its published part: debounced not found, or failing within the grace
 }
 
 func begin(prev model.DNSEntryState, now time.Time) *transition {
@@ -319,7 +328,9 @@ func begin(prev model.DNSEntryState, now time.Time) *transition {
 // check, the canonical name both lookups agreed on, each family's state, and
 // the candidate, which is what the policy says should be published. pub is
 // what is published now; a debounced not-found family and a failing family
-// within the grace keep their part of it.
+// within the grace keep their part of it, and the check then held (c.held):
+// that family's part of the candidate is only what it publishes, whatever it
+// would answer.
 func (c *transition) observe(obs Observation, pub []string, st model.DNSEntrySettings) []string {
 	c.next.LastCheckedAt = timePtr(c.now)
 	c.next.CanonicalSeen = obs.Canonical
@@ -345,12 +356,14 @@ func (c *transition) family(f *model.DNSFamilyState, o FamilyObs, pub []string, 
 		if f.NotFound >= st.NotFoundChecks {
 			return nil
 		}
+		c.held = true
 		return pub
 	default: // transient: neither a change nor an answer
 		f.State, f.Code = outcomeTransient, o.Code
 		if expired(*f, c.now, st.StaleGrace()) {
 			return nil
 		}
+		c.held = true
 		return pub
 	}
 }
@@ -425,7 +438,8 @@ func (c *transition) finish() (model.DNSEntryState, Effects) {
 // within the grace; else ok. A name that publishes nothing only because its
 // next addresses wait for the budget (every address change of a DDNS name: A
 // revoked, B waiting) is ok or stale: its answers are fine, and its other
-// family may well be "notfound" for good.
+// family may well be "notfound" for good. So is one whose replacement a held
+// check kept open (EmptyCause still "replace" with nothing to add).
 func statusOf(n model.DNSEntryState, candidate []string, notFoundChecks int, grace time.Duration, now time.Time) string {
 	if n.Status == model.DNSStatusNeedsReview || (n.Status == model.DNSStatusPending && len(n.Published) == 0) {
 		return n.Status
@@ -440,7 +454,7 @@ func statusOf(n model.DNSEntryState, candidate []string, notFoundChecks int, gra
 	either := func(match func(model.DNSFamilyState) bool) bool {
 		return match(fams[0]) || match(fams[1])
 	}
-	if len(n.Published) == 0 && len(candidate) == 0 {
+	if len(n.Published) == 0 && len(candidate) == 0 && n.EmptyCause != model.DNSEmptyReplace {
 		switch {
 		case either(func(f model.DNSFamilyState) bool { return f.State == outcomeRejected }):
 			return model.DNSStatusRejected
