@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"time"
 
@@ -187,7 +188,8 @@ func (s *DNSEntryService) recordPostHocFailure(ctx context.Context) {
 // but is never the urgent revoke alert: no nginx holds an old allow in
 // memory, and it reads the current files when it starts. After 15 minutes
 // it counts as a failing apply loop, and the apply alert follows from the
-// rows.
+// rows. An apply cut short by a cancelled ctx (dnsApplyCutShort) records
+// nothing.
 func (s *DNSEntryService) runApply(ctx context.Context) nginx.DNSApplyResult {
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
@@ -198,6 +200,13 @@ func (s *DNSEntryService) runApply(ctx context.Context) nginx.DNSApplyResult {
 		s.diskMu.Lock()
 		s.lastReload = now
 		s.diskMu.Unlock()
+	}
+	if dnsApplyCutShort(ctx, res) {
+		// No failing loop, no ERROR row that nothing would close (the next
+		// process starts with the loop working), no backoff, no alert: the
+		// retry state stays as it was. The rows still say what nginx has not
+		// taken, so a later check, or the next start, applies it.
+		return res
 	}
 	var failure *nginx.DNSApplyResult
 	switch res.Outcome {
@@ -237,6 +246,18 @@ func (s *DNSEntryService) runApply(ctx context.Context) nginx.DNSApplyResult {
 		s.evaluateApplyAlerts(ctx, failure)
 	}
 	return res
+}
+
+// dnsApplyCutShort reports whether an apply that did not go through was cut
+// short by its caller: the scheduler's Stop cancelled the check it
+// interrupted, or the request that asked for it went away. That says nothing about nginx, so it
+// is no failure. A deadline that passed is one: the apply took too long.
+func dnsApplyCutShort(ctx context.Context, res nginx.DNSApplyResult) bool {
+	switch res.Outcome {
+	case "accepted", "signalled", "unconfirmed", "skipped":
+		return false
+	}
+	return errors.Is(ctx.Err(), context.Canceled)
 }
 
 // recordSuccessLocked resets the retry state. Caller holds applyMu.

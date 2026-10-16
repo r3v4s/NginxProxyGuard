@@ -517,25 +517,27 @@ func (s *DNSEntryService) refreshWarnings(ctx context.Context, refs []model.DNSR
 		return
 	}
 	names := dnsSortedKeys(want)
-	s.dnsMu.Lock()
-	err = s.states.WithTx(ctx, func(tx repository.DNSEntryTx) error {
-		cur, err := tx.GetStates(ctx, names)
-		if err != nil {
-			return err
-		}
-		for _, name := range names {
-			st, ok := cur[name]
-			if !ok {
-				continue
-			}
-			st.Warnings = want[name]
-			if err := tx.UpsertState(ctx, st); err != nil {
+	err = func() error {
+		s.dnsMu.Lock()
+		defer s.dnsMu.Unlock()
+		return s.states.WithTx(ctx, func(tx repository.DNSEntryTx) error {
+			cur, err := tx.GetStates(ctx, names)
+			if err != nil {
 				return err
 			}
-		}
-		return nil
-	})
-	s.dnsMu.Unlock()
+			for _, name := range names {
+				st, ok := cur[name]
+				if !ok {
+					continue
+				}
+				st.Warnings = want[name]
+				if err := tx.UpsertState(ctx, st); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	}()
 	if err != nil {
 		s.logs.fail("warnings", "[DNSEntries] WARN: could not store the domain entry warnings: %v", err)
 		return

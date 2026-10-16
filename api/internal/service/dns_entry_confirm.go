@@ -70,55 +70,60 @@ func (s *DNSEntryService) Confirm(ctx context.Context, name string, expected []s
 	var eff dnsentry.Effects
 	var refs []model.DNSReference
 	var changed *dnsentry.ObservationChangedError
-	s.dnsMu.Lock()
-	switchedOff := !st.Enabled
-	if sw := s.currentSwitch(ctx); sw.known && !sw.enabled {
-		switchedOff = true // stored during the lookup; the names are switched off next
-	}
-	err = s.states.WithTx(ctx, func(tx repository.DNSEntryTx) error {
-		r, err := tx.ListReferences(ctx)
+	err = func() error {
+		s.dnsMu.Lock()
+		defer s.dnsMu.Unlock()
+		switchedOff := !st.Enabled
+		if sw := s.currentSwitch(ctx); sw.known && !sw.enabled {
+			switchedOff = true // stored during the lookup; the names are switched off next
+		}
+		err := s.states.WithTx(ctx, func(tx repository.DNSEntryTx) error {
+			r, err := tx.ListReferences(ctx)
+			if err != nil {
+				return err
+			}
+			refs = r
+			cur, err := tx.GetStates(ctx, []string{name})
+			if err != nil {
+				return err
+			}
+			prev, ok := cur[name]
+			if !ok {
+				return dnsentry.ErrNotInReview
+			}
+			n, e, err := dnsentry.Confirm(prev, obs, expected, expectedCanonical, now)
+			if errors.As(err, &changed) {
+				// The name answers what the operator did not see. The 409 goes
+				// out; the new answer is kept as a check keeps it for a name in
+				// review (families, canonical_seen, candidate; nothing
+				// published), so the dialog shows it when it reads the name
+				// again.
+				seen, _ := dnsentry.Decide(prev, obs, dnsentry.Input{Now: now, Settings: st})
+				return tx.UpsertState(ctx, seen)
+			}
+			if err != nil {
+				return err
+			}
+			confirmed = n
+			if switchedOff || n.Disabled {
+				off, e2 := dnsentry.Disable(n, now)
+				n, e = off, dnsMergeEffects(e, e2, false)
+			}
+			next, eff = n, e
+			return tx.UpsertState(ctx, next)
+		})
+		if err == nil && changed != nil {
+			err = changed
+		}
 		if err != nil {
 			return err
 		}
-		refs = r
-		cur, err := tx.GetStates(ctx, []string{name})
-		if err != nil {
-			return err
-		}
-		prev, ok := cur[name]
-		if !ok {
-			return dnsentry.ErrNotInReview
-		}
-		n, e, err := dnsentry.Confirm(prev, obs, expected, expectedCanonical, now)
-		if errors.As(err, &changed) {
-			// The name answers what the operator did not see. The 409 goes
-			// out; the new answer is kept as a check keeps it for a name in
-			// review (families, canonical_seen, candidate; nothing
-			// published), so the dialog shows it when it reads the name
-			// again.
-			seen, _ := dnsentry.Decide(prev, obs, dnsentry.Input{Now: now, Settings: st})
-			return tx.UpsertState(ctx, seen)
-		}
-		if err != nil {
-			return err
-		}
-		confirmed = n
-		if switchedOff || n.Disabled {
-			off, e2 := dnsentry.Disable(n, now)
-			n, e = off, dnsMergeEffects(e, e2, false)
-		}
-		next, eff = n, e
-		return tx.UpsertState(ctx, next)
-	})
-	if err == nil && changed != nil {
-		err = changed
-	}
+		s.syncFilesLocked(refs, map[string]model.DNSEntryState{name: next}, nil, map[string]bool{name: true})
+		return nil
+	}()
 	if err != nil {
-		s.dnsMu.Unlock()
 		return model.DNSEntryStatus{}, nginx.DNSApplyResult{}, err
 	}
-	s.syncFilesLocked(refs, map[string]model.DNSEntryState{name: next}, nil, map[string]bool{name: true})
-	s.dnsMu.Unlock()
 
 	s.closeReview(ctx, name, true)
 	if dnsReportable(eff) {

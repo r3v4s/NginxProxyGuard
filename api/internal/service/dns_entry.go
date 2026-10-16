@@ -26,6 +26,8 @@ import (
 // Locks, taken only in this order:
 //   - dnsMu: state transitions, file writes, disk-table updates. Never held
 //     while resolving, while applying or while nginx's lock is taken.
+//     Released with defer: a panic the caller recovers must not leave it
+//     held, or every later check, save and restore waits for it forever.
 //   - applyMu: one apply run at a time and the retry state. Never taken while
 //     dnsMu is held. Held while ApplyDNSIncludes takes nginx's lock.
 //   - diskMu: a leaf. disk, pendingRevoke, nginxView, postHocs, applyView and
@@ -59,6 +61,8 @@ type DNSEntryService struct {
 	wake chan struct{}
 	bg   sync.WaitGroup // work the reload hooks hand off; tests wait on it
 	logs dnsLogOnce
+
+	reconciled atomic.Bool // a ReconcileFiles of this process finished; until then the reload hooks look at no alert
 
 	settingsMu sync.Mutex
 	lastGood   *model.DNSEntrySettings

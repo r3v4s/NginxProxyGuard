@@ -343,51 +343,57 @@ func (s *DNSEntryService) ReconcileFiles(ctx context.Context, scanDisk bool) err
 	sw := dnsSwitch{known: known, enabled: st.Enabled}
 	now := s.now()
 	var changes []dnsNameChange
-	s.dnsMu.Lock()
-	var refs []model.DNSReference
-	rows := make(map[string]model.DNSEntryState)
-	err := s.states.WithTx(ctx, func(tx repository.DNSEntryTx) error {
-		r, err := tx.ListReferences(ctx)
-		if err != nil {
-			return err
-		}
-		refs = r
-		cur, err := tx.GetStates(ctx, nil)
-		if err != nil {
-			return err
-		}
-		used := dnsUseCounts(refs)
-		for _, name := range dnsNamesOf(cur, used) {
-			prev, exists := cur[name]
-			if !exists {
-				prev = dnsNewRow(tx, name, now, sw)
+	err := func() error {
+		s.dnsMu.Lock()
+		defer s.dnsMu.Unlock()
+		var refs []model.DNSReference
+		rows := make(map[string]model.DNSEntryState)
+		err := s.states.WithTx(ctx, func(tx repository.DNSEntryTx) error {
+			r, err := tx.ListReferences(ctx)
+			if err != nil {
+				return err
 			}
-			next, eff, touched := dnsSettle(prev, used[name] > 0, sw, now, st.StaleGrace())
-			if !exists || touched {
-				if err := tx.UpsertState(ctx, next); err != nil {
-					return err
+			refs = r
+			cur, err := tx.GetStates(ctx, nil)
+			if err != nil {
+				return err
+			}
+			used := dnsUseCounts(refs)
+			for _, name := range dnsNamesOf(cur, used) {
+				prev, exists := cur[name]
+				if !exists {
+					prev = dnsNewRow(tx, name, now, sw)
+				}
+				next, eff, touched := dnsSettle(prev, used[name] > 0, sw, now, st.StaleGrace())
+				if !exists || touched {
+					if err := tx.UpsertState(ctx, next); err != nil {
+						return err
+					}
+				}
+				rows[name] = next
+				if touched && dnsReportable(eff) {
+					changes = append(changes, dnsNameChange{name, eff, next})
 				}
 			}
-			rows[name] = next
-			if touched && dnsReportable(eff) {
-				changes = append(changes, dnsNameChange{name, eff, next})
-			}
+			return nil
+		})
+		if err != nil {
+			return err
 		}
+		s.syncFilesLocked(refs, rows, s.readDir(), nil)
+		if scanDisk {
+			s.ensureReferencedFilesLocked()
+		}
+		s.seedNginxViewLocked(refs, rows)
 		return nil
-	})
+	}()
 	if err != nil {
-		s.dnsMu.Unlock()
 		return err
 	}
-	s.syncFilesLocked(refs, rows, s.readDir(), nil)
-	if scanDisk {
-		s.ensureReferencedFilesLocked()
-	}
-	s.seedNginxViewLocked(refs, rows)
-	s.dnsMu.Unlock()
 	for _, c := range changes {
 		s.events.nameChanged(ctx, c.name, c.eff, c.st)
 	}
+	s.reconciled.Store(true)
 	return nil
 }
 
@@ -530,42 +536,45 @@ func (s *DNSEntryService) collectGarbage(ctx context.Context) {
 			}
 		}
 		var deleted []string
-		s.dnsMu.Lock()
-		err := s.states.WithTx(ctx, func(tx repository.DNSEntryTx) error {
-			deleted = nil
-			refs, err := tx.ListReferences(ctx)
-			if err != nil {
-				return err
-			}
-			used := dnsUseCounts(refs)
-			cur, err := tx.GetStates(ctx, old)
-			if err != nil {
-				return err
-			}
-			for _, name := range old {
-				st, ok := cur[name]
-				if !ok || used[name] > 0 || st.UnusedSince == nil || now.Sub(*st.UnusedSince) <= dnsUnusedRowTTL {
-					continue
-				}
-				if err := tx.DeleteState(ctx, name); err != nil {
+		err := func() error {
+			s.dnsMu.Lock()
+			defer s.dnsMu.Unlock()
+			err := s.states.WithTx(ctx, func(tx repository.DNSEntryTx) error {
+				deleted = nil
+				refs, err := tx.ListReferences(ctx)
+				if err != nil {
 					return err
 				}
-				deleted = append(deleted, name)
+				used := dnsUseCounts(refs)
+				cur, err := tx.GetStates(ctx, old)
+				if err != nil {
+					return err
+				}
+				for _, name := range old {
+					st, ok := cur[name]
+					if !ok || used[name] > 0 || st.UnusedSince == nil || now.Sub(*st.UnusedSince) <= dnsUnusedRowTTL {
+						continue
+					}
+					if err := tx.DeleteState(ctx, name); err != nil {
+						return err
+					}
+					deleted = append(deleted, name)
+				}
+				return nil
+			})
+			if err == nil {
+				// What nginx ran under a deleted row says nothing about a row
+				// the name gets later: its first reload is audited with the
+				// "before" unknown. Its files, while they stay, still keep that
+				// row above their generations (dnsFloorTx).
+				s.diskMu.Lock()
+				for _, name := range deleted {
+					delete(s.nginxView, name)
+				}
+				s.diskMu.Unlock()
 			}
-			return nil
-		})
-		if err == nil {
-			// What nginx ran under a deleted row says nothing about a row
-			// the name gets later: its first reload is audited with the
-			// "before" unknown. Its files, while they stay, still keep that
-			// row above their generations (dnsFloorTx).
-			s.diskMu.Lock()
-			for _, name := range deleted {
-				delete(s.nginxView, name)
-			}
-			s.diskMu.Unlock()
-		}
-		s.dnsMu.Unlock()
+			return err
+		}()
 		if err != nil {
 			log.Printf("[DNSEntries] WARN: could not delete unused domain entries: %v", err)
 		}

@@ -227,7 +227,12 @@ func dnsNonNil(in []string) []string {
 }
 
 // finishTaken records the taken generations, audits the changed names and
-// looks at the apply alerts again.
+// looks at the apply alerts again, once ReconcileFiles has run in this
+// process. A reload at boot can come before it (the raw log settings are
+// applied while startup runs), when the rows are still as the last process
+// left them: an addition that waited across the restart would open
+// dns_entry.apply_failed until startup's own reload takes it. A check that
+// runs no apply, and an apply that fails, look at them either way.
 func (s *DNSEntryService) finishTaken(ctx context.Context, gens map[string]int64, changes []dnsAppliedChange) {
 	if len(gens) > 0 {
 		if err := s.states.MarkApplied(ctx, gens); err != nil {
@@ -239,7 +244,9 @@ func (s *DNSEntryService) finishTaken(ctx context.Context, gens map[string]int64
 	for _, ch := range changes {
 		s.events.applied(ctx, ch.name, ch.before, ch.after, ch.gen)
 	}
-	s.evaluateApplyAlerts(ctx, nil)
+	if s.reconciled.Load() {
+		s.evaluateApplyAlerts(ctx, nil)
+	}
 }
 
 // evaluateApplyAlerts sets dns_entry.apply_failed from the rows.

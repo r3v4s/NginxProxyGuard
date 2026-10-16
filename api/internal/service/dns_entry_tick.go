@@ -83,71 +83,76 @@ func (s *DNSEntryService) checkNames(ctx context.Context) (dnsTickResult, error)
 
 	var changes []dnsNameChange
 	var unused []string
-	s.dnsMu.Lock()
-	if cur := s.currentSwitch(ctx); cur != sw {
-		// The switch changed during the lookups. A settings save stores it,
-		// then switches every name under dnsMu, so it is read again here: the
-		// answers are dropped, and nothing looked up while the feature was on
-		// publishes once "off" is stored.
-		sw, obs, res.notes = cur, nil, nil
-	}
-	err = s.states.WithTx(ctx, func(tx repository.DNSEntryTx) error {
-		changes, unused = nil, nil
-		r, err := tx.ListReferences(ctx)
-		if err != nil {
-			return err
+	err = func() error {
+		s.dnsMu.Lock()
+		defer s.dnsMu.Unlock()
+		if cur := s.currentSwitch(ctx); cur != sw {
+			// The switch changed during the lookups. A settings save stores it,
+			// then switches every name under dnsMu, so it is read again here: the
+			// answers are dropped, and nothing looked up while the feature was on
+			// publishes once "off" is stored.
+			sw, obs, res.notes = cur, nil, nil
 		}
-		cur, err := tx.GetStates(ctx, nil)
-		if err != nil {
-			return err
-		}
-		res.refs = r
-		res.scopes = dnsUseCounts(r)
-		scopesOf := dnsScopesByName(r)
-		dropped := s.droppedSegmentsLocked(scopesOf)
-		res.rows = make(map[string]model.DNSEntryState, len(cur))
-		for _, name := range dnsNamesOf(cur, res.scopes) {
-			prev, exists := cur[name]
-			if !exists {
-				prev = dnsNewRow(tx, name, now, sw)
+		err := s.states.WithTx(ctx, func(tx repository.DNSEntryTx) error {
+			changes, unused = nil, nil
+			r, err := tx.ListReferences(ctx)
+			if err != nil {
+				return err
 			}
-			var o *dnsentry.Observation
-			if v, ok := obs[name]; ok {
-				o = &v
+			cur, err := tx.GetStates(ctx, nil)
+			if err != nil {
+				return err
 			}
-			next, eff, touched := dnsTickTransition(prev, res.scopes[name] > 0, sw, o, in)
-			if exists && next.Generation == prev.Generation && len(dnsDesired(next, res.scopes[name] > 0)) > 0 &&
-				s.newSegmentLocked(scopesOf[name], name) {
-				next.Generation++
-				changed := now
-				next.LastChangedAt = &changed
-				touched = true
-			}
-			if held, ok := dropped[name]; ok {
-				next = dnsRevokeDropped(next, held, now)
-				touched = true
-			}
-			if !exists || touched {
-				if err := tx.UpsertState(ctx, next); err != nil {
-					return err
+			res.refs = r
+			res.scopes = dnsUseCounts(r)
+			scopesOf := dnsScopesByName(r)
+			dropped := s.droppedSegmentsLocked(scopesOf)
+			res.rows = make(map[string]model.DNSEntryState, len(cur))
+			for _, name := range dnsNamesOf(cur, res.scopes) {
+				prev, exists := cur[name]
+				if !exists {
+					prev = dnsNewRow(tx, name, now, sw)
+				}
+				var o *dnsentry.Observation
+				if v, ok := obs[name]; ok {
+					o = &v
+				}
+				next, eff, touched := dnsTickTransition(prev, res.scopes[name] > 0, sw, o, in)
+				if exists && next.Generation == prev.Generation && len(dnsDesired(next, res.scopes[name] > 0)) > 0 &&
+					s.newSegmentLocked(scopesOf[name], name) {
+					next.Generation++
+					changed := now
+					next.LastChangedAt = &changed
+					touched = true
+				}
+				if held, ok := dropped[name]; ok {
+					next = dnsRevokeDropped(next, held, now)
+					touched = true
+				}
+				if !exists || touched {
+					if err := tx.UpsertState(ctx, next); err != nil {
+						return err
+					}
+				}
+				res.rows[name] = next
+				if touched && dnsReportable(eff) {
+					changes = append(changes, dnsNameChange{name, eff, next})
+				}
+				if prev.UnusedSince == nil && next.UnusedSince != nil && next.Status == model.DNSStatusNeedsReview {
+					unused = append(unused, name)
 				}
 			}
-			res.rows[name] = next
-			if touched && dnsReportable(eff) {
-				changes = append(changes, dnsNameChange{name, eff, next})
-			}
-			if prev.UnusedSince == nil && next.UnusedSince != nil && next.Status == model.DNSStatusNeedsReview {
-				unused = append(unused, name)
-			}
+			return nil
+		})
+		if err != nil {
+			return err
 		}
+		res.wrote = s.syncFilesLocked(res.refs, res.rows, s.readDir(), nil)
 		return nil
-	})
+	}()
 	if err != nil {
-		s.dnsMu.Unlock()
 		return res, err
 	}
-	res.wrote = s.syncFilesLocked(res.refs, res.rows, s.readDir(), nil)
-	s.dnsMu.Unlock()
 
 	for _, c := range changes {
 		s.events.nameChanged(ctx, c.name, c.eff, c.st)
