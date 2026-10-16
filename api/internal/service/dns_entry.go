@@ -30,9 +30,10 @@ import (
 //     held, or every later check, save and restore waits for it forever.
 //   - applyMu: one apply run at a time and the retry state. Never taken while
 //     dnsMu is held. Held while ApplyDNSIncludes takes nginx's lock.
-//   - diskMu: a leaf. disk, pendingRevoke, nginxView, postHocs, applyView and
-//     lastReload. The reload hooks take it inside nginx's lock. Released with
-//     defer too: left held by a panic, it would stop every reload after it.
+//   - diskMu: a leaf. disk, pendingRevoke, nginxView, allowed, postHocs,
+//     applyView and lastReload. The reload hooks take it inside nginx's lock.
+//     Released with defer too: left held by a panic, it would stop every
+//     reload after it.
 //
 // alertMu and reviewMu guard the alert mirrors; nothing but the event calls
 // runs under them, and under alertMu the read of the rows the apply alerts
@@ -90,6 +91,7 @@ type DNSEntryService struct {
 	applyView     dnsApplyView  // the retry state as readers see it
 	lastReload    time.Time     // last reload the applier signalled; zero = none since start
 	tokenSeq      int64
+	allowed       map[string]map[string][]dnsAllowSpan // scope → address → when nginx allowed it (dns_entry_allowed.go)
 
 	alertMu      sync.Mutex
 	revokeMirror dnsAlertMirror
@@ -277,6 +279,7 @@ func NewDNSEntryService(deps DNSEntryDeps, opts DNSEntryOptions) *DNSEntryServic
 		disk:            make(map[string]dnsDiskEntry),
 		pendingRevoke:   make(map[string]dnsRevokeEntry),
 		nginxView:       make(map[string]dnsViewEntry),
+		allowed:         make(map[string]map[string][]dnsAllowSpan),
 		reviewAnnounced: make(map[string]bool),
 		reviewClosing:   make(map[string]bool),
 	}

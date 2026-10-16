@@ -637,3 +637,32 @@ func dnsEqual(a, b []string) bool {
 	}
 	return dnsSameSet(a, b) && len(a) == len(b)
 }
+
+// dnsAllows reports whether the bookkeeping says nginx may allow addr through
+// a file of scope: an address a file holds now — published, maybe not yet
+// taken by nginx — or one removed that nginx may not have dropped yet. The
+// reload tokens, and with them the record the fail2ban gate reads, are made
+// from it.
+func (s *DNSEntryService) dnsAllows(scope, addr string) bool {
+	s.diskMu.Lock()
+	defer s.diskMu.Unlock()
+	for _, e := range s.disk {
+		if e.Scope == scope {
+			for _, a := range e.Addrs {
+				if a == addr {
+					return true
+				}
+			}
+		}
+	}
+	for _, e := range s.pendingRevoke {
+		if e.Scope == scope {
+			for _, a := range e.Addrs {
+				if a == addr {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}

@@ -131,8 +131,8 @@ func dnsDesired(st model.DNSEntryState, ok bool) []string {
 // directory read): the lowest generation its headers carry, 0 for a file
 // without one or a missing file, and the addresses it holds. Without that, a
 // reload token would claim the name's generation from its other files alone
-// while this file still holds older addresses, and dnsAllows would miss
-// them. The next sync writes it again. Caller holds dnsMu.
+// while this file still holds older addresses, and the fail2ban gate would
+// miss them. The next sync writes it again. Caller holds dnsMu.
 func (s *DNSEntryService) writeSegment(scope, name string, gen int64, addrs, oldExtra []string, onDisk func() []nginx.DNSIncludeFile) (bool, error) {
 	addrs = dnsSortedUnique(addrs)
 	changed, err := s.nginx.WriteDNSIncludeFiles(scope, name, gen, addrs)
@@ -206,34 +206,6 @@ func dnsSegmentOnDisk(dir []nginx.DNSIncludeFile, scope, name string) (int64, []
 		gen = 0
 	}
 	return gen, addrs
-}
-
-// dnsAllows reports whether nginx may allow addr through a file of scope: an
-// address a file holds now — published, maybe not yet taken by nginx
-// — or one removed that nginx may not have dropped yet. The fail2ban
-// evaluator asks this from the log goroutine: memory only.
-func (s *DNSEntryService) dnsAllows(scope, addr string) bool {
-	s.diskMu.Lock()
-	defer s.diskMu.Unlock()
-	for _, e := range s.disk {
-		if e.Scope == scope {
-			for _, a := range e.Addrs {
-				if a == addr {
-					return true
-				}
-			}
-		}
-	}
-	for _, e := range s.pendingRevoke {
-		if e.Scope == scope {
-			for _, a := range e.Addrs {
-				if a == addr {
-					return true
-				}
-			}
-		}
-	}
-	return false
 }
 
 // syncFilesLocked makes the DNS include files hold what the database
@@ -497,7 +469,8 @@ func splitDNSIncludeName(file string) (key, ext string) {
 
 // seedNginxViewLocked fills nginxView once at boot from the rows: a name whose
 // applied generation is its generation is in nginx as the database says; any
-// other name is unknown until a reload is taken. Caller holds dnsMu.
+// other name is unknown until a reload is taken. It starts the record of what
+// nginx allowed then too (seedAllowedLocked). Caller holds dnsMu.
 func (s *DNSEntryService) seedNginxViewLocked(refs []model.DNSReference, rows map[string]model.DNSEntryState) {
 	s.diskMu.Lock()
 	defer s.diskMu.Unlock()
@@ -505,6 +478,7 @@ func (s *DNSEntryService) seedNginxViewLocked(refs []model.DNSReference, rows ma
 		return
 	}
 	s.viewSeeded = true
+	s.seedAllowedLocked()
 	used := dnsUseCounts(refs)
 	for name, row := range rows {
 		if row.AppliedGeneration != row.Generation {

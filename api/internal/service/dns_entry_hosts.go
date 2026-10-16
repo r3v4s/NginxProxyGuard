@@ -281,14 +281,15 @@ func dnsParseRuleAddress(v string) (netip.Prefix, bool) {
 // the host's fail2ban count when the host's list decides its 403s and the
 // list denies the client. The client is walked through the rules in render
 // order — global trusted IPs, the list's rules (first match), the list's
-// domain files — and is exempt only when the walk ends in deny. A domain
-// file allows what it holds and what was removed from it but may still be in
-// nginx; anything the evaluator cannot read is counted, as today. So is
-// every 403 while the host index is stale: a list save, a settings change or
-// a reload came after its build began, and what the host renders may have
-// changed (the rebuild the mark started takes seconds). It runs on the log
-// tail goroutine: memory only.
-func (s *DNSEntryService) ExemptAccessDenial(ctx context.Context, hostID, clientIP string) bool {
+// domain files — and is exempt only when the walk ends in deny. The domain
+// files allow what nginx allowed through them at at, when the request came
+// in (dnsAllowedAt): the line is read seconds later, and a reload in between
+// must not change the answer. Anything the evaluator cannot read is counted,
+// as today. So is every 403 while the host index is stale: a list save, a
+// settings change or a reload came after its build began, and what the host
+// renders may have changed (the rebuild the mark started takes seconds). It
+// runs on the log tail goroutine: memory only.
+func (s *DNSEntryService) ExemptAccessDenial(ctx context.Context, hostID, clientIP string, at time.Time) bool {
 	idx := s.hostIdx.Load()
 	if idx == nil || idx.marks != s.hostIdxMarks.Load() {
 		return false
@@ -312,7 +313,7 @@ func (s *DNSEntryService) ExemptAccessDenial(ctx context.Context, hostID, client
 			return r.deny
 		}
 	}
-	return !s.dnsAllows(e.scope, client.String())
+	return !s.dnsAllowedAt(e.scope, client.String(), at)
 }
 
 // LoginBypassHosts lists the enabled hosts where list, a satisfy-any list

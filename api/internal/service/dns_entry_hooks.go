@@ -144,7 +144,9 @@ func (s *DNSEntryService) addPostHocLocked(ph *dnsPostHoc) {
 
 // tokenTaken records that nginx runs the files tok describes. The open
 // post-hoc tokens up to tok are taken first and closed: nginx took a later
-// reload, so it read at least those files too.
+// reload, so it read at least those files too. The record of what nginx
+// allowed moves to tok only when tok is the newest reload taken: an older
+// reload's hook can run after a newer one's.
 func (s *DNSEntryService) tokenTaken(tok *dnsReloadToken) {
 	gens, changes := func() (map[string]int64, []dnsAppliedChange) {
 		s.diskMu.Lock()
@@ -162,6 +164,7 @@ func (s *DNSEntryService) tokenTaken(tok *dnsReloadToken) {
 		s.postHocs = open
 		if tok.seq > s.takenSeq {
 			s.takenSeq = tok.seq
+			s.recordAllowedLocked(tok, s.now())
 		}
 		s.markHostIndexDirty() // a host save's reload: what hosts render may have changed
 		toks = append(toks, tok)

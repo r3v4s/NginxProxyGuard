@@ -264,11 +264,12 @@ func (c *LogCollector) SetFail2banService(svc *Fail2banService) {
 }
 
 // Fail2banExemption decides whether a host-attributed access-phase denial is
-// left out of that host's fail2ban count (#320). It is asked on
+// left out of that host's fail2ban count (#320), as nginx had the host's
+// list at at, when the request came in. It is asked on
 // the access-log tail goroutine, once for every such line, so it must answer
 // from memory and never block.
 type Fail2banExemption interface {
-	ExemptAccessDenial(ctx context.Context, hostID, clientIP string) bool
+	ExemptAccessDenial(ctx context.Context, hostID, clientIP string, at time.Time) bool
 }
 
 // SetFail2banExemption wires the fail2ban exemption (the DNS entry service).
@@ -991,11 +992,13 @@ func (c *LogCollector) handleAccessLine(ctx context.Context, line string) {
 	// client outside it is not counted (#320). The host refuses
 	// that client anyway, and a partner whose address just changed would
 	// otherwise be banned before NPG's next DNS check lets it in. The
-	// exemption walks the list for the client; what it cannot judge counts.
+	// exemption walks the list for the client as nginx had it at the line's
+	// time, not when the line is read seconds later (a line without a
+	// readable time has the time it is read); what it cannot judge counts.
 	if c.fail2ban != nil && logReq.ClientIP != "" && logReq.StatusCode >= 400 && !c.isTrustedIP(ctx, logReq.ClientIP) {
 		if logReq.ProxyHostID != "" {
 			if c.fail2banExemption == nil || !accessPhaseDenial(logReq) ||
-				!c.fail2banExemption.ExemptAccessDenial(ctx, logReq.ProxyHostID, logReq.ClientIP) {
+				!c.fail2banExemption.ExemptAccessDenial(ctx, logReq.ProxyHostID, logReq.ClientIP, logReq.Timestamp) {
 				c.fail2ban.RecordFailedRequest(ctx, logReq.ProxyHostID, logReq.ClientIP, logReq.StatusCode, logReq.RequestURI)
 			}
 		} else {

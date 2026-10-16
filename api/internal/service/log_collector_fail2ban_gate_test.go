@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,15 +17,17 @@ var _ Fail2banExemption = (*DNSEntryService)(nil)
 
 const f2bGateHost = "00000000-0000-4000-8000-0000000014a1"
 
-// f2bGateExemption records what the collector asks it, as "hostID clientIP",
-// and answers exempt.
+// f2bGateExemption records what the collector asks it, as "hostID clientIP"
+// and the request time, and answers exempt.
 type f2bGateExemption struct {
 	exempt bool
 	calls  []string
+	ats    []time.Time
 }
 
-func (f *f2bGateExemption) ExemptAccessDenial(ctx context.Context, hostID, clientIP string) bool {
+func (f *f2bGateExemption) ExemptAccessDenial(ctx context.Context, hostID, clientIP string, at time.Time) bool {
 	f.calls = append(f.calls, hostID+" "+clientIP)
+	f.ats = append(f.ats, at)
 	return f.exempt
 }
 
@@ -152,6 +155,30 @@ func TestFail2banGateAsksOnlyAboutAccessPhaseDenials(t *testing.T) {
 	defer c.bufferMu.Unlock()
 	if len(c.buffer) != len(cases) {
 		t.Fatalf("buffered %d rows, want %d", len(c.buffer), len(cases))
+	}
+}
+
+// The collector reads a line seconds after the request, and the exemption
+// judges it by what nginx allowed then: it gets the line's time. A line
+// whose time cannot be read is judged when it is read, as before.
+func TestFail2banGateGetsTheRequestTime(t *testing.T) {
+	ctx := context.Background()
+	c, _ := f2bGateCollector(t, map[string]string{"app.example.com": f2bGateHost})
+	ex := &f2bGateExemption{exempt: true}
+	c.SetFail2banExemption(ex)
+	line := f2bGateLine("198.51.100.21", "app.example.com", "/x", 403, "-", "access_denied")
+
+	c.handleAccessLine(ctx, line)
+	served := time.Date(2026, 10, 15, 3, 0, 0, 0, time.UTC) // the line's 15/Oct/2026:12:00:00 +0900
+	if len(ex.ats) != 1 || !ex.ats[0].Equal(served) {
+		t.Fatalf("the exemption got %v, want the line's time %v", ex.ats, served)
+	}
+
+	before := time.Now()
+	c.handleAccessLine(ctx, strings.Replace(line, "15/Oct/2026:12:00:00 +0900", "not a time", 1))
+	after := time.Now()
+	if len(ex.ats) != 2 || ex.ats[1].Before(before) || ex.ats[1].After(after) {
+		t.Fatalf("the exemption got %v for a line without a readable time, want the time it was read (%v..%v)", ex.ats, before, after)
 	}
 }
 

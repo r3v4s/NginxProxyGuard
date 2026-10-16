@@ -126,9 +126,107 @@ func TestDNSExemptAccessDenial(t *testing.T) {
 		{"00000000-0000-4000-8000-0000000000ff", "203.0.113.99", false, "a host without a domain list"},
 	}
 	for _, c := range cases {
-		if got := r.svc.ExemptAccessDenial(context.Background(), c.host, c.client); got != c.exempt {
+		if got := r.svc.ExemptAccessDenial(context.Background(), c.host, c.client, r.clock.Now()); got != c.exempt {
 			t.Errorf("%s (%s %s): exempt = %v, want %v", c.why, c.host[len(c.host)-2:], c.client, got, c.exempt)
 		}
+	}
+}
+
+// The collector reads a log line seconds after the request, so the gate
+// judges each line as nginx had the domain files when the request came in.
+// The partner's address changes: nginx drops the old one at once (taken at
+// S) and takes the new one after two answers and the gap (taken at T). A
+// 403 the new address got before T, or while old workers still served the
+// previous files, was the list's own; one it gets later is not. A 403 the
+// old address got before S was not the list's; one it gets after S is.
+func TestDNSExemptAccessDenialJudgesTheRequestTime(t *testing.T) {
+	r, _ := dnsGateRig(t)
+	ctx := context.Background()
+	r.svc.lastGC = r.clock.Now()
+	r.lookup.set("partner.example.com", "203.0.113.11")
+	check := func(client string, at time.Time, want bool, why string) {
+		t.Helper()
+		if got := r.svc.ExemptAccessDenial(ctx, dnsGateH1, client, at); got != want {
+			t.Errorf("%s (%s at %s): exempt = %v, want %v", why, client, at.Format("15:04:05"), got, want)
+		}
+	}
+
+	r.tick(t) // the old address is revoked at once
+	if got := r.partnerFile(t); len(got) != 0 {
+		t.Fatalf("after the first answer the file = %v, want the old address out", got)
+	}
+	revokedAt := r.clock.Now()
+	check("203.0.113.10", revokedAt.Add(-3*time.Second), false, "nginx still allowed the old address: its 403 was not the list's")
+	check("203.0.113.10", revokedAt.Add(10*time.Second), true, "nginx no longer allows the old address: its 403 is the list's")
+
+	r.clock.Advance(time.Minute)
+	r.tick(t)
+	r.clock.Advance(5 * time.Minute)
+	r.tick(t) // the new address is published after two answers and the gap
+	if got := r.partnerFile(t); !dnsEqual(got, []string{"203.0.113.11"}) {
+		t.Fatalf("after the gap the file = %v, want the new address", got)
+	}
+	publishedAt := r.clock.Now()
+	check("203.0.113.11", publishedAt.Add(-3*time.Second), true, "a 403 from before the publish was the list's")
+	check("203.0.113.11", publishedAt.Add(2*time.Second), true, "old workers may still serve the files without it")
+	check("203.0.113.11", publishedAt.Add(30*time.Second), false, "nginx allows the new address: its 403 is not the list's")
+	check("203.0.113.99", publishedAt.Add(30*time.Second), true, "a client the list denies stays exempt")
+	check("203.0.113.10", revokedAt.Add(-3*time.Second), false, "the old address's stretch is still remembered")
+}
+
+// The record of what nginx allowed holds what the gate can still be asked:
+// an address nginx stopped allowing more than 10 minutes ago is forgotten,
+// and one that keeps coming and going keeps its latest stretches. An older
+// reload's hook that runs after a newer one's never moves the record back.
+func TestDNSAllowedRecordIsBoundedAndNeverMovesBack(t *testing.T) {
+	r := newDNSTestRig(t)
+	scope := dnsACL(dnsTestListA)
+	key := dnsSegKey(scope, "partner.example.com")
+	gen := int64(0)
+	write := func(addrs ...string) {
+		gen++
+		r.svc.disk[key] = dnsDiskEntry{Scope: scope, Name: "partner.example.com", Gen: gen, Addrs: addrs}
+	}
+	take := func(addrs ...string) {
+		write(addrs...)
+		r.svc.afterReload(r.svc.beforeReload(), nginx.ReloadAccepted, nil)
+		r.settle()
+	}
+	spans := func(addr string) []dnsAllowSpan {
+		r.svc.diskMu.Lock()
+		defer r.svc.diskMu.Unlock()
+		return append([]dnsAllowSpan(nil), r.svc.allowed[scope][addr]...)
+	}
+
+	for i := 0; i < 10; i++ {
+		take("203.0.113.10")
+		r.clock.Advance(time.Second)
+		take()
+		r.clock.Advance(time.Second)
+	}
+	got := spans("203.0.113.10")
+	if len(got) != dnsAllowSpansMax {
+		t.Fatalf("after 10 stretches the record holds %d, want the newest %d", len(got), dnsAllowSpansMax)
+	}
+	if last, want := got[len(got)-1].until, r.clock.Now().Add(-time.Second); !last.Equal(want) {
+		t.Fatalf("the newest stretch ends at %v, want %v: the newest are kept", last, want)
+	}
+
+	r.clock.Advance(dnsAllowMemory)
+	take("203.0.113.11")
+	if got := spans("203.0.113.10"); len(got) != 0 {
+		t.Fatalf("10 minutes after nginx stopped allowing it the record still holds %d stretches", len(got))
+	}
+
+	older := r.svc.beforeReload() // holds 203.0.113.11
+	write("203.0.113.12")
+	newer := r.svc.beforeReload()
+	r.svc.afterReload(newer, nginx.ReloadAccepted, nil)
+	r.svc.afterReload(older, nginx.ReloadAccepted, nil)
+	r.settle()
+	later := r.clock.Now().Add(time.Minute)
+	if !r.svc.dnsAllowedAt(scope, "203.0.113.12", later) || r.svc.dnsAllowedAt(scope, "203.0.113.11", later) {
+		t.Fatal("the older reload's hook ran last and moved the record back to 203.0.113.11")
 	}
 }
 
@@ -148,7 +246,7 @@ func TestDNSLoginBypassHosts(t *testing.T) {
 	if got := r.svc.LoginBypassHosts(dnsTestListB); len(got) != 0 {
 		t.Fatalf("list B after its rebuild = %+v, want none", got)
 	}
-	if !r.svc.ExemptAccessDenial(context.Background(), dnsGateH1, "203.0.113.99") {
+	if !r.svc.ExemptAccessDenial(context.Background(), dnsGateH1, "203.0.113.99", r.clock.Now()) {
 		t.Fatal("list A's hosts must survive a rebuild of list B")
 	}
 }
@@ -260,7 +358,7 @@ func (b *dnsBlockingHosts) counts() (reads, most int) {
 func TestDNSMarkedHostIndexExemptsNothingUntilItIsRebuilt(t *testing.T) {
 	r, h := dnsGateRig(t)
 	ctx := context.Background()
-	if !r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99") {
+	if !r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99", r.clock.Now()) {
 		t.Fatal("before the reload, the list's own 403 must be left out")
 	}
 	hosts := newDNSBlockingHosts(t, h)
@@ -269,12 +367,12 @@ func TestDNSMarkedHostIndexExemptsNothingUntilItIsRebuilt(t *testing.T) {
 	hooks := r.svc.ReloadHooks()
 	hooks.After(hooks.Before(), nginx.ReloadAccepted, nil) // a host save's reload
 	hosts.waitBuild(t)
-	if r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99") {
+	if r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99", r.clock.Now()) {
 		t.Fatal("while the host index is rebuilt after a reload, a 403 must be counted")
 	}
 	hosts.open()
 	r.settle()
-	if !r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99") {
+	if !r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99", r.clock.Now()) {
 		t.Fatal("once the rebuild is in place, the list's own 403 must be left out again")
 	}
 }
@@ -298,7 +396,7 @@ func TestDNSMarksDuringARebuildShareOneMoreRebuild(t *testing.T) {
 	if reads, most := hosts.counts(); reads != 2 || most != 1 {
 		t.Fatalf("%d rebuilds, at most %d at once; want the running one and exactly one more for the five marks, never two at once", reads, most)
 	}
-	if !r.svc.ExemptAccessDenial(context.Background(), dnsGateH1, "203.0.113.99") {
+	if !r.svc.ExemptAccessDenial(context.Background(), dnsGateH1, "203.0.113.99", r.clock.Now()) {
 		t.Fatal("after the rebuilds the index must be current again")
 	}
 }
@@ -315,10 +413,10 @@ func TestDNSAReloadRebuildsTheHostIndexAtOnce(t *testing.T) {
 	hooks.After(hooks.Before(), nginx.ReloadAccepted, nil) // app1's save reloads nginx
 	r.settle()
 
-	if r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99") {
+	if r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99", r.clock.Now()) {
 		t.Error("app1 dropped its domain list: its 403s must be counted")
 	}
-	if !r.svc.ExemptAccessDenial(ctx, dnsGateH4, "203.0.113.99") {
+	if !r.svc.ExemptAccessDenial(ctx, dnsGateH4, "203.0.113.99", r.clock.Now()) {
 		t.Error("app4 still uses its list: once the index is rebuilt, its list's own 403 must be left out")
 	}
 }
@@ -362,13 +460,13 @@ func TestDNSHostIndexRebuildSurvivesAPanic(t *testing.T) {
 	if n := strings.Count(logs.String(), "[DNSEntries] ERROR: "); n != 1 {
 		t.Fatalf("log = %q, want one [DNSEntries] ERROR line for the rebuild that panicked", logs.String())
 	}
-	if r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99") {
+	if r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99", r.clock.Now()) {
 		t.Fatal("after a rebuild that panicked the index is stale: the 403 must be counted")
 	}
 
 	r.svc.markHostIndexDirty()
 	r.settle()
-	if !r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99") {
+	if !r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99", r.clock.Now()) {
 		t.Fatal("the next mark must rebuild the index, and the list's own 403 be left out again")
 	}
 }
@@ -415,7 +513,7 @@ func TestDNSHostIndexKeptFromAFailedReadStaysStaleUntilTheCheckRebuildsIt(t *tes
 	hooks := r.svc.ReloadHooks()
 	hooks.After(hooks.Before(), nginx.ReloadAccepted, nil)
 	r.settle()
-	if r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99") {
+	if r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99", r.clock.Now()) {
 		t.Fatal("the rebuild kept list A's last answer: the index must stay stale and the 403 be counted")
 	}
 
@@ -424,10 +522,10 @@ func TestDNSHostIndexKeptFromAFailedReadStaysStaleUntilTheCheckRebuildsIt(t *tes
 	if n := r.nginx.applyCount(); n != 0 {
 		t.Fatalf("%d applies: no reload may rebuild the index here, the check must", n)
 	}
-	if r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99") {
+	if r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99", r.clock.Now()) {
 		t.Error("app1 dropped its domain list: once the check rebuilt the index, its 403s must be counted")
 	}
-	if !r.svc.ExemptAccessDenial(ctx, dnsGateH4, "203.0.113.99") {
+	if !r.svc.ExemptAccessDenial(ctx, dnsGateH4, "203.0.113.99", r.clock.Now()) {
 		t.Error("app4 still uses its list: once the check rebuilt the index, its list's own 403 must be left out")
 	}
 }
