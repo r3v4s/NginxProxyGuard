@@ -431,3 +431,70 @@ func TestDNSGarbageCollectionKeepsWhatNginxMayStillAllow(t *testing.T) {
 		t.Errorf("alerts = %+v, want the revoke alert still failing: no reload took the revocation", r.events.snapshot().alerts)
 	}
 }
+
+// A name leaves its only list while nginx refuses every reload for more than
+// a day (nginx -t passes, so no host config includes its emptied file any
+// more). The cleanup keeps that file: a reload carries a name to nginx only
+// through a file this process holds. Once nginx takes a reload again, the
+// revocation clears, the revoke alert recovers, and the row and the file go
+// as usual.
+func TestDNSGarbageCollectionKeepsTheFileOfARevocationNginxHasNotTaken(t *testing.T) {
+	r := dnsPartnerRig(t, "203.0.113.10")
+	ctx := context.Background()
+	const name = "partner.example.com"
+	a := dnsACL(dnsTestListA)
+	r.nginx.results = []nginx.DNSApplyResult{{Outcome: "rejected", Detail: "bind() to 0.0.0.0:443 failed (98: Address in use)"}}
+	r.store.setRefs() // list A saved without the name: nothing uses it now
+	if err := r.svc.SyncScope(ctx, a, nil); err != nil {
+		t.Fatal(err)
+	}
+	r.tick(t) // the removal is applied: refused
+	if !dnsAlerted(r, "revoke", true) {
+		t.Fatalf("alerts = %+v, want revoke failing", r.events.snapshot().alerts)
+	}
+
+	r.clock.Advance(25 * time.Hour)
+	r.svc.collectGarbage(ctx)
+	if _, ok := r.nginx.file(a, name); !ok {
+		t.Fatal("the emptied file was removed while its revocation waits for nginx")
+	}
+
+	r.nginx.mu.Lock()
+	r.nginx.results = []nginx.DNSApplyResult{{Outcome: "accepted"}}
+	r.nginx.mu.Unlock()
+	r.clock.Advance(time.Minute)
+	r.tick(t) // the retry: nginx takes it
+	if st, _ := r.store.row(name); st.RevokePendingSince != nil || st.AppliedGeneration != st.Generation {
+		t.Fatalf("row %+v; want the revocation taken by the reload", st)
+	}
+	if !dnsAlerted(r, "revoke", false) {
+		t.Fatalf("alerts = %+v, want revoke recovered", r.events.snapshot().alerts)
+	}
+
+	r.clock.Advance(8 * 24 * time.Hour)
+	r.svc.collectGarbage(ctx)
+	if _, ok := r.store.row(name); ok {
+		t.Error("the row of a name unused for more than 7 days and in nginx must be deleted")
+	}
+	if _, ok := r.nginx.file(a, name); ok {
+		t.Error("its empty file must then be removed too")
+	}
+}
+
+// The same holds for a row whose generation no reload took: its empty file is
+// kept while nothing references it.
+func TestDNSGarbageCollectionKeepsTheFileOfAnUntakenGeneration(t *testing.T) {
+	r := newDNSTestRig(t)
+	eightDays := dnsTestStart.Add(-8 * 24 * time.Hour)
+	st := dnsOKRow("waiting.example.com", 4)
+	st.AppliedGeneration, st.UnusedSince = 3, &eightDays
+	r.store.put(st)
+	r.nginx.putFile(dnsACL(dnsTestListB), "waiting.example.com", 4)
+	r.clock.Advance(25 * time.Hour)
+
+	r.svc.collectGarbage(context.Background())
+
+	if _, ok := r.nginx.file(dnsACL(dnsTestListB), "waiting.example.com"); !ok {
+		t.Error("the file of a generation nginx has not taken was removed")
+	}
+}

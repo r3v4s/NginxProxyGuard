@@ -496,7 +496,10 @@ func (s *DNSEntryService) seedNginxViewLocked(refs []model.DNSReference, rows ma
 // collectGarbage runs once a day from the tick (and at its first run): it
 // deletes the rows of names unused for 7 days that nginx holds nothing for
 // (dnsCollectable) and the files nothing references that have been empty for
-// a day.
+// a day. The files of a name whose row nginx has not taken yet stay, even
+// when nothing references them: a reload carries a name to nginx only
+// through a file this process holds (its disk table), so without them the
+// row would wait for nginx forever.
 func (s *DNSEntryService) collectGarbage(ctx context.Context) {
 	now := s.now()
 	rows, err := s.states.GetStates(ctx, nil)
@@ -564,7 +567,16 @@ func (s *DNSEntryService) collectGarbage(ctx context.Context) {
 			log.Printf("[DNSEntries] WARN: could not delete unused domain entries: %v", err)
 		}
 	}
-	removed, err := s.nginx.GCDNSIncludeFiles(ctx, s.referencedForGC(ctx), dnsEmptyFileTTL)
+	waiting := make(map[string]bool)
+	for name, st := range rows {
+		if dnsWaitsForNginx(st) {
+			waiting[name] = true
+		}
+	}
+	referenced := s.referencedForGC(ctx)
+	removed, err := s.nginx.GCDNSIncludeFiles(ctx, func(scope, name string) bool {
+		return waiting[name] || referenced(scope, name)
+	}, dnsEmptyFileTTL)
 	if err != nil {
 		log.Printf("[DNSEntries] WARN: could not remove unused domain include files: %v", err)
 	}
@@ -574,13 +586,17 @@ func (s *DNSEntryService) collectGarbage(ctx context.Context) {
 }
 
 // dnsCollectable reports whether the daily cleanup may delete a row: unused
-// for more than 7 days, with no revocation waiting and its generation in
-// nginx. A row nginx may still allow addresses for stays until a reload takes
-// it: deleting it would close the revoke alert as recovered while nginx still
-// allows them.
+// for more than 7 days, and nothing of it waits for nginx. A row nginx may
+// still allow addresses for stays until a reload takes it: deleting it would
+// close the revoke alert as recovered while nginx still allows them.
 func dnsCollectable(st model.DNSEntryState, now time.Time) bool {
-	return st.UnusedSince != nil && now.Sub(*st.UnusedSince) > dnsUnusedRowTTL &&
-		st.RevokePendingSince == nil && st.Generation <= st.AppliedGeneration
+	return st.UnusedSince != nil && now.Sub(*st.UnusedSince) > dnsUnusedRowTTL && !dnsWaitsForNginx(st)
+}
+
+// dnsWaitsForNginx reports whether a row holds something no reload nginx took
+// yet: a revocation, or a generation above the applied one.
+func dnsWaitsForNginx(st model.DNSEntryState) bool {
+	return st.RevokePendingSince != nil || st.Generation > st.AppliedGeneration
 }
 
 // referencedForGC answers, for the file GC (which calls it inside nginx's
