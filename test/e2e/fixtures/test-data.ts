@@ -140,6 +140,8 @@ export const ROUTES = {
   settingsSecurityHeaders: '/settings/security-headers',
   settingsRateLimiting: '/settings/rate-limiting',
   settingsChallenge: '/settings/challenge',
+  settingsNotifications: '/settings/notifications',
+  settingsDnsEntries: '/settings/dns-entries',
 } as const;
 
 // Test proxy host data templates

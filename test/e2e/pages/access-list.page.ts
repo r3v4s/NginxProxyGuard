@@ -115,6 +115,42 @@ export class AccessListPage extends BasePage {
   }
 
   /**
+   * Open a list's card: its rules and domains sit in a collapsed panel.
+   */
+  async expandList(name: string): Promise<void> {
+    const toggle = this.getListByName(name).locator('button[aria-expanded]').first();
+    await expect(toggle).toBeVisible({ timeout: TIMEOUTS.medium });
+    if ((await toggle.getAttribute('aria-expanded')) !== 'true') {
+      await toggle.click();
+    }
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  }
+
+  /**
+   * A domain entry in a list's card (#320). Its state pill carries data-status.
+   */
+  dnsEntry(listName: string, hostname: string): Locator {
+    return this.getListByName(listName).locator(`li[data-testid="dns-entry"][data-hostname="${hostname}"]`);
+  }
+
+  /**
+   * The read-only rows of the open form that an older version saved with a name in the address.
+   */
+  legacyRules(): Locator {
+    return this.page.locator('[role="dialog"] li[data-testid="legacy-rule"]');
+  }
+
+  /**
+   * Click "Move to domain" on the legacy row of the open form that holds address.
+   */
+  async moveLegacyRuleToDomain(address: string): Promise<void> {
+    await this.legacyRules()
+      .filter({ hasText: address })
+      .getByRole('button', { name: /move to domain|도메인으로 옮기기/i })
+      .click();
+  }
+
+  /**
    * Fill list name (clears existing value first).
    */
   async fillName(name: string): Promise<void> {

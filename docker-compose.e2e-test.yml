@@ -79,6 +79,11 @@ services:
         max-file: "3"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      # Domain entry specs (#320, specs/security/dns-entries.spec.ts): the
+      # only names they save. 100.64.32.0/24 is CGNAT, which the address
+      # policy allows; the API never looks these names up on the internet.
+      - "partner.e2e.example:100.64.32.10"
+      - "review.e2e.example:100.64.32.20"
     environment:
       PORT: "8080"
       DATABASE_URL: postgres://postgres:postgres@db:5432/nginx_guard_test?sslmode=disable

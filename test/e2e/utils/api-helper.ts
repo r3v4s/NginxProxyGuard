@@ -501,6 +501,22 @@ export class APIHelper {
   }
 
   /**
+   * Get one access list as the API shows it: a domain rule carries kind
+   * "hostname" and its DNS state in dns (#320).
+   */
+  async getAccessList(id: string): Promise<AccessListData> {
+    const response = await this.request.get(`${API_ENDPOINTS.accessLists}/${id}`, {
+      headers: this.getHeaders(),
+    });
+
+    if (!response.ok()) {
+      throw new Error(`Failed to get access list ${id}: ${response.status()}`);
+    }
+
+    return response.json();
+  }
+
+  /**
    * Convert allowed_ips/denied_ips to items format for the API.
    */
   private convertAccessListData(data: CreateAccessListData | Partial<CreateAccessListData>): Record<string, unknown> {
@@ -1550,13 +1566,39 @@ export interface CreateDnsProviderData {
 }
 
 // Access List Types
+
+/** How the API classifies a rule (#320): an address, a domain entry, or a name an older version saved. */
+export type AccessListItemKind = 'address' | 'hostname' | 'legacy';
+
+/** The DNS state of a domain entry as the API shows it (model.DNSEntryStatus). */
+export interface DNSEntryStatusData {
+  hostname: string;
+  status: string; // pending | ok | stale | expired | rejected | not_found | needs_review
+  review_reason: string | null;
+  disabled: boolean;
+  addresses: string[] | null;
+  pending_addresses: string[] | null;
+  applied: boolean;
+  revoke_pending: boolean;
+  blocked_reason: string | null;
+  blocking_file: string | null;
+  observed_addresses: string[] | null;
+  canonical_name: string | null;
+  warnings: string[] | null;
+  error_code: string | null;
+  last_checked_at: string | null;
+}
+
 export interface AccessListItemData {
   id?: string;
   access_list_id?: string;
   directive: string;  // "allow" or "deny"
-  address: string;    // IP, CIDR, or "all"
+  address: string;    // IP, CIDR, "all", or the name of a domain entry
   description?: string;
   sort_order?: number;
+  kind?: AccessListItemKind;
+  effect?: 'ignored' | 'deny_all'; // legacy rules only
+  dns?: DNSEntryStatusData | null;  // domain entries only
 }
 
 export interface AccessListData {
@@ -1566,6 +1608,8 @@ export interface AccessListData {
   satisfy_any?: boolean;
   pass_auth?: boolean;
   items?: AccessListItemData[];
+  // Hosts with a login that this list's domains get past (satisfy any); hosts is null without proxy:read.
+  login_bypass_hosts?: { count: number; hosts: Array<{ id: string; domain: string }> | null };
   created_at: string;
   updated_at: string;
 }
@@ -1575,7 +1619,7 @@ export interface CreateAccessListData {
   description?: string;
   satisfy_any?: boolean;
   pass_auth?: boolean;
-  items?: Array<{ directive: string; address: string; description?: string; sort_order?: number }>;
+  items?: Array<{ directive: string; address: string; description?: string; sort_order?: number; kind?: AccessListItemKind }>;
   // Legacy fields for convenience - converted to items before sending
   allowed_ips?: string[];
   denied_ips?: string[];
