@@ -28,13 +28,15 @@ func TestDNSEntryEventsInCatalogue(t *testing.T) {
 }
 
 // Both recover under their own key, so each needs a recovery title, or the
-// headline reads "Resolved — domain entry change not applied".
+// headline reads "Resolved — domain entry change not applied". Nor may it
+// say "applied": apply_failed also clears when a newer change restarts the
+// wait or a removal hands the name to the revoke subject.
 func TestDNSEntryRecoveryHeadlines(t *testing.T) {
 	for _, key := range []string{"dns_entry.review", "dns_entry.apply_failed"} {
 		for _, lang := range []string{LangEnglish, LangKorean} {
 			resolved := headline(lang, model.RenderedMessage{Event: key, Severity: "resolved", Fields: map[string]string{}})
-			if !strings.Contains(resolved, "✅") || strings.Contains(resolved, "not applied") ||
-				strings.Contains(resolved, "needs review") || strings.Contains(resolved, "미반영") ||
+			if !strings.Contains(resolved, "✅") || strings.Contains(resolved, "applied") ||
+				strings.Contains(resolved, "needs review") || strings.Contains(resolved, "반영") ||
 				strings.Contains(resolved, "검토 필요") {
 				t.Errorf("%s/%s recovery headline = %q", lang, key, resolved)
 			}

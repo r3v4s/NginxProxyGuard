@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"net"
 	"strconv"
 	"strings"
 	"testing"
@@ -226,8 +227,9 @@ func TestDNSEventStatusLogOnlyOnEntry(t *testing.T) {
 		from, to string
 		want     string // "" = no row
 	}{
-		{model.DNSStatusOK, model.DNSStatusStale, evtName + ": lookups are failing (ipv4 timeout, ipv6 not_found)"},
-		{model.DNSStatusStale, model.DNSStatusExpired, evtName + ": lookups failed for longer than the grace period (ipv4 timeout, ipv6 not_found)"},
+		// A not-found family answered: it is not among the failing lookups.
+		{model.DNSStatusOK, model.DNSStatusStale, evtName + ": lookups are failing (ipv4 timeout);"},
+		{model.DNSStatusStale, model.DNSStatusExpired, evtName + ": lookups failed for longer than the grace period (ipv4 timeout);"},
 		{model.DNSStatusOK, model.DNSStatusRejected, evtName + ": the address policy refused the answer"},
 		{model.DNSStatusPending, model.DNSStatusNotFound, evtName + ": DNS has no address for it"},
 		{model.DNSStatusStale, model.DNSStatusStale, ""},
@@ -404,7 +406,7 @@ func TestDNSEventApplyingFailingAndWorkingAgain(t *testing.T) {
 		t.Fatalf("system log rows = %d, want 2", len(h.logs.rows))
 	}
 	if r := h.logs.rows[0]; r.Level != repository.LevelError ||
-		!strings.HasPrefix(r.Message, "domain entry changes could not be applied: nginx -t fails in proxy_host_1.conf") ||
+		r.Message != "domain entry changes could not be applied: nginx -t fails in proxy_host_1.conf; NPG keeps retrying" ||
 		!strings.Contains(string(r.Details), "host not found in upstream") {
 		t.Errorf("failing row = %+v", r)
 	}
@@ -437,6 +439,115 @@ func TestDNSEventsWithoutOutlets(t *testing.T) {
 	} {
 		if err != nil {
 			t.Errorf("an unwired outlet returned %v; the service would retry it forever", err)
+		}
+	}
+}
+
+// A confirm made while the feature or the name is switched off ends the
+// review and publishes nothing, so the close says that the review ended and
+// nothing about what nginx allows.
+func TestDNSEventConfirmedCloseSaysOnlyThatTheReviewEnded(t *testing.T) {
+	h := newEvtHarness()
+	ctx := context.Background()
+	_ = h.rep.reviewAlert(ctx, evtName, evtReviewState(), 1)
+	if err := h.rep.reviewClosed(ctx, evtName, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.store.enqueued) != 2 {
+		t.Fatalf("messages = %d, want the alert and its close", len(h.store.enqueued))
+	}
+	if d := h.store.enqueued[1].Fields["detail"]; d != "An operator confirmed partner.example.com; it is out of review." {
+		t.Errorf("confirmed close detail = %q", d)
+	}
+}
+
+// "apply" clears when no name meets its condition any more, which is not
+// nginx taking the additions: a newer change of the name restarts its wait,
+// and a removal hands the name to "revoke". The close says only what the
+// condition says.
+func TestDNSEventApplyRecoverySaysOnlyWhatTheServiceCounted(t *testing.T) {
+	h := newEvtHarness()
+	ctx := context.Background()
+	_ = h.rep.applyAlert(ctx, dnsApplyAlert{Subject: "apply", Failing: true, Names: []string{evtName}})
+	if err := h.rep.applyAlert(ctx, dnsApplyAlert{Subject: "apply"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.store.enqueued) != 2 {
+		t.Fatalf("messages = %d, want the alert and its close", len(h.store.enqueued))
+	}
+	want := "No domain entry with only added addresses waiting for nginx was last changed more than 15 minutes ago."
+	if d := h.store.enqueued[1].Fields["detail"]; d != want {
+		t.Errorf("apply recovery detail = %q\nwant %q", d, want)
+	}
+}
+
+// What a stale name's line says stays allowed follows what it publishes. A
+// stale name may publish nothing: an address change revoked the old address
+// at once and the next one waits to be added.
+func TestDNSEventStaleSaysWhatStaysAllowed(t *testing.T) {
+	timeout := model.DNSFamilyState{State: "transient", Code: "timeout"}
+	toStale := dnsentry.Effects{FromStatus: model.DNSStatusOK, ToStatus: model.DNSStatusStale}
+	for _, c := range []struct {
+		desc string
+		st   model.DNSEntryState
+		want string
+	}{
+		{"published", model.DNSEntryState{Published: []string{"198.51.100.10"}, V4: timeout},
+			evtName + ": lookups are failing (ipv4 timeout); its last addresses stay allowed until the grace period ends"},
+		{"replacing", model.DNSEntryState{EmptyCause: model.DNSEmptyReplace, V4: timeout},
+			evtName + ": lookups are failing (ipv4 timeout); none of its addresses are allowed while its next address waits to be added"},
+		{"adding", model.DNSEntryState{EmptyCause: model.DNSEmptyLapse, Candidate: []string{"2001:db8::11"}, V4: timeout,
+			V6: model.DNSFamilyState{State: "ok", Observed: []string{"2001:db8::11"}}},
+			evtName + ": lookups are failing (ipv4 timeout); none of its addresses are allowed while its next address waits to be added"},
+		{"nothing", model.DNSEntryState{EmptyCause: model.DNSEmptyLapse, V4: timeout, V6: timeout},
+			evtName + ": lookups are failing (ipv4 timeout, ipv6 timeout); none of its addresses are allowed"},
+	} {
+		entry, ok := dnsEventStatusLog(evtName, toStale, c.st)
+		if !ok || entry.Message != c.want {
+			t.Errorf("%s: message = %q\nwant %q", c.desc, entry.Message, c.want)
+		}
+	}
+}
+
+// The service's own path to it: an IPv4-only name changes its address, the
+// old address leaves at once, and the A lookup times out before the new one
+// is added. The AAAA lookup's not-found is an answer, so it is not listed
+// with the failing lookups.
+func TestDNSEventIPv4OnlyNameStaleMidReplacement(t *testing.T) {
+	r := dnsPartnerRig(t, "203.0.113.10")
+	logs := &evtSystemLog{}
+	r.svc.syslog = logs
+	r.svc.events = &dnsEventReporter{svc: r.svc}
+
+	r.lookup.set("partner.example.com", "203.0.113.20")
+	r.tick(t) // the old address leaves; the new one waits for a second answer
+	r.lookup.mu.Lock()
+	r.lookup.err4["partner.example.com"] = &net.DNSError{Err: "i/o timeout", Name: "partner.example.com", IsTimeout: true}
+	r.lookup.mu.Unlock()
+	r.clock.Advance(time.Minute)
+	r.tick(t)
+
+	if st, _ := r.store.row("partner.example.com"); st.Status != model.DNSStatusStale || len(st.Published) != 0 {
+		t.Fatalf("row = %s publishing %v, want stale with nothing published", st.Status, st.Published)
+	}
+	want := "partner.example.com: lookups are failing (ipv4 timeout); none of its addresses are allowed while its next address waits to be added"
+	if len(logs.rows) != 1 || logs.rows[0].Message != want {
+		t.Fatalf("system log rows = %+v\nwant one: %q", logs.rows, want)
+	}
+}
+
+// Why an apply did not go through, as the apply sentences say it.
+func TestDNSEventOutcomePhrase(t *testing.T) {
+	for _, c := range []struct{ outcome, file, want string }{
+		{"blocked", "proxy_host_1.conf", "nginx -t fails in proxy_host_1.conf"},
+		{"blocked", "", "nginx -t fails"},
+		{"rejected", "", "nginx refused the reload"},
+		{"rejected", "proxy_host_1.conf", "nginx refused the reload (proxy_host_1.conf)"},
+		{"not_up", "", "nginx is not running"},
+		{"failed", "", "the reload did not go through"},
+	} {
+		if got := dnsEventOutcomePhrase(c.outcome, c.file); got != c.want {
+			t.Errorf("dnsEventOutcomePhrase(%q, %q) = %q, want %q", c.outcome, c.file, got, c.want)
 		}
 	}
 }

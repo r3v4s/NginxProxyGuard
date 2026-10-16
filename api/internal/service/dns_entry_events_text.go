@@ -43,14 +43,15 @@ func dnsEventStatusLog(name string, eff dnsentry.Effects, st model.DNSEntryState
 		return dnsEventLogEntry{}, false
 	}
 	n := dnsEventPrintable(name)
-	codes := dnsEventParen(dnsEventFamilyCodes(st))
+	codes := dnsEventParen(dnsEventFamilyCodes(st, dnsEventAnyFamily))
+	failing := dnsEventParen(dnsEventFamilyCodes(st, dnsEventLookupFailed))
 	details := map[string]interface{}{"hostname": n, "from": from, "to": to}
 	var msg string
 	switch to {
 	case model.DNSStatusStale:
-		msg = n + ": lookups are failing" + codes + "; its last addresses stay allowed until the grace period ends"
+		msg = n + ": lookups are failing" + failing + "; " + dnsEventStaleClause(st)
 	case model.DNSStatusExpired:
-		msg = n + ": lookups failed for longer than the grace period" + codes + "; none of its addresses are allowed"
+		msg = n + ": lookups failed for longer than the grace period" + failing + "; none of its addresses are allowed"
 	case model.DNSStatusRejected:
 		msg = n + ": the address policy refused the answer" + codes + "; none of its addresses are allowed"
 	case model.DNSStatusNotFound:
@@ -73,6 +74,21 @@ func dnsEventStatusLog(name string, eff dnsentry.Effects, st model.DNSEntryState
 		details["ipv6"] = c
 	}
 	return dnsEventLogEntry{Level: repository.LevelWarn, Message: msg, Details: details}, true
+}
+
+// dnsEventStaleClause says what a stale name still allows. What it publishes
+// stays until the grace ends, but a stale name may publish nothing: an
+// address change revoked the old address at once and the next one waits to
+// be added (EmptyCause "replace", or a candidate not published yet).
+func dnsEventStaleClause(st model.DNSEntryState) string {
+	switch {
+	case len(st.Published) > 0:
+		return "its last addresses stay allowed until the grace period ends"
+	case st.EmptyCause == model.DNSEmptyReplace || len(st.Candidate) > 0:
+		return "none of its addresses are allowed while its next address waits to be added"
+	default:
+		return "none of its addresses are allowed"
+	}
 }
 
 // dnsEventReviewClause says why a name is in review, from its codes and, for
@@ -101,8 +117,10 @@ func dnsEventReviewDetail(name string, st model.DNSEntryState) string {
 }
 
 // dnsEventConfirmedDetail is the detail of a recovered dns_entry.review alert.
+// It says nothing of what nginx allows: a confirm made while the feature or
+// the name is switched off ends the review and publishes nothing.
 func dnsEventConfirmedDetail(name string) string {
-	return "An operator confirmed " + dnsEventPrintable(name) + "; NPG allows its addresses again."
+	return "An operator confirmed " + dnsEventPrintable(name) + "; it is out of review."
 }
 
 // dnsEventReviewFields are the fields of a dns_entry.review message: the
@@ -122,6 +140,12 @@ func dnsEventReviewFields(name, reason string, scopes int) map[string]string {
 // dnsEventApplyNotice is the detail and the fields of a dns_entry.apply_failed
 // message. The subject is "revoke" or "apply"; count is the number of names
 // waiting, reason the failed apply's outcome.
+//
+// "apply" fails while some name whose waiting changes only add addresses was
+// last changed more than 15 minutes ago, and recovers once none is. That is
+// not the same as nginx taking the additions: a newer change of the name
+// restarts its wait, and a removal hands the name to "revoke". The recovery
+// says only what the condition says.
 func dnsEventApplyNotice(a dnsApplyAlert) (string, map[string]string) {
 	fields := map[string]string{"subject": dnsEventPrintable(a.Subject)}
 	revoke := a.Subject == dnsEventSubjectRevoke
@@ -129,7 +153,8 @@ func dnsEventApplyNotice(a dnsApplyAlert) (string, map[string]string) {
 		if revoke {
 			return "nginx no longer allows the removed addresses.", fields
 		}
-		return "nginx has taken every added address.", fields
+		return fmt.Sprintf("No domain entry with only added addresses waiting for nginx was last changed more than %d minutes ago.",
+			int(dnsApplyAlertAfter/time.Minute)), fields
 	}
 	fields["count"] = strconv.Itoa(len(a.Names))
 	if o := dnsEventPrintable(a.Outcome); o != "" {
@@ -182,7 +207,7 @@ func dnsEventRunLog(failing bool, res nginx.DNSApplyResult) dnsEventLogEntry {
 	}
 	return dnsEventLogEntry{Level: repository.LevelError, Details: details,
 		Message: "domain entry changes could not be applied: " + dnsEventOutcomePhrase(res.Outcome, res.BlockingFile) +
-			"; NPG retries with a growing delay"}
+			"; NPG keeps retrying"}
 }
 
 // dnsEventOutcomePhrase says why an apply did not go through.
@@ -249,18 +274,25 @@ func dnsEventCapNames(names []string) []string {
 	return out
 }
 
-// dnsEventFamilyCodes lists the families' classification codes:
-// "ipv4 timeout, ipv6 not_found".
-func dnsEventFamilyCodes(st model.DNSEntryState) string {
+// dnsEventFamilyCodes lists the classification codes of the families keep
+// selects: "ipv4 timeout, ipv6 not_found".
+func dnsEventFamilyCodes(st model.DNSEntryState, keep func(model.DNSFamilyState) bool) string {
 	var parts []string
-	if c := dnsEventPrintable(st.V4.Code); c != "" {
+	if c := dnsEventPrintable(st.V4.Code); c != "" && keep(st.V4) {
 		parts = append(parts, "ipv4 "+c)
 	}
-	if c := dnsEventPrintable(st.V6.Code); c != "" {
+	if c := dnsEventPrintable(st.V6.Code); c != "" && keep(st.V6) {
 		parts = append(parts, "ipv6 "+c)
 	}
 	return strings.Join(parts, ", ")
 }
+
+func dnsEventAnyFamily(model.DNSFamilyState) bool { return true }
+
+// dnsEventLookupFailed: the family's lookup got no answer. A not-found family
+// answered, and an IPv4-only name's AAAA lookup answers not found for good,
+// so it is not listed among the failing lookups.
+func dnsEventLookupFailed(f model.DNSFamilyState) bool { return f.State == "transient" }
 
 func dnsEventParen(s string) string {
 	if s == "" {
