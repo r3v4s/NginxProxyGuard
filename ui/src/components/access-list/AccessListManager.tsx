@@ -101,7 +101,10 @@ export default function AccessListManager() {
     );
   }
 
-  if (error) {
+  // Only a first load that failed replaces the page. A background refetch that
+  // fails (the poll, a tab shown again) keeps the lists it had and says so
+  // above them, so an open editor or "Allow again" dialog stays as it is.
+  if (error && !data) {
     return (
       <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 px-4 py-3 rounded">
         {t('messages.loadError')}
@@ -123,6 +126,16 @@ export default function AccessListManager() {
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">{t('list.title')}</h2>
         {canWrite && <AddButton onClick={() => setShowForm(true)}>{t('actions.add')}</AddButton>}
       </div>
+
+      {error && (
+        <div
+          role="alert"
+          data-testid="access-lists-refresh-error"
+          className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300"
+        >
+          {t('messages.loadError')}
+        </div>
+      )}
 
       {notice && (
         <div
