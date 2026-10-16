@@ -55,13 +55,23 @@ func (r *AccessListRepository) Create(ctx context.Context, req *model.CreateAcce
 	return r.GetByID(ctx, id)
 }
 
-// insertAccessListItems writes items as the items of list listID, in tx.
+// insertAccessListItems writes items as the items of list listID, in tx. A
+// domain rule (Hostname set, #320) is written as the placeholder (deny, all,
+// hostname) whatever its Directive and Address say: the column's CHECK takes
+// only that shape, and a version that does not know the column renders the
+// row as "deny all", closed.
 func insertAccessListItems(ctx context.Context, tx *sql.Tx, listID string, items []model.CreateAccessListItemRequest) error {
 	for _, item := range items {
+		directive, address := item.Directive, item.Address
+		var hostname sql.NullString
+		if item.Hostname != "" {
+			directive, address = "deny", "all"
+			hostname = sql.NullString{String: item.Hostname, Valid: true}
+		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO access_list_items (access_list_id, directive, address, description, sort_order)
-			VALUES ($1, $2, $3, $4, $5)
-		`, listID, item.Directive, item.Address, item.Description, item.SortOrder); err != nil {
+			INSERT INTO access_list_items (access_list_id, directive, address, description, sort_order, hostname)
+			VALUES ($1, $2, $3, $4, $5, $6)
+		`, listID, directive, address, item.Description, item.SortOrder, hostname); err != nil {
 			return err
 		}
 	}
@@ -83,7 +93,7 @@ func (r *AccessListRepository) GetByID(ctx context.Context, id string) (*model.A
 
 	// Get items
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, access_list_id, directive, address, COALESCE(description, '') AS description, sort_order, created_at
+		SELECT id, access_list_id, directive, address, COALESCE(description, '') AS description, sort_order, created_at, hostname
 		FROM access_list_items WHERE access_list_id = $1
 		ORDER BY sort_order, created_at
 	`, id)
@@ -94,9 +104,11 @@ func (r *AccessListRepository) GetByID(ctx context.Context, id string) (*model.A
 
 	for rows.Next() {
 		var item model.AccessListItem
-		if err := rows.Scan(&item.ID, &item.AccessListID, &item.Directive, &item.Address, &item.Description, &item.SortOrder, &item.CreatedAt); err != nil {
+		var hostname sql.NullString
+		if err := rows.Scan(&item.ID, &item.AccessListID, &item.Directive, &item.Address, &item.Description, &item.SortOrder, &item.CreatedAt, &hostname); err != nil {
 			return nil, err
 		}
+		item.Hostname = hostname.String
 		list.Items = append(list.Items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -140,7 +152,7 @@ func (r *AccessListRepository) List(ctx context.Context, page, perPage int) ([]m
 	// Get items for each list
 	for i := range lists {
 		itemRows, err := r.db.QueryContext(ctx, `
-			SELECT id, access_list_id, directive, address, COALESCE(description, '') AS description, sort_order, created_at
+			SELECT id, access_list_id, directive, address, COALESCE(description, '') AS description, sort_order, created_at, hostname
 			FROM access_list_items WHERE access_list_id = $1
 			ORDER BY sort_order, created_at
 		`, lists[i].ID)
@@ -149,10 +161,12 @@ func (r *AccessListRepository) List(ctx context.Context, page, perPage int) ([]m
 		}
 		for itemRows.Next() {
 			var item model.AccessListItem
-			if err := itemRows.Scan(&item.ID, &item.AccessListID, &item.Directive, &item.Address, &item.Description, &item.SortOrder, &item.CreatedAt); err != nil {
+			var hostname sql.NullString
+			if err := itemRows.Scan(&item.ID, &item.AccessListID, &item.Directive, &item.Address, &item.Description, &item.SortOrder, &item.CreatedAt, &hostname); err != nil {
 				itemRows.Close()
 				return nil, 0, err
 			}
+			item.Hostname = hostname.String
 			lists[i].Items = append(lists[i].Items, item)
 		}
 		if err := itemRows.Err(); err != nil {

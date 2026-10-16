@@ -116,7 +116,7 @@ func TestAccessListCreate_SavesValidRulesTrimmed(t *testing.T) {
 		WithArgs("Office #2", "", true, false).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("00000000-0000-0000-0000-0000000000a1"))
 	mock.ExpectExec(`INSERT INTO access_list_items`).
-		WithArgs("00000000-0000-0000-0000-0000000000a1", "allow", "192.0.2.0/24", "office LAN", 0).
+		WithArgs("00000000-0000-0000-0000-0000000000a1", "allow", "192.0.2.0/24", "office LAN", 0, nil).
 		WillReturnError(errStop)
 	mock.ExpectRollback()
 	h := NewAccessListHandler(repository.NewAccessListRepository(&database.DB{DB: db}), nil, nil)

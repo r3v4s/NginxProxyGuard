@@ -20,7 +20,7 @@ func TestAccessListUpdateKeepsItemsWhenAnInsertFails(t *testing.T) {
 			created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now())`,
 		`CREATE TABLE access_list_items (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, access_list_id uuid NOT NULL,
 			directive varchar(10) NOT NULL CHECK (directive IN ('allow', 'deny')), address varchar(255) NOT NULL,
-			description text, sort_order integer DEFAULT 0, created_at timestamptz DEFAULT now())`,
+			description text, sort_order integer DEFAULT 0, created_at timestamptz DEFAULT now(), hostname varchar(253))`,
 	)
 	repo := NewAccessListRepository(&database.DB{DB: db})
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -63,7 +63,7 @@ func TestAccessListCreateWritesNothingWhenAnItemFails(t *testing.T) {
 			created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now())`,
 		`CREATE TABLE access_list_items (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, access_list_id uuid NOT NULL,
 			directive varchar(10) NOT NULL CHECK (directive IN ('allow', 'deny')), address varchar(255) NOT NULL,
-			description text, sort_order integer DEFAULT 0, created_at timestamptz DEFAULT now())`,
+			description text, sort_order integer DEFAULT 0, created_at timestamptz DEFAULT now(), hostname varchar(253))`,
 	)
 	repo := NewAccessListRepository(&database.DB{DB: db})
 	_, err := repo.Create(context.Background(), &model.CreateAccessListRequest{Name: "half", Items: []model.CreateAccessListItemRequest{

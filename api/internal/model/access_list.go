@@ -50,6 +50,11 @@ type CreateAccessListItemRequest struct {
 	Address     string `json:"address" validate:"required"`
 	Description string `json:"description,omitempty"`
 	SortOrder   int    `json:"sort_order,omitempty"`
+
+	// Hostname makes the item a domain rule (#320): the repository stores it
+	// as the placeholder (deny, all, hostname) whatever Directive and Address
+	// say. It is never read from a request body; only server code sets it.
+	Hostname string `json:"-"`
 }
 
 // UpdateAccessListRequest is the request to update an access list
