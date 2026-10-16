@@ -143,6 +143,10 @@ type LogCollector struct {
 	geoIP           *GeoIPService
 	wafAutoBan      *WAFAutoBanService
 	fail2ban        *Fail2banService
+	// fail2banExemption leaves access-list denials on hosts whose list holds
+	// domain entries out of the host's fail2ban count (#320). Optional: nil
+	// counts every failure, as before.
+	fail2banExemption Fail2banExemption
 	botMatcher      *BotMatcher
 	redisCache      *cache.RedisClient
 	nginxContainer  string
@@ -257,6 +261,35 @@ func (c *LogCollector) SetWAFAutoBanService(svc *WAFAutoBanService) {
 // SetFail2banService sets the Fail2ban service for processing failed requests
 func (c *LogCollector) SetFail2banService(svc *Fail2banService) {
 	c.fail2ban = svc
+}
+
+// Fail2banExemption decides whether a host-attributed access-phase denial is
+// left out of that host's fail2ban count (#320). It is asked on
+// the access-log tail goroutine, once for every such line, so it must answer
+// from memory and never block.
+type Fail2banExemption interface {
+	ExemptAccessDenial(ctx context.Context, hostID, clientIP string) bool
+}
+
+// SetFail2banExemption wires the fail2ban exemption (the DNS entry service).
+func (c *LogCollector) SetFail2banExemption(g Fail2banExemption) {
+	c.fail2banExemption = g
+}
+
+// acmeChallengePrefix is the ACME location of every HTTP server block
+// (base.conf.tmpl). That location allows every client, so a 403 there was
+// not the access list's.
+const acmeChallengePrefix = "/.well-known/acme-challenge/"
+
+// accessPhaseDenial reports whether r looks like a 403 an access list gave:
+// nginx answered it itself (no upstream), it carries the access_denied label,
+// and it is not the ACME location. The label alone does not prove it — a WAF
+// or an Advanced Config 403 carries it too — so the exemption still walks the
+// list for the client.
+func accessPhaseDenial(r *model.CreateLogRequest) bool {
+	return r.StatusCode == 403 && r.UpstreamAddr == "" &&
+		r.BlockReason == model.BlockReasonAccessDenied &&
+		!strings.HasPrefix(r.RequestURI, acmeChallengePrefix)
 }
 
 // SetSystemSettingsRepo sets the system settings repository for trusted IP lookups
@@ -953,9 +986,18 @@ func (c *LogCollector) handleAccessLine(ctx context.Context, line string) {
 	// global jail (#275) takes it. The global jail is what finally sees
 	// catch-all traffic — the 444s an operator adds to a host's fail codes
 	// expecting them to fire, which by definition matched no host.
+	//
+	// On a host whose access list holds domain entries, a 403 the list gave a
+	// client outside it is not counted (#320). The host refuses
+	// that client anyway, and a partner whose address just changed would
+	// otherwise be banned before NPG's next DNS check lets it in. The
+	// exemption walks the list for the client; what it cannot judge counts.
 	if c.fail2ban != nil && logReq.ClientIP != "" && logReq.StatusCode >= 400 && !c.isTrustedIP(ctx, logReq.ClientIP) {
 		if logReq.ProxyHostID != "" {
-			c.fail2ban.RecordFailedRequest(ctx, logReq.ProxyHostID, logReq.ClientIP, logReq.StatusCode, logReq.RequestURI)
+			if c.fail2banExemption == nil || !accessPhaseDenial(logReq) ||
+				!c.fail2banExemption.ExemptAccessDenial(ctx, logReq.ProxyHostID, logReq.ClientIP) {
+				c.fail2ban.RecordFailedRequest(ctx, logReq.ProxyHostID, logReq.ClientIP, logReq.StatusCode, logReq.RequestURI)
+			}
 		} else {
 			c.fail2ban.RecordUnattributedFailure(ctx, logReq.ClientIP, logReq.Host, logReq.RequestURI, logReq.StatusCode)
 		}

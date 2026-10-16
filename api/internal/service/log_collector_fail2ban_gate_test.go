@@ -1,0 +1,218 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"testing"
+	"time"
+
+	"nginx-proxy-guard/internal/model"
+	"nginx-proxy-guard/internal/repository"
+)
+
+// Bootstrap hands the DNS entry service to SetFail2banExemption.
+var _ Fail2banExemption = (*DNSEntryService)(nil)
+
+const f2bGateHost = "00000000-0000-4000-8000-0000000014a1"
+
+// f2bGateExemption records what the collector asks it, as "hostID clientIP",
+// and answers exempt.
+type f2bGateExemption struct {
+	exempt bool
+	calls  []string
+}
+
+func (f *f2bGateExemption) ExemptAccessDenial(ctx context.Context, hostID, clientIP string) bool {
+	f.calls = append(f.calls, hostID+" "+clientIP)
+	return f.exempt
+}
+
+// f2bGateCollector returns a collector that hands failures to a fail2ban
+// service which only counts: every host in hosts (domain → host ID) counts
+// 401, 403 and 404 towards a threshold (1000) and an action ("log") that
+// never touch the database, and so does the global jail for traffic no host
+// owns.
+func f2bGateCollector(t *testing.T, hosts map[string]string) (*LogCollector, *Fail2banService) {
+	t.Helper()
+	f2b := NewFail2banService(nil, nil, nil, nil, nil, nil, nil)
+	for _, id := range hosts {
+		f2b.configCache[id] = &model.Fail2banConfig{Enabled: true, MaxRetries: 1000, FindTime: 600, FailCodes: "401,403,404", Action: "log"}
+	}
+	f2b.globalConfig = &model.GlobalFail2banConfig{Enabled: true, MaxRetries: 1000, FindTime: 600, FailCodes: "401,403,404", Action: "log"}
+	f2b.trustedProxyCIDRs = []string{"192.0.2.0/24"} // without a declared proxy range the global jail does nothing
+
+	c := NewLogCollector(nil, "npg-proxy", "", nil, nil)
+	c.batchSize = 1 << 30 // memory buffer only
+	c.SetFail2banService(f2b)
+	c.SetProxyHostRepo(repository.NewProxyHostRepository(nil)) // attribution needs one; the cache below answers
+	for domain, id := range hosts {
+		c.domainCache[domain] = id
+	}
+	c.domainCacheTime = time.Now() // fresh, so an unknown host is not looked up in the database
+	f2b.SetConfiguredHostResolver(c.IsConfiguredHost)
+	return c, f2b
+}
+
+// f2bGateCount is how many failures fail2ban holds for ip under key: a host
+// ID, or globalJailKey.
+func f2bGateCount(f2b *Fail2banService, key, ip string) int {
+	f2b.mu.RLock()
+	defer f2b.mu.RUnlock()
+	return len(f2b.ipEvents[key][ip])
+}
+
+// f2bGateLine is an access log line in nginx's "main" format. upstream "-"
+// means nginx answered the request itself.
+func f2bGateLine(ip, host, uri string, status int, upstream, block string) string {
+	upstreamStatus := "-"
+	if upstream != "-" {
+		upstreamStatus = strconv.Itoa(status)
+	}
+	return fmt.Sprintf(`%s - - [15/Oct/2026:12:00:00 +0900] "%s" "GET %s HTTP/1.1" %d 548 "-" "Mozilla/5.0" "-" rt=0.000 uct="-" uht="-" urt="-" ua="%s" us="%s" geo="-" asn="-" block="%s" bot="-" exploit_rule="-"`,
+		ip, host, uri, status, upstream, upstreamStatus, block)
+}
+
+func TestAccessPhaseDenial(t *testing.T) {
+	denied := model.CreateLogRequest{StatusCode: 403, BlockReason: model.BlockReasonAccessDenied, RequestURI: "/admin"}
+	cases := []struct {
+		name string
+		edit func(r *model.CreateLogRequest)
+		want bool
+	}{
+		{"403 nginx answered with the access_denied label", func(r *model.CreateLogRequest) {}, true},
+		{"the ACME location allows everyone", func(r *model.CreateLogRequest) { r.RequestURI = "/.well-known/acme-challenge/token" }, false},
+		{"a path that only starts like the ACME location", func(r *model.CreateLogRequest) { r.RequestURI = "/.well-known/acme-challenge" }, true},
+		{"the upstream answered 403", func(r *model.CreateLogRequest) { r.UpstreamAddr = "192.0.2.20:8080" }, false},
+		{"401", func(r *model.CreateLogRequest) { r.StatusCode = 401 }, false},
+		{"404", func(r *model.CreateLogRequest) { r.StatusCode = 404 }, false},
+		{"a ban's 403", func(r *model.CreateLogRequest) { r.BlockReason = model.BlockReasonBannedIP }, false},
+		{"no label", func(r *model.CreateLogRequest) { r.BlockReason = "" }, false},
+	}
+	for _, tc := range cases {
+		r := denied
+		tc.edit(&r)
+		if got := accessPhaseDenial(&r); got != tc.want {
+			t.Errorf("%s: accessPhaseDenial = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// Only a 403 nginx answered itself with the access_denied label, outside the
+// ACME location, on a line a proxy host owns, reaches the exemption.
+// Everything else is counted as before without asking, and the global
+// jail never asks.
+func TestFail2banGateAsksOnlyAboutAccessPhaseDenials(t *testing.T) {
+	ctx := context.Background()
+	c, f2b := f2bGateCollector(t, map[string]string{"app.example.com": f2bGateHost})
+	ex := &f2bGateExemption{exempt: true}
+	c.SetFail2banExemption(ex)
+
+	cases := []struct {
+		name         string
+		ip           string
+		host, uri    string
+		status       int
+		upstream     string
+		block        string
+		asked        bool
+		hostN, globN int
+	}{
+		{"access-phase 403", "198.51.100.10", "app.example.com", "/x", 403, "-", "access_denied", true, 0, 0},
+		{"401", "198.51.100.11", "app.example.com", "/x", 401, "-", "-", false, 1, 0},
+		{"401 with the access_denied label", "198.51.100.12", "app.example.com", "/x", 401, "-", "access_denied", false, 1, 0},
+		{"404", "198.51.100.13", "app.example.com", "/x", 404, "-", "-", false, 1, 0},
+		{"403 from the upstream", "198.51.100.14", "app.example.com", "/x", 403, "192.0.2.20:8080", "access_denied", false, 1, 0},
+		{"403 of a ban", "198.51.100.15", "app.example.com", "/x", 403, "-", "banned_ip", false, 1, 0},
+		{"403 of the geo block", "198.51.100.16", "app.example.com", "/x", 403, "-", "geo_block", false, 1, 0},
+		{"403 without a label", "198.51.100.17", "app.example.com", "/x", 403, "-", "-", false, 1, 0},
+		{"403 in the ACME location", "198.51.100.18", "app.example.com", "/.well-known/acme-challenge/token", 403, "-", "access_denied", false, 1, 0},
+		{"403 no host owns", "198.51.100.19", "stray.example.com", "/x", 403, "-", "access_denied", false, 0, 1},
+	}
+	for _, tc := range cases {
+		before := len(ex.calls)
+		c.handleAccessLine(ctx, f2bGateLine(tc.ip, tc.host, tc.uri, tc.status, tc.upstream, tc.block))
+		asked := len(ex.calls) > before
+		if asked != tc.asked {
+			t.Errorf("%s: exemption asked = %v, want %v", tc.name, asked, tc.asked)
+		}
+		if asked && ex.calls[before] != f2bGateHost+" "+tc.ip {
+			t.Errorf("%s: asked about %q, want the attributed host and the client %q", tc.name, ex.calls[before], f2bGateHost+" "+tc.ip)
+		}
+		if got := f2bGateCount(f2b, f2bGateHost, tc.ip); got != tc.hostN {
+			t.Errorf("%s: host count = %d, want %d", tc.name, got, tc.hostN)
+		}
+		if got := f2bGateCount(f2b, globalJailKey, tc.ip); got != tc.globN {
+			t.Errorf("%s: global jail count = %d, want %d", tc.name, got, tc.globN)
+		}
+	}
+
+	// The access log keeps every line, exempted or not.
+	c.bufferMu.Lock()
+	defer c.bufferMu.Unlock()
+	if len(c.buffer) != len(cases) {
+		t.Fatalf("buffered %d rows, want %d", len(c.buffer), len(cases))
+	}
+}
+
+// The exemption decides only whether the line counts: without one, or when
+// it says no, the denial is counted as before.
+func TestFail2banGateFollowsTheExemption(t *testing.T) {
+	ctx := context.Background()
+	line := f2bGateLine("198.51.100.20", "app.example.com", "/x", 403, "-", "access_denied")
+	for _, tc := range []struct {
+		name string
+		ex   *f2bGateExemption
+		want int
+	}{
+		{"no exemption wired", nil, 1},
+		{"the exemption says count it", &f2bGateExemption{exempt: false}, 1},
+		{"the exemption says leave it out", &f2bGateExemption{exempt: true}, 0},
+	} {
+		c, f2b := f2bGateCollector(t, map[string]string{"app.example.com": f2bGateHost})
+		if tc.ex != nil {
+			c.SetFail2banExemption(tc.ex)
+		}
+		c.handleAccessLine(ctx, line)
+		if got := f2bGateCount(f2b, f2bGateHost, "198.51.100.20"); got != tc.want {
+			t.Errorf("%s: host count = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// End to end with the DNS entry service's evaluator (dnsGateRig):
+// on a domain-list host the list's own 403 for a client outside it is not
+// counted; a client the list allows, an address nginx may still allow after a
+// removal, a host whose login decides (satisfy any + ForwardAuth), a host with
+// access rules in its Advanced Config, a host without a domain list and every
+// 401 are.
+func TestFail2banGateWithTheDNSEntryService(t *testing.T) {
+	ctx := context.Background()
+	r, _ := dnsGateRig(t)
+	c, f2b := f2bGateCollector(t, map[string]string{
+		"app1.example.com": dnsGateH1, "app2.example.com": dnsGateH2, "app5.example.com": dnsGateH5,
+		"app.example.com": f2bGateHost,
+	})
+	c.SetFail2banExemption(r.svc)
+
+	for _, tc := range []struct {
+		name   string
+		hostID string
+		ip     string
+		line   string
+		want   int
+	}{
+		{"outside list A", dnsGateH1, "203.0.113.99", f2bGateLine("203.0.113.99", "app1.example.com", "/x", 403, "-", "access_denied"), 0},
+		{"allowed by an IP row", dnsGateH1, "198.51.100.7", f2bGateLine("198.51.100.7", "app1.example.com", "/x", 403, "-", "access_denied"), 1},
+		{"removed, nginx may still allow it", dnsGateH1, "203.0.113.9", f2bGateLine("203.0.113.9", "app1.example.com", "/x", 403, "-", "access_denied"), 1},
+		{"satisfy any + ForwardAuth", dnsGateH2, "203.0.113.99", f2bGateLine("203.0.113.99", "app2.example.com", "/x", 403, "-", "access_denied"), 1},
+		{"Advanced Config with allow/deny", dnsGateH5, "203.0.113.99", f2bGateLine("203.0.113.99", "app5.example.com", "/x", 403, "-", "access_denied"), 1},
+		{"a host without a domain list", f2bGateHost, "203.0.113.99", f2bGateLine("203.0.113.99", "app.example.com", "/x", 403, "-", "access_denied"), 1},
+		{"a 401 of a client outside list A", dnsGateH1, "203.0.113.99", f2bGateLine("203.0.113.99", "app1.example.com", "/login", 401, "-", "-"), 1},
+	} {
+		c.handleAccessLine(ctx, tc.line)
+		if got := f2bGateCount(f2b, tc.hostID, tc.ip); got != tc.want {
+			t.Errorf("%s: count = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
