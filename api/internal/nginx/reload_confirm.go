@@ -213,11 +213,32 @@ type reloadSnapshot struct {
 	children map[int]bool
 }
 
+// tookReload reports whether nginx's processes, as reloadProbe.Children read
+// them, show that nginx loaded its files after s was taken: a new master (it
+// read the files on disk when it started), or a child of the master that was
+// not there (a reload nginx takes starts new workers; one it refuses keeps
+// the old ones).
+func (s reloadSnapshot) tookReload(master int, children map[int]bool) bool {
+	if master != s.master {
+		return true
+	}
+	for pid := range children {
+		if !s.children[pid] {
+			return true
+		}
+	}
+	return false
+}
+
 // pendingReload is a reload signalled inside executeWithLock, which confirms
-// it once the lock is released.
+// it once the lock is released. token is what the reload hooks' Before
+// returned for it, and hooks the hooks to report its outcome to
+// (pendingReload.report).
 type pendingReload struct {
 	before reloadSnapshot
 	sentAt time.Time
+	token  any
+	hooks  ReloadHooks
 }
 
 // reloadLogChecks are the times after the signal at which confirmReload reads
@@ -230,11 +251,13 @@ var reloadLogChecks = []time.Duration{time.Second, 3 * time.Second}
 // confirmReload waits for nginx to show what it did with the reload signalled
 // at sentAt. A reload nginx takes starts new workers, children of the master
 // that were not there before; one it refuses keeps the old ones and leaves an
-// [emerg] line in its log. A refusal returns *ReloadRejectedError. When nginx
-// shows neither within the wait, the reload is reported as taken, with a
-// warning and the "unconfirmed" count: failing saves on that guess would, on
-// slow hardware, report good saves as refused.
-func (m *Manager) confirmReload(ctx context.Context, before reloadSnapshot, sentAt time.Time) error {
+// [emerg] line in its log. A refusal returns ReloadRejected and
+// *ReloadRejectedError. When nginx shows neither within the wait, the reload
+// is reported as taken (a nil error), with a warning and the "unconfirmed"
+// count: failing saves on that guess would, on slow hardware, report good
+// saves as refused. The outcome says which it was: ReloadAccepted,
+// ReloadRejected or ReloadUnconfirmed.
+func (m *Manager) confirmReload(ctx context.Context, before reloadSnapshot, sentAt time.Time) (ReloadOutcome, error) {
 	start := time.Now()
 	wait := m.reloadConfirmWait
 	if wait <= 0 {
@@ -258,17 +281,9 @@ func (m *Manager) confirmReload(ctx context.Context, before reloadSnapshot, sent
 		master, children, err := m.reloadProbe.Children(ctx)
 		if err != nil {
 			procErr = err
-		} else {
-			if master != before.master {
-				done("accepted") // a new master read the files on disk
-				return nil
-			}
-			for pid := range children {
-				if !before.children[pid] {
-					done("accepted")
-					return nil
-				}
-			}
+		} else if before.tookReload(master, children) {
+			done("accepted")
+			return ReloadAccepted, nil
 		}
 		last := !time.Now().Before(deadline)
 		readLog := last
@@ -292,7 +307,7 @@ func (m *Manager) confirmReload(ctx context.Context, before reloadSnapshot, sent
 				// "still could not bind()".
 				detail := cleanEmergLine(lines[0])
 				log.Printf("[ERROR] [NginxReload] nginx refused the reload and keeps its previous configuration: %s", detail)
-				return &ReloadRejectedError{Detail: detail}
+				return ReloadRejected, &ReloadRejectedError{Detail: detail}
 			}
 		}
 		if last {
@@ -305,13 +320,13 @@ func (m *Manager) confirmReload(ctx context.Context, before reloadSnapshot, sent
 			default:
 				log.Printf("[WARN] [NginxReload] nginx started no new worker within %v of the reload and logged no error; the reload is reported as applied", wait)
 			}
-			return nil
+			return ReloadUnconfirmed, nil
 		}
 		select {
 		case <-ctx.Done():
 			done("unconfirmed")
 			log.Printf("[WARN] [NginxReload] stopped waiting for nginx to take the reload: %v", ctx.Err())
-			return nil
+			return ReloadUnconfirmed, nil
 		case <-time.After(every):
 		}
 	}

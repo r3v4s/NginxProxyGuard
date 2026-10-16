@@ -61,6 +61,10 @@ type Manager struct {
 	// legacyZoneTexts returns the hosts' Advanced Config that may use a rate
 	// limit zone by its old name (LegacyZoneRefs). Nil: none are read.
 	legacyZoneTexts func(ctx context.Context) ([]string, error)
+
+	// reloadHooks hear of every reload signal (reload_hooks.go). Set once
+	// at bootstrap (SetReloadHooks); the zero value calls nothing.
+	reloadHooks ReloadHooks
 }
 
 func NewManager(configPath, certsPath string) *Manager {
@@ -268,21 +272,36 @@ func (m *Manager) writeFileAtomic(filePath string, data []byte, perm os.FileMode
 // this one's change, and an [emerg] line after this signal with no new
 // worker means nginx did not load the newest files, which include it.
 func (m *Manager) executeWithLock(ctx context.Context, fn func() error) error {
+	_, err := m.executeWithLockOutcome(ctx, fn)
+	return err
+}
+
+// executeWithLockOutcome is executeWithLock that also returns what became of
+// the reload it confirms after releasing the lock: ReloadAccepted,
+// ReloadRejected, ReloadUnconfirmed, or ReloadNotChecked when fn failed
+// after signalling it. It is "" when fn left no reload to confirm: it
+// signalled none, or its reload's outcome was known at once
+// (reloadNginxOutcome). The error is executeWithLock's. The reload hooks
+// hear of the outcome before it returns.
+func (m *Manager) executeWithLockOutcome(ctx context.Context, fn func() error) (ReloadOutcome, error) {
 	// Check if context is already cancelled before waiting for the lock
 	if ctx.Err() != nil {
-		return fmt.Errorf("nginx operation cancelled before acquiring lock: %w", ctx.Err())
+		return "", fmt.Errorf("nginx operation cancelled before acquiring lock: %w", ctx.Err())
 	}
 
 	pending, err := m.runLocked(ctx, fn)
 	if pending == nil {
-		return err
+		return "", err
 	}
 	if err != nil {
 		metrics.NginxReloadConfirmTotal.WithLabelValues("unconfirmed").Inc()
 		log.Printf("[WARN] [NginxReload] whether nginx took the last reload is not checked, because the operation that signalled it failed: %v", err)
-		return err
+		pending.report(ReloadNotChecked)
+		return ReloadNotChecked, err
 	}
-	return m.confirmReload(ctx, pending.before, pending.sentAt)
+	outcome, err := m.confirmReload(ctx, pending.before, pending.sentAt)
+	pending.report(outcome)
+	return outcome, err
 }
 
 // runLocked runs fn under globalNginxMutex and returns the last reload fn
@@ -308,11 +327,12 @@ func (m *Manager) runLocked(ctx context.Context, fn func() error) (*pendingReloa
 }
 
 // dropPendingReload counts the reload executeWithLock was to confirm as
-// unconfirmed, and forgets it.
+// unconfirmed, tells the reload hooks it was superseded, and forgets it.
 func (m *Manager) dropPendingReload() {
-	if m.pendingReload != nil {
+	if p := m.pendingReload; p != nil {
 		metrics.NginxReloadConfirmTotal.WithLabelValues("unconfirmed").Inc()
 		m.pendingReload = nil
+		p.report(ReloadSuperseded)
 	}
 }
 
@@ -537,18 +557,39 @@ func (m *Manager) testConfigInternal(ctx context.Context) error {
 // off, finds out whether nginx took or refused it (confirmReload). Inside
 // executeWithLock it leaves that to executeWithLock, which confirms the last
 // reload once the lock is released; outside it, it waits here. Either way a
-// refusal reaches the caller as *ReloadRejectedError.
+// refusal reaches the caller as *ReloadRejectedError. The reload hooks hear
+// of every signal it sends (reload_hooks.go).
 func (m *Manager) reloadNginxInternal(ctx context.Context) error {
+	_, err := m.reloadNginxOutcome(ctx)
+	return err
+}
+
+// reloadNginxOutcome is reloadNginxInternal, also returning what is known of
+// the reload when it returns: ReloadSignalled when confirmation is off,
+// ReloadUnconfirmed when nginx's processes could not be read before the
+// signal, nginx's answer outside executeWithLock, and "" when
+// executeWithLock is to confirm it after the lock or nothing was signalled
+// (skipTest, or the signal failed).
+func (m *Manager) reloadNginxOutcome(ctx context.Context) (ReloadOutcome, error) {
 	if m.skipTest {
-		return nil
+		return "", nil
 	}
+	hooks := m.reloadHooks
+	// The token comes before the snapshot: a master that restarted in
+	// between counts as having taken the reload (tookReload), and it read
+	// only files the token already covers.
+	token := hooks.before()
 	if m.reloadProbe == nil {
-		return m.cli.Reload(ctx)
+		if err := m.cli.Reload(ctx); err != nil {
+			return "", err
+		}
+		hooks.after(token, ReloadSignalled, nil)
+		return ReloadSignalled, nil
 	}
 	master, children, snapErr := m.reloadProbe.Children(ctx)
 	sentAt := time.Now()
 	if err := m.cli.Reload(ctx); err != nil {
-		return err
+		return "", err
 	}
 	if m.inLock {
 		m.dropPendingReload() // this reload supersedes it
@@ -556,14 +597,22 @@ func (m *Manager) reloadNginxInternal(ctx context.Context) error {
 	if snapErr != nil {
 		metrics.NginxReloadConfirmTotal.WithLabelValues("unconfirmed").Inc()
 		log.Printf("[WARN] [NginxReload] could not read nginx's processes before the reload, so whether nginx took it is not checked: %v", snapErr)
-		return nil
+		hooks.after(token, ReloadUnconfirmed, nil)
+		return ReloadUnconfirmed, nil
 	}
-	before := reloadSnapshot{master: master, children: children}
+	pending := &pendingReload{
+		before: reloadSnapshot{master: master, children: children},
+		sentAt: sentAt,
+		token:  token,
+		hooks:  hooks,
+	}
 	if m.inLock {
-		m.pendingReload = &pendingReload{before: before, sentAt: sentAt}
-		return nil
+		m.pendingReload = pending
+		return "", nil
 	}
-	return m.confirmReload(ctx, before, sentAt)
+	outcome, err := m.confirmReload(ctx, pending.before, sentAt)
+	pending.report(outcome)
+	return outcome, err
 }
 
 func (m *Manager) GenerateConfig(ctx context.Context, host *model.ProxyHost) error {
