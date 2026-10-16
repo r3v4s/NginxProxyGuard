@@ -23,7 +23,7 @@
     "banned": "현재 차단됨",
     "cgnat": "CGNAT 대역",
     "partial_rejected": "일부 주소 거부",
-    "ipv6_listen": "IPv6 미확인",
+    "ipv6_listen": "IPv6 접속 거부",
     "duplicate": "주소 중복"
   },
   "warningHelp": {
@@ -188,14 +188,14 @@
     "rangeHint": "{{min}}~{{max}} 사이의 정수를 입력하세요.",
     "inUse": "지금 {{count}}개 사용 중",
     "overLimit": "이 한도보다 많은 도메인을 쓰고 있습니다. 도메인을 더하는 저장은 거부되고, 이미 목록에 있는 도메인은 그대로 남습니다.",
-    "envDisabled": "환경변수 NPG_DNS_ENTRIES_DISABLED로 꺼져 있습니다. 여기 값은 환경변수를 지운 뒤에 쓰입니다.",
-    "envInterval": "환경변수 NPG_DNS_ENTRIES_INTERVAL로 {{seconds}}초로 정해져 있습니다. 여기 값은 환경변수를 지운 뒤에 쓰입니다.",
+    "envDisabled": "환경변수 NPG_DNS_ENTRIES_DISABLED로 꺼져 있습니다. 여기 값은 환경변수를 지우고 API 컨테이너를 다시 만들면(docker compose up -d) 쓰입니다.",
+    "envInterval": "환경변수 NPG_DNS_ENTRIES_INTERVAL로 {{seconds}}초로 정해져 있습니다. 여기 값은 환경변수를 지우고 API 컨테이너를 다시 만들면(docker compose up -d) 쓰입니다.",
     "turningOff": "저장하면 모든 도메인 항목이 바로 꺼집니다. 다시 켤 때까지 도메인으로는 아무도 들어오지 못합니다.",
     "turningOn": "저장하면 예전에 쓰던 주소로 돌아온 도메인은 보통의 확인을 거쳐 허용되고, 새 주소로 돌아온 도메인은 검토가 필요합니다.",
     "saved": "도메인 항목 설정을 저장했습니다.",
     "saveFailed": "도메인 항목 설정을 저장하지 못했습니다: {{error}}",
     "disabledBanner": "도메인 항목이 꺼져 있습니다. 아래에서 켤 때까지 도메인으로는 아무도 들어오지 못합니다.",
-    "envDisabledBanner": "환경변수 NPG_DNS_ENTRIES_DISABLED로 도메인 항목이 꺼져 있습니다. 환경변수를 지우고 API를 다시 시작할 때까지 도메인으로는 아무도 들어오지 못합니다."
+    "envDisabledBanner": "환경변수 NPG_DNS_ENTRIES_DISABLED로 도메인 항목이 꺼져 있습니다. 환경변수를 지우고 API 컨테이너를 다시 만들 때까지(docker compose up -d) 도메인으로는 아무도 들어오지 못합니다."
   },
   "overview": {
     "title": "쓰이는 도메인",
@@ -228,7 +228,7 @@
       "noReload": "API가 시작한 뒤 DNS 적용 없음",
       "pendingAdditions": "미적용 추가: {{count}}건",
       "revokePending": "회수 미반영: {{count}}건",
-      "revokePendingHelp": "NPG가 도메인에서 뺐지만 실행 중인 nginx가 아직 허용하는 주소입니다. 다음 리로드가 성공하면 빠지고, 그동안 실패하면 알림을 보냅니다.",
+      "revokePendingHelp": "NPG가 도메인에서 뺐지만 실행 중인 nginx가 아직 허용하는 주소입니다. 다음 리로드가 성공하면 빠지고, 그동안 실패하면 「도메인 항목 변경 미반영」을 구독한 채널로 알림을 보냅니다.",
       "blockedTitle": "마지막 적용이 실패했습니다: {{reason}}",
       "blockingFile": "막는 파일: {{file}}",
       "nextRetry": "다음 시도: {{time}}",

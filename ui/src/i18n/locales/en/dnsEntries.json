@@ -188,14 +188,14 @@
     "rangeHint": "Enter a whole number from {{min}} to {{max}}.",
     "inUse": "In use now: {{count}}",
     "overLimit": "More domains are in use than this limit. Saves that add a domain are refused; the domains already in lists stay.",
-    "envDisabled": "Turned off by the NPG_DNS_ENTRIES_DISABLED environment variable. The value here is used after it is removed.",
-    "envInterval": "Set to {{seconds}} seconds by the NPG_DNS_ENTRIES_INTERVAL environment variable. The value here is used after it is removed.",
+    "envDisabled": "Turned off by the NPG_DNS_ENTRIES_DISABLED environment variable. The value here is used once the variable is removed and the API container recreated (docker compose up -d).",
+    "envInterval": "Set to {{seconds}} seconds by the NPG_DNS_ENTRIES_INTERVAL environment variable. The value here is used once the variable is removed and the API container recreated (docker compose up -d).",
     "turningOff": "Saving turns every domain entry off at once: no one gets in through a domain until you turn them on again.",
     "turningOn": "After saving, a domain that comes back with an address it had before is allowed after the usual checks; one with a new address needs review.",
     "saved": "Domain entry settings saved.",
     "saveFailed": "Could not save the domain entry settings: {{error}}",
     "disabledBanner": "Domain entries are turned off: no one gets in through a domain until you turn them on below.",
-    "envDisabledBanner": "Domain entries are turned off by the NPG_DNS_ENTRIES_DISABLED environment variable: no one gets in through a domain until it is removed and the API restarts."
+    "envDisabledBanner": "Domain entries are turned off by the NPG_DNS_ENTRIES_DISABLED environment variable: no one gets in through a domain until you remove it and recreate the API container (docker compose up -d)."
   },
   "overview": {
     "title": "Domains in use",
@@ -228,7 +228,7 @@
       "noReload": "No DNS apply since the API started",
       "pendingAdditions": "Additions waiting: {{count}}",
       "revokePending": "Removals nginx still allows: {{count}}",
-      "revokePendingHelp": "Addresses NPG removed from a domain that the running nginx still allows. They go at the next successful reload; while that fails, an alert is sent.",
+      "revokePendingHelp": "Addresses NPG removed from a domain that the running nginx still allows. They go at the next successful reload; while that fails, an alert goes to the channels subscribed to \"Domain entry change not applied\".",
       "blockedTitle": "The last apply failed: {{reason}}",
       "blockingFile": "Blocking file: {{file}}",
       "nextRetry": "Next try: {{time}}",
