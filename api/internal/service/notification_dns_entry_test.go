@@ -45,6 +45,10 @@ func TestDNSEntryRecoveryHeadlines(t *testing.T) {
 	if h := headline(LangKorean, model.RenderedMessage{Event: "dns_entry.apply_failed", Severity: "error", Fields: map[string]string{}}); !strings.Contains(h, "도메인 항목 변경 미반영") {
 		t.Errorf("failure headline = %q", h)
 	}
+	// "알림 해제" reads as notifications turned off; the alert is what ended.
+	if h := headline(LangKorean, model.RenderedMessage{Event: "dns_entry.apply_failed", Severity: "resolved", Fields: map[string]string{}}); !strings.Contains(h, "도메인 항목 경보 해제") {
+		t.Errorf("Korean recovery headline = %q, want 도메인 항목 경보 해제", h)
+	}
 }
 
 var dnsSampleIPv4 = regexp.MustCompile(`\b\d{1,3}(\.\d{1,3}){3}\b`)

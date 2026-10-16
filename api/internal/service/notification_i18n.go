@@ -171,7 +171,7 @@ var notificationStrings = map[string]map[string]string{
 		"event.dns_entry.review":                "도메인 항목 검토 필요",
 		"event.dns_entry.review.resolved":       "도메인 항목 확인됨",
 		"event.dns_entry.apply_failed":          "도메인 항목 변경 미반영",
-		"event.dns_entry.apply_failed.resolved": "도메인 항목 알림 해제",
+		"event.dns_entry.apply_failed.resolved": "도메인 항목 경보 해제",
 		"sample.dnsReview":                      "partner.example.com 검토 필요: CNAME 대상이 home.example.com에서 edge.example.com(으)로 바뀌었습니다. 운영자가 확인할 때까지 이 도메인의 주소를 허용하지 않습니다.",
 		"sample.dnsApplyFailed":                 "도메인 항목 1개(partner.example.com)에서 뺀 주소를 nginx가 아직 허용합니다: proxy_host_1.conf에서 nginx -t가 실패합니다.",
 
