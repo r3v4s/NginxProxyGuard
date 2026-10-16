@@ -683,6 +683,47 @@ func TestApplyDNSIncludesReloadReachesTheHooks(t *testing.T) {
 	}
 }
 
+// The applier's reload takes its token from BeforeDNSApply when the hooks
+// set one, with confirmation on or off: a hook can tell that reload, which is
+// for the include files, from every other. Every other reload takes its
+// token from Before, and so does the applier's when BeforeDNSApply is unset.
+func TestApplyDNSIncludesTakesItsTokenFromBeforeDNSApply(t *testing.T) {
+	ctx := context.Background()
+	confirmed := func() reloadProbe {
+		return &fakeReloadProbe{procs: []fakeProcs{{master: 1, children: []int{10}}, {master: 1, children: []int{10, 20}}}}
+	}
+	var heard []string
+	hooks := ReloadHooks{
+		Before:         func() any { return "before" },
+		BeforeDNSApply: func() any { return "dns" },
+		After: func(token any, outcome ReloadOutcome, _ *ReloadSnapshot) {
+			heard = append(heard, fmt.Sprintf("%v:%s", token, outcome))
+		},
+	}
+	m := dnsTestManager(t, &fakeNginxCLI{}, confirmed())
+	m.SetReloadHooks(hooks)
+	if res := m.ApplyDNSIncludes(ctx); res.Outcome != "accepted" {
+		t.Fatalf("apply: %+v, want accepted", res)
+	}
+	m.reloadProbe = confirmed()
+	if err := m.ReloadNginx(ctx); err != nil {
+		t.Fatalf("ReloadNginx: %v", err)
+	}
+	m.reloadProbe = nil // confirmation off: After hears the signal at once
+	if res := m.ApplyDNSIncludes(ctx); res.Outcome != "signalled" {
+		t.Fatalf("apply without confirmation: %+v, want signalled", res)
+	}
+	hooks.BeforeDNSApply = nil
+	m.SetReloadHooks(hooks)
+	m.reloadProbe = confirmed()
+	if res := m.ApplyDNSIncludes(ctx); res.Outcome != "accepted" {
+		t.Fatalf("apply without BeforeDNSApply: %+v, want accepted", res)
+	}
+	if got, want := strings.Join(heard, " "), "dns:accepted before:accepted dns:signalled before:accepted"; got != want {
+		t.Errorf("After heard %q, want %q", got, want)
+	}
+}
+
 // Whatever the files hold and whichever are missing, an apply leaves every
 // file with at most the addresses it had: it creates files empty, empties a
 // file nginx refuses, and writes nothing else.

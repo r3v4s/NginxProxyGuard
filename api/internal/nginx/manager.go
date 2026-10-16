@@ -560,7 +560,7 @@ func (m *Manager) testConfigInternal(ctx context.Context) error {
 // refusal reaches the caller as *ReloadRejectedError. The reload hooks hear
 // of every signal it sends (reload_hooks.go).
 func (m *Manager) reloadNginxInternal(ctx context.Context) error {
-	_, err := m.reloadNginxOutcome(ctx)
+	_, err := m.reloadNginxOutcome(ctx, false)
 	return err
 }
 
@@ -569,8 +569,9 @@ func (m *Manager) reloadNginxInternal(ctx context.Context) error {
 // ReloadUnconfirmed when nginx's processes could not be read before the
 // signal, nginx's answer outside executeWithLock, and "" when
 // executeWithLock is to confirm it after the lock or nothing was signalled
-// (skipTest, or the signal failed).
-func (m *Manager) reloadNginxOutcome(ctx context.Context) (ReloadOutcome, error) {
+// (skipTest, or the signal failed). dnsApply marks the DNS include applier's
+// own reload, whose token comes from ReloadHooks.BeforeDNSApply.
+func (m *Manager) reloadNginxOutcome(ctx context.Context, dnsApply bool) (ReloadOutcome, error) {
 	if m.skipTest {
 		return "", nil
 	}
@@ -578,7 +579,7 @@ func (m *Manager) reloadNginxOutcome(ctx context.Context) (ReloadOutcome, error)
 	// The token comes before the snapshot: a master that restarted in
 	// between counts as having taken the reload (tookReload), and it read
 	// only files the token already covers.
-	token := hooks.before()
+	token := hooks.before(dnsApply)
 	if m.reloadProbe == nil {
 		if err := m.cli.Reload(ctx); err != nil {
 			return "", err

@@ -207,7 +207,8 @@ type dnsTestFile struct {
 // dnsTestNginx is a fake dnsNginx. Files live in memory, keyed like the real
 // directory ("<key><ext>"). ApplyDNSIncludes returns the scripted results in
 // order (the last one repeats; none = accepted) and, with hooks set, runs
-// Before and After the way Manager's reload path does.
+// BeforeDNSApply (Before when unset) and After the way Manager's applier
+// reload does.
 type dnsTestNginx struct {
 	mu        sync.Mutex
 	clock     *dnsTestClock
@@ -315,8 +316,11 @@ func (n *dnsTestNginx) ApplyDNSIncludes(ctx context.Context) nginx.DNSApplyResul
 			outcome = nginx.ReloadRejected
 		}
 		if outcome != "" {
-			tok := hooks.Before()
-			hooks.After(tok, outcome, res.Snapshot)
+			before := hooks.Before
+			if hooks.BeforeDNSApply != nil {
+				before = hooks.BeforeDNSApply // the applier's own reload, as Manager signals it
+			}
+			hooks.After(before(), outcome, res.Snapshot)
 		}
 	}
 	return res

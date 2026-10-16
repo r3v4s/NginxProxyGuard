@@ -51,6 +51,11 @@ type ReloadHooks struct {
 	// signal. It may take only a leaf mutex. Its return value is handed back
 	// to After as token.
 	Before func() any
+	// BeforeDNSApply, when set, runs in Before's place for the reload
+	// ApplyDNSIncludes signals: the DNS include applier's own, which is for
+	// the npg_dns files (the applier writes no other file). Same rules as
+	// Before.
+	BeforeDNSApply func() any
 	// After runs once per signalled reload, once its outcome is known. A
 	// reload signalled inside executeWithLock and confirmed there is
 	// reported after the lock is released (accepted, rejected, unconfirmed,
@@ -64,8 +69,12 @@ type ReloadHooks struct {
 	After func(token any, outcome ReloadOutcome, snap *ReloadSnapshot)
 }
 
-// before calls h.Before, if set.
-func (h ReloadHooks) before() any {
+// before calls h.Before, if set, or h.BeforeDNSApply for the applier's own
+// reload (dnsApply) when that is set.
+func (h ReloadHooks) before(dnsApply bool) any {
+	if dnsApply && h.BeforeDNSApply != nil {
+		return h.BeforeDNSApply()
+	}
 	if h.Before == nil {
 		return nil
 	}

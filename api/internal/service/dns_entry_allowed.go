@@ -15,6 +15,9 @@ const (
 	// for a while after nginx takes a reload, so an address counts as
 	// allowed only from this long after the reload that added it.
 	dnsAllowSlack = 5 * time.Second
+	// dnsLogResolution: the access log stamps a request with its second, so
+	// a line stamped at came in at some time in [at, at+1s).
+	dnsLogResolution = time.Second
 	// dnsAllowMemory is how long the record keeps a stretch that ended.
 	dnsAllowMemory = 10 * time.Minute
 	// dnsAllowSpansMax is how many stretches the record keeps per address,
@@ -111,17 +114,19 @@ func (s *DNSEntryService) recordAllowedLocked(t *dnsReloadToken, now time.Time) 
 
 // dnsAllowedAt reports whether nginx allowed addr through a file of scope
 // when a request came in at at: a reload nginx took more than dnsAllowSlack
-// before at held it, and no reload nginx took before at had dropped it. An
-// address the record does not hold is allowed while its removal waits for
-// nginx: a reload whose acceptance was not seen may have added it. The
-// fail2ban gate asks this from the log goroutine: memory only.
+// before at held it, and no reload nginx took before the end of at's second
+// had dropped it. Both sides err toward the list's denial: a line stamped
+// with the second in which nginx dropped an address may have come in after
+// the drop. An address the record does not hold is allowed while its removal
+// waits for nginx: a reload whose acceptance was not seen may have added it.
+// The fail2ban gate asks this from the log goroutine: memory only.
 func (s *DNSEntryService) dnsAllowedAt(scope, addr string, at time.Time) bool {
 	s.diskMu.Lock()
 	defer s.diskMu.Unlock()
 	if spans, ok := s.allowed[scope][addr]; ok {
 		for _, sp := range spans {
 			started := sp.from.IsZero() || sp.from.Before(at.Add(-dnsAllowSlack))
-			if started && (sp.until.IsZero() || at.Before(sp.until)) {
+			if started && (sp.until.IsZero() || !at.Add(dnsLogResolution).After(sp.until)) {
 				return true
 			}
 		}

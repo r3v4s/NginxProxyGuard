@@ -412,7 +412,8 @@ func firstEmergMessage(text string) string {
 // blame for (testDNSIncludesRepairing), and signals a reload
 // (reloadNginxOutcome). It writes no address, runs no post-reload health
 // probe and never rolls a file back. The reload hooks hear of its reload
-// like of any other, before it returns.
+// like of any other, before it returns; its token comes from
+// ReloadHooks.BeforeDNSApply when that is set.
 func (m *Manager) ApplyDNSIncludes(ctx context.Context) DNSApplyResult {
 	if m.skipTest {
 		return DNSApplyResult{Outcome: dnsApplySkipped}
@@ -425,7 +426,7 @@ func (m *Manager) ApplyDNSIncludes(ctx context.Context) DNSApplyResult {
 		if err := m.testDNSIncludesRepairing(ctx); err != nil {
 			return err
 		}
-		outcome, err := m.reloadNginxOutcome(ctx)
+		outcome, err := m.reloadNginxOutcome(ctx, true)
 		if err != nil {
 			return err
 		}

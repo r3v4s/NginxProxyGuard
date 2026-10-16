@@ -168,7 +168,7 @@ func TestReloadHooksHearARefusedReload(t *testing.T) {
 func TestReloadHooksHearARefusalOutsideTheLock(t *testing.T) {
 	probe := &fakeReloadProbe{procs: []fakeProcs{{master: 1, children: []int{10}}}, emerg: []string{rejectedZoneKeyLine}}
 	m, rec := hookedManager(&fakeNginxCLI{}, probe)
-	outcome, err := m.reloadNginxOutcome(context.Background())
+	outcome, err := m.reloadNginxOutcome(context.Background(), false)
 	if !errors.Is(err, ErrReloadRejected) || outcome != ReloadRejected {
 		t.Fatalf("outcome, err = %q, %v; want rejected, ErrReloadRejected", outcome, err)
 	}
@@ -228,7 +228,7 @@ func TestReloadHooksHearAnUnconfirmedReloadWithoutASnapshot(t *testing.T) {
 	m, rec := hookedManager(&fakeNginxCLI{}, probe)
 	var inner ReloadOutcome
 	outcome, err := m.executeWithLockOutcome(ctx, func() error {
-		o, err := m.reloadNginxOutcome(ctx)
+		o, err := m.reloadNginxOutcome(ctx, false)
 		inner = o
 		return err
 	})

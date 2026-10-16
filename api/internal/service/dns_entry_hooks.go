@@ -20,11 +20,13 @@ const (
 // generation among the name's segments, so a write that failed for one scope
 // never lets the name be reported as fully taken. reconciled says whether
 // the rows and files were in line in this process then (finishTaken).
+// dnsApply marks the DNS applier's own reload (ApplyDNSIncludes).
 type dnsReloadToken struct {
 	seq        int64
 	segs       map[string]dnsDiskEntry
 	gens       map[string]int64
 	reconciled bool
+	dnsApply   bool
 }
 
 // dnsPostHoc is a reload nginx was signalled for whose acceptance was not
@@ -76,9 +78,9 @@ const (
 // signal (bootstrap: Manager.SetReloadHooks). They are how a reload of any
 // path — a save, SyncAll, a rollback, the applier — marks the DNS files it
 // read as applied, so a save that added a name does not need a reload of its
-// own.
+// own. The applier's own reload gets its token from beforeDNSApplyReload.
 func (s *DNSEntryService) ReloadHooks() nginx.ReloadHooks {
-	return nginx.ReloadHooks{Before: s.beforeReload, After: s.afterReload}
+	return nginx.ReloadHooks{Before: s.beforeReload, BeforeDNSApply: s.beforeDNSApplyReload, After: s.afterReload}
 }
 
 // beforeReload copies the disk table, and whether the rows and files are in
@@ -86,6 +88,18 @@ func (s *DNSEntryService) ReloadHooks() nginx.ReloadHooks {
 // diskMu. The flag is read under it: a flag set after the files were written
 // comes with a copy that holds them.
 func (s *DNSEntryService) beforeReload() any {
+	return s.newReloadToken(false)
+}
+
+// beforeDNSApplyReload is beforeReload for the DNS applier's own reload: nginx
+// takes it for the include files, and nothing a host renders changes, so
+// taking it leaves the host index as it is (tokenTaken).
+func (s *DNSEntryService) beforeDNSApplyReload() any {
+	return s.newReloadToken(true)
+}
+
+// newReloadToken is the token of beforeReload and beforeDNSApplyReload.
+func (s *DNSEntryService) newReloadToken(dnsApply bool) *dnsReloadToken {
 	s.diskMu.Lock()
 	defer s.diskMu.Unlock()
 	s.tokenSeq++
@@ -94,6 +108,7 @@ func (s *DNSEntryService) beforeReload() any {
 		segs:       make(map[string]dnsDiskEntry, len(s.disk)),
 		gens:       make(map[string]int64),
 		reconciled: s.reconciled.Load(),
+		dnsApply:   dnsApply,
 	}
 	for k, e := range s.disk {
 		tok.segs[k] = e
@@ -146,7 +161,9 @@ func (s *DNSEntryService) addPostHocLocked(ph *dnsPostHoc) {
 // post-hoc tokens up to tok are taken first and closed: nginx took a later
 // reload, so it read at least those files too. The record of what nginx
 // allowed moves to tok only when tok is the newest reload taken: an older
-// reload's hook can run after a newer one's.
+// reload's hook can run after a newer one's. The host index is marked
+// unless every reload taken here is the applier's own: a reload of any other
+// path (a host save's) may have changed what hosts render.
 func (s *DNSEntryService) tokenTaken(tok *dnsReloadToken) {
 	gens, changes := func() (map[string]int64, []dnsAppliedChange) {
 		s.diskMu.Lock()
@@ -166,8 +183,10 @@ func (s *DNSEntryService) tokenTaken(tok *dnsReloadToken) {
 			s.takenSeq = tok.seq
 			s.recordAllowedLocked(tok, s.now())
 		}
-		s.markHostIndexDirty() // a host save's reload: what hosts render may have changed
 		toks = append(toks, tok)
+		if slices.ContainsFunc(toks, func(t *dnsReloadToken) bool { return !t.dnsApply }) {
+			s.markHostIndexDirty()
+		}
 		gens := make(map[string]int64)
 		var changes []dnsAppliedChange
 		for _, t := range toks {
