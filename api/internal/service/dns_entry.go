@@ -63,7 +63,11 @@ type DNSEntryService struct {
 	bg   sync.WaitGroup // work the reload hooks hand off; tests wait on it
 	logs dnsLogOnce
 
-	reconciled atomic.Bool // a ReconcileFiles of this process finished; until then the reload hooks look at no alert
+	// reconciled: the rows and files are in line in this process, since a
+	// ReconcileFiles or a check finished. A reload token copies it when nginx
+	// is signalled (beforeReload); a reload signalled before it leaves the
+	// alerts alone.
+	reconciled atomic.Bool
 
 	settingsMu sync.Mutex
 	lastGood   *model.DNSEntrySettings

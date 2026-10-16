@@ -18,11 +18,13 @@ const (
 // dnsReloadToken is the disk table at the moment nginx is signalled (Before):
 // what a reload reads if nginx takes it. gens holds, per name, the lowest
 // generation among the name's segments, so a write that failed for one scope
-// never lets the name be reported as fully taken.
+// never lets the name be reported as fully taken. reconciled says whether
+// the rows and files were in line in this process then (finishTaken).
 type dnsReloadToken struct {
-	seq  int64
-	segs map[string]dnsDiskEntry
-	gens map[string]int64
+	seq        int64
+	segs       map[string]dnsDiskEntry
+	gens       map[string]int64
+	reconciled bool
 }
 
 // dnsPostHoc is a reload nginx was signalled for whose acceptance was not
@@ -79,16 +81,19 @@ func (s *DNSEntryService) ReloadHooks() nginx.ReloadHooks {
 	return nginx.ReloadHooks{Before: s.beforeReload, After: s.afterReload}
 }
 
-// beforeReload copies the disk table. It runs inside nginx's lock and takes
-// only diskMu.
+// beforeReload copies the disk table, and whether the rows and files are in
+// line in this process yet. It runs inside nginx's lock and takes only
+// diskMu. The flag is read under it: a flag set after the files were written
+// comes with a copy that holds them.
 func (s *DNSEntryService) beforeReload() any {
 	s.diskMu.Lock()
 	defer s.diskMu.Unlock()
 	s.tokenSeq++
 	tok := &dnsReloadToken{
-		seq:  s.tokenSeq,
-		segs: make(map[string]dnsDiskEntry, len(s.disk)),
-		gens: make(map[string]int64),
+		seq:        s.tokenSeq,
+		segs:       make(map[string]dnsDiskEntry, len(s.disk)),
+		gens:       make(map[string]int64),
+		reconciled: s.reconciled.Load(),
 	}
 	for k, e := range s.disk {
 		tok.segs[k] = e
@@ -177,7 +182,7 @@ func (s *DNSEntryService) tokenTaken(tok *dnsReloadToken) {
 		defer s.bg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), dnsHookTimeout)
 		defer cancel()
-		s.finishTaken(ctx, gens, changes)
+		s.finishTaken(ctx, gens, changes, tok.reconciled)
 	}()
 }
 
@@ -230,13 +235,17 @@ func dnsNonNil(in []string) []string {
 }
 
 // finishTaken records the taken generations, audits the changed names and
-// looks at the apply alerts again, once ReconcileFiles has run in this
-// process. A reload at boot can come before it (the raw log settings are
-// applied while startup runs), when the rows are still as the last process
-// left them: an addition that waited across the restart would open
-// dns_entry.apply_failed until startup's own reload takes it. A check that
-// runs no apply, and an apply that fails, look at them either way.
-func (s *DNSEntryService) finishTaken(ctx context.Context, gens map[string]int64, changes []dnsAppliedChange) {
+// looks at the apply alerts again when the taken reload was signalled with
+// the rows and files in line in this process (reconciled: a ReconcileFiles
+// or a check had finished). A reload at boot can be signalled before that
+// (the raw log settings are applied while startup runs): it read files
+// ReconcileFiles had not written, the rows are still as the last process
+// left them, and an addition that waited across the restart would open
+// dns_entry.apply_failed until startup's own reload takes it. The signal
+// decides, not this call: nginx confirms a reload for a while after it,
+// and ReconcileFiles does not wait for that. A check that runs no apply,
+// and an apply that fails, look at the alerts either way.
+func (s *DNSEntryService) finishTaken(ctx context.Context, gens map[string]int64, changes []dnsAppliedChange, reconciled bool) {
 	if len(gens) > 0 {
 		if err := s.states.MarkApplied(ctx, gens); err != nil {
 			s.logs.fail("mark", "[DNSEntries] WARN: could not record which domain entries nginx applied; the next check applies them again: %v", err)
@@ -247,7 +256,7 @@ func (s *DNSEntryService) finishTaken(ctx context.Context, gens map[string]int64
 	for _, ch := range changes {
 		s.events.applied(ctx, ch.name, ch.before, ch.after, ch.gen)
 	}
-	if s.reconciled.Load() {
+	if reconciled {
 		s.evaluateApplyAlerts(ctx, nil)
 	}
 }

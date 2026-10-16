@@ -252,42 +252,112 @@ func TestDNSAnApplyCutShortIsNoFailure(t *testing.T) {
 // At boot a reload can come before ReconcileFiles: the raw log settings are
 // applied while startup runs. The rows are still as the last process left
 // them then. Here an addition waited across the restart, more than 15
-// minutes: looking at the alerts then would open apply_failed for the time
-// until startup's own reload, which takes the addition. So the reload hooks
-// look at no alert until ReconcileFiles has run; after it, they look at
-// the alerts as before.
+// minutes: looking at the alerts after that reload would open apply_failed
+// for the time until startup's own reload, which takes the addition. So a
+// reload looks at the alerts only when the rows and files were in line (a
+// ReconcileFiles or a check had finished) when nginx was signalled. Its
+// Before decides, not its After: nginx confirms a reload for a while after
+// the signal, and ReconcileFiles does not wait for that.
 func TestDNSReloadHooksLookAtTheAlertsOnlyAfterReconcileFiles(t *testing.T) {
-	r := newDNSTestRig(t)
 	ctx := context.Background()
-	r.store.setRefs(dnsRef(dnsTestListA, "partner.example.com"))
-	row := dnsOKRow("partner.example.com", 2, "203.0.113.11")
-	row.AppliedGeneration = 1 // the last process added 203.0.113.11, and nginx did not take it
-	changed := dnsTestStart.Add(-20 * time.Minute)
-	row.LastChangedAt = &changed
-	r.store.put(row)
-	hooks := r.svc.ReloadHooks()
-
-	hooks.After(hooks.Before(), nginx.ReloadAccepted, nil) // the raw log settings' reload
-	r.settle()
-	if ev := r.events.snapshot(); len(ev.alerts) != 0 {
-		t.Fatalf("alerts = %+v after a reload before ReconcileFiles, want none looked at", ev.alerts)
+	waiting := func(t *testing.T) (*dnsTestRig, nginx.ReloadHooks) {
+		t.Helper()
+		r := newDNSTestRig(t)
+		r.store.setRefs(dnsRef(dnsTestListA, "partner.example.com"))
+		row := dnsOKRow("partner.example.com", 2, "203.0.113.11")
+		row.AppliedGeneration = 1 // the last process added 203.0.113.11, and nginx did not take it
+		changed := dnsTestStart.Add(-20 * time.Minute)
+		row.LastChangedAt = &changed
+		r.store.put(row)
+		return r, r.svc.ReloadHooks()
 	}
-
-	if err := r.svc.ReconcileFiles(ctx, true); err != nil {
-		t.Fatal(err)
-	}
-	hooks.After(hooks.Before(), nginx.ReloadAccepted, nil) // startup's reload reads the files
-	r.settle()
-	if st, _ := r.store.row("partner.example.com"); st.AppliedGeneration != st.Generation {
-		t.Fatalf("row = %+v, want the addition applied by startup's reload", st)
-	}
-	ev := r.events.snapshot()
-	if len(ev.alerts) == 0 {
-		t.Fatal("no alert was looked at after ReconcileFiles: a reload's hook looks at them as before")
-	}
-	for _, a := range ev.alerts {
-		if a.Failing {
-			t.Fatalf("alerts = %+v, want none failing: nginx took the addition with startup's reload", ev.alerts)
+	lookedAtNone := func(t *testing.T, r *dnsTestRig, after string) {
+		t.Helper()
+		if ev := r.events.snapshot(); len(ev.alerts) != 0 {
+			t.Fatalf("alerts = %+v after %s, want none looked at", ev.alerts, after)
 		}
 	}
+	// startupReload is startup's own reload, signalled after ReconcileFiles:
+	// it takes the addition, and its hook looks at the alerts as before.
+	startupReload := func(t *testing.T, r *dnsTestRig, hooks nginx.ReloadHooks) {
+		t.Helper()
+		hooks.After(hooks.Before(), nginx.ReloadAccepted, nil)
+		r.settle()
+		if st, _ := r.store.row("partner.example.com"); st.AppliedGeneration != st.Generation {
+			t.Fatalf("row = %+v, want the addition applied by startup's reload", st)
+		}
+		ev := r.events.snapshot()
+		if len(ev.alerts) == 0 {
+			t.Fatal("no alert was looked at after ReconcileFiles: a reload's hook looks at them as before")
+		}
+		for _, a := range ev.alerts {
+			if a.Failing {
+				t.Fatalf("alerts = %+v, want none failing: nginx took the addition with startup's reload", ev.alerts)
+			}
+		}
+	}
+
+	t.Run("reload before ReconcileFiles", func(t *testing.T) {
+		r, hooks := waiting(t)
+		hooks.After(hooks.Before(), nginx.ReloadAccepted, nil) // the raw log settings' reload
+		r.settle()
+		lookedAtNone(t, r, "a reload before ReconcileFiles")
+		if err := r.svc.ReconcileFiles(ctx, true); err != nil {
+			t.Fatal(err)
+		}
+		startupReload(t, r, hooks)
+	})
+
+	// nginx is signalled before ReconcileFiles ends, and the After comes once
+	// nginx confirmed the reload, after ReconcileFiles: the reload read files
+	// ReconcileFiles had not written yet.
+	t.Run("reload straddling ReconcileFiles", func(t *testing.T) {
+		r, hooks := waiting(t)
+		tok := hooks.Before() // the raw log settings' reload is signalled
+		if err := r.svc.ReconcileFiles(ctx, true); err != nil {
+			t.Fatal(err)
+		}
+		hooks.After(tok, nginx.ReloadAccepted, nil) // nginx confirmed it
+		r.settle()
+		lookedAtNone(t, r, "a reload signalled before ReconcileFiles ended")
+		startupReload(t, r, hooks)
+	})
+
+	// The boot's ReconcileFiles fails (no transaction begins). The first
+	// check that works puts the rows and files in line the same way, so from
+	// then on a reload's hook looks at the alerts. Here the check revokes a
+	// refused address and its apply is blocked, which opens the revoke alert;
+	// a reload of another path then takes the emptied file, and its hook
+	// closes the alert.
+	t.Run("failed boot reconcile, then a check", func(t *testing.T) {
+		r := newDNSTestRig(t)
+		r.svc.lastGC = r.clock.Now()
+		r.store.setRefs(dnsRef(dnsTestListA, "partner.example.com"))
+		r.store.put(dnsOKRow("partner.example.com", 1, "203.0.113.10"))
+		r.nginx.putFile(dnsACL(dnsTestListA), "partner.example.com", 1, "203.0.113.10") // the last process's file
+		r.svc.states = &dnsFloorStore{dnsStateStore: dnsCtxStore{r.store}, svc: r.svc}
+		down, cancel := context.WithCancel(ctx)
+		cancel()
+		if err := r.svc.ReconcileFiles(down, true); err == nil {
+			t.Fatal("ReconcileFiles worked; this case needs it to fail")
+		}
+
+		r.lookup.set("partner.example.com", "127.0.0.1") // refused: revoked at once
+		r.nginx.results = []nginx.DNSApplyResult{{Outcome: "blocked"}}
+		r.tick(t)
+		if !dnsAlerted(r, "revoke", true) {
+			t.Fatalf("alerts = %+v, want revoke failing: the check's apply is blocked", r.events.snapshot().alerts)
+		}
+
+		hooks := r.svc.ReloadHooks()
+		hooks.After(hooks.Before(), nginx.ReloadAccepted, nil) // e.g. a host save's reload
+		r.settle()
+		if st, _ := r.store.row("partner.example.com"); st.RevokePendingSince != nil {
+			t.Fatalf("row = %+v, want the revocation applied by the reload", st)
+		}
+		if !dnsAlerted(r, "revoke", false) {
+			t.Fatalf("alerts = %+v, want revoke closed by the reload's hook: the check put the rows and files in line",
+				r.events.snapshot().alerts)
+		}
+	})
 }

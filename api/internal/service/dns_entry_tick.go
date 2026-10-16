@@ -160,6 +160,10 @@ func (s *DNSEntryService) checkNames(ctx context.Context) (dnsTickResult, error)
 	for _, name := range unused {
 		s.closeReview(ctx, name, false)
 	}
+	// The transaction and the sweep of every file put the rows and files in
+	// line, as ReconcileFiles does: a boot whose ReconcileFiles failed gets
+	// the reload hooks' alerts back from here on.
+	s.reconciled.Store(true)
 	return res, nil
 }
 
