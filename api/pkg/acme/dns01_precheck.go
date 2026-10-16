@@ -22,18 +22,25 @@ import (
 // networks (#327), and Dynu certificates failed although the record was in
 // place.
 //
-// lego can ask the resolvers in /etc/resolv.conf instead, but it sends them
-// non-recursive queries, which a resolver answers from its cache only and many
-// refuse outright (Unbound does by default); Docker's embedded DNS passes such
-// a query on unchanged. So a Dynu record is checked with an ordinary recursive
-// look-up through the container's resolver, which skips the nameservers that
-// do not answer.
+// So a Dynu record is checked in two steps. lego's own check comes first:
+// where every nameserver answers, it confirms the record as quickly as it
+// always has. Only when it does not confirm the record does an ordinary
+// recursive look-up through the container's resolver follow, which skips the
+// nameservers that do not answer. The resolver is not asked first because it
+// may still remember that the name did not exist: lego looks the name up
+// before the record is created.
+//
+// lego's own option to check the resolvers in /etc/resolv.conf is not used:
+// it sends them non-recursive queries, which a resolver answers from its cache
+// only and many refuse outright (Unbound does by default), and Docker's
+// embedded DNS passes such a query on unchanged.
 
 const (
-	// dynuPropagationTimeout and dynuPollingInterval are how long lego waits
-	// for a Dynu record to show through the resolver and how often it looks.
-	// The resolver may hold a "no such record" it cached before the record
-	// existed; ten minutes outlasts that.
+	// dynuPropagationTimeout and dynuPollingInterval are how long lego tries
+	// to confirm a Dynu record and how often. Each try asks the authoritative
+	// nameservers first and, if they do not all confirm the record, the
+	// resolver; the longer wait gives a resolver that remembers the name's
+	// absence time to forget it.
 	dynuPropagationTimeout = 10 * time.Minute
 	dynuPollingInterval    = 10 * time.Second
 
@@ -46,49 +53,61 @@ const (
 type txtLookup func(ctx context.Context, name string) ([]string, error)
 
 // dns01ChallengeOptions returns the DNS-01 challenge options for a DNS provider
-// type: none, so lego's own check, except for Dynu.
+// type: none, so lego's defaults, except for Dynu.
 func dns01ChallengeOptions(providerType string) []dns01.ChallengeOption {
-	check := dns01PreCheckFor(providerType, net.DefaultResolver.LookupTXT)
+	return dns01ChallengeOptionsWith(providerType, net.DefaultResolver.LookupTXT)
+}
+
+// dns01ChallengeOptionsWith is dns01ChallengeOptions with the resolver
+// look-up given.
+func dns01ChallengeOptionsWith(providerType string, lookup txtLookup) []dns01.ChallengeOption {
+	check := dns01PreCheckFor(providerType, lookup)
 	if check == nil {
 		return nil
 	}
 	return []dns01.ChallengeOption{dns01.WrapPreCheck(check)}
 }
 
-// dns01PreCheckFor returns the check that replaces lego's for a DNS provider
-// type, or nil to keep lego's. The replacement never runs lego's check.
+// dns01PreCheckFor returns the check that wraps lego's for a DNS provider type,
+// or nil to leave lego's alone. Dynu's runs lego's check, which asks every
+// authoritative nameserver, and looks the record up through the resolver only
+// when that does not confirm it.
 func dns01PreCheckFor(providerType string, lookup txtLookup) dns01.WrapPreCheckFunc {
 	if providerType != model.DNSProviderDynu {
 		return nil
 	}
-	return func(_, fqdn, value string, _ dns01.PreCheckFunc) (bool, error) {
-		return txtVisibleThroughResolver(lookup, fqdn, value)
+	return func(_, fqdn, value string, legoCheck dns01.PreCheckFunc) (bool, error) {
+		if ok, err := legoCheck(fqdn, value); ok && err == nil {
+			return true, nil
+		}
+		found, reason := txtThroughResolver(lookup, fqdn, value)
+		if found {
+			return true, nil
+		}
+		// Neither lego's error nor the resolver's is quoted: they name
+		// nameserver and resolver addresses, and lego quotes this error when
+		// it gives up, which is stored with the certificate and sent in
+		// notifications.
+		return false, fmt.Errorf("TXT record for %s not visible yet: authoritative nameservers: not confirmed; resolver: %s", fqdn, reason)
 	}
 }
 
-// txtVisibleThroughResolver reports whether the resolver returns value among
-// the TXT records of fqdn. Until it does, the error gives the reason in a few
-// words: lego quotes the last one when it gives up, and that text is stored
-// with the certificate and sent in notifications, so it carries neither the
-// resolver's address nor the resolver's own wording.
-func txtVisibleThroughResolver(lookup txtLookup, fqdn, value string) (bool, error) {
+// txtThroughResolver reports whether the resolver returns value among the TXT
+// records of fqdn and, when it does not, why, in a few words.
+func txtThroughResolver(lookup txtLookup, fqdn, value string) (bool, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), resolverLookupTimeout)
 	defer cancel()
 
 	records, err := lookup(ctx, fqdn)
 	if err != nil {
-		return false, txtNotVisible(fqdn, lookupFailureReason(err))
+		return false, lookupFailureReason(err)
 	}
 	for _, record := range records {
 		if record == value {
-			return true, nil
+			return true, ""
 		}
 	}
-	return false, txtNotVisible(fqdn, "found a different value")
-}
-
-func txtNotVisible(fqdn, reason string) error {
-	return fmt.Errorf("TXT record for %s not visible through the resolver yet: %s", fqdn, reason)
+	return false, "found a different value"
 }
 
 // lookupFailureReason says why a look-up failed without quoting the error.

@@ -15,7 +15,7 @@ import (
 func TestDiagnoseDNS01ErrorGivesZoneAdviceOnlyForCloudflare(t *testing.T) {
 	timedOut := errors.New("failed to obtain certificate: error: one or more domains had a problem:\n" +
 		"[example.com] propagation: time limit exceeded: last error: " +
-		"TXT record for _acme-challenge.example.com. not visible through the resolver yet: no such record")
+		"TXT record for _acme-challenge.example.com. not visible yet: authoritative nameservers: not confirmed; resolver: no such record")
 
 	if got := diagnoseDNS01Error(timedOut, model.DNSProviderCloudflare); !strings.Contains(got, "Zone:Read") {
 		t.Errorf("Cloudflare lost the token permission advice: %s", got)

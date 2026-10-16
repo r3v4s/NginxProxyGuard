@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/go-acme/lego/v4/challenge"
 	"github.com/go-acme/lego/v4/challenge/dns01"
@@ -38,108 +40,195 @@ func (f *fakeTXTLookup) lookup(ctx context.Context, name string) ([]string, erro
 	return f.records, f.err
 }
 
-// legosOwnCheck fails the test if it runs: for Dynu it is replaced, because it
-// asks every authoritative nameserver of the zone directly.
-func legosOwnCheck(t *testing.T) dns01.PreCheckFunc {
-	t.Helper()
-	return func(fqdn, _ string) (bool, error) {
-		t.Errorf("lego's own propagation check ran for %s", fqdn)
-		return false, errors.New("lego's own check")
-	}
+// fakeLegoCheck stands in for lego's own check, which asks every
+// authoritative nameserver of the zone for the record.
+type fakeLegoCheck struct {
+	ok  bool
+	err error
+
+	calls int
 }
 
-// Only Dynu's records are confirmed through the resolver. Every other provider
-// keeps lego's own check and its other defaults.
-func TestDNS01ChallengeOptionsReplaceLegosCheckOnlyForDynu(t *testing.T) {
-	fake := &fakeTXTLookup{records: []string{challengeValue}}
-	if dns01PreCheckFor(model.DNSProviderDynu, fake.lookup) == nil {
-		t.Error("Dynu keeps lego's own check, which asks every authoritative nameserver")
+func (f *fakeLegoCheck) check(fqdn, value string) (bool, error) {
+	f.calls++
+	if fqdn != challengeFQDN || value != challengeValue {
+		return false, fmt.Errorf("lego's check got %s %s", fqdn, value)
 	}
-	if got := len(dns01ChallengeOptions(model.DNSProviderDynu)); got != 1 {
-		t.Errorf("Dynu gets %d challenge options, want the one that replaces lego's check", got)
+	return f.ok, f.err
+}
+
+// legoTimedOut is what lego's own check returns when a nameserver does not
+// answer: it names the nameserver and both ends of the query.
+var legoTimedOut = fmt.Errorf("authoritative nameservers: %w", &dns01.DNSError{
+	Message: "DNS call error", NS: "ns5.example.net.:53",
+	Err: errors.New("read udp 192.0.2.10:40000->198.51.100.53:53: i/o timeout"),
+})
+
+// installedPreCheck returns the check that opts make lego run before it asks
+// the CA to validate, or nil when lego runs only its own. lego keeps it in an
+// unexported field, which is read here the one way Go allows; if a lego
+// upgrade moves it, this fails rather than passes.
+func installedPreCheck(t *testing.T, opts []dns01.ChallengeOption) dns01.WrapPreCheckFunc {
+	t.Helper()
+	chlg := dns01.NewChallenge(nil, nil, nil, opts...)
+	preCheck := reflect.ValueOf(chlg).Elem().FieldByName("preCheck")
+	if !preCheck.IsValid() || preCheck.Kind() != reflect.Struct {
+		t.Fatal("lego's dns01.Challenge has no preCheck field any more: update installedPreCheck")
 	}
+	field := preCheck.FieldByName("checkFunc")
+	if !field.IsValid() || field.Type() != reflect.TypeFor[dns01.WrapPreCheckFunc]() {
+		t.Fatal("lego's pre-check has no checkFunc field any more: update installedPreCheck")
+	}
+	if field.IsNil() {
+		return nil
+	}
+	return reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Interface().(dns01.WrapPreCheckFunc)
+}
+
+// Dynu's challenge runs NPG's check, built on the look-up it is given: lego's
+// own check first, then the resolver. Every other provider keeps lego's own
+// check and its other defaults.
+func TestDNS01ChallengeOptionsWrapLegosCheckOnlyForDynu(t *testing.T) {
+	resolver := &fakeTXTLookup{records: []string{challengeValue}}
+	opts := dns01ChallengeOptionsWith(model.DNSProviderDynu, resolver.lookup)
+	if len(opts) != 1 {
+		t.Fatalf("Dynu gets %d challenge options, want the one that wraps lego's check", len(opts))
+	}
+	check := installedPreCheck(t, opts)
+	if check == nil {
+		t.Fatal("Dynu's challenge runs lego's own check only")
+	}
+	lego := &fakeLegoCheck{err: legoTimedOut}
+	if ok, err := check("example.com", challengeFQDN, challengeValue, lego.check); !ok || err != nil {
+		t.Errorf("the installed check = %v, %v; want true, nil from the resolver", ok, err)
+	}
+	if lego.calls != 1 || len(resolver.names) != 1 {
+		t.Errorf("lego's check ran %d time(s) and the resolver was asked %d time(s); want once each", lego.calls, len(resolver.names))
+	}
+	if installedPreCheck(t, dns01ChallengeOptions(model.DNSProviderDynu)) == nil {
+		t.Error("dns01ChallengeOptions does not wrap lego's check for Dynu")
+	}
+
 	for _, providerType := range []string{model.DNSProviderCloudflare, model.DNSProviderRoute53, model.DNSProviderDuckDNS} {
-		if dns01PreCheckFor(providerType, fake.lookup) != nil {
-			t.Errorf("%s: lego's own check was replaced", providerType)
-		}
-		if got := len(dns01ChallengeOptions(providerType)); got != 0 {
+		if got := len(dns01ChallengeOptionsWith(providerType, resolver.lookup)); got != 0 {
 			t.Errorf("%s gets %d challenge options, want none: lego's defaults", providerType, got)
 		}
-	}
-	if len(fake.names) != 0 {
-		t.Errorf("building the options looked up %q", fake.names)
+		if got := len(dns01ChallengeOptions(providerType)); got != 0 {
+			t.Errorf("%s gets %d challenge options from dns01ChallengeOptions, want none", providerType, got)
+		}
 	}
 }
 
-// The Dynu check is an ordinary look-up through the resolver, which skips a
-// nameserver that does not answer. It passes once the expected value is among
-// the TXT records, each look-up has a deadline of its own, and lego's own check
-// never runs.
-func TestDynuDNS01CheckLooksTheRecordUpThroughTheResolver(t *testing.T) {
-	fake := &fakeTXTLookup{records: []string{"an older challenge", challengeValue, "v=spf1 -all"}}
-	check := dns01PreCheckFor(model.DNSProviderDynu, fake.lookup)
+// Where every Dynu nameserver answers, lego's own check confirms the record
+// within seconds, as it always has, and the resolver is not asked: it may
+// still remember that the name did not exist.
+func TestDynuDNS01CheckPassesOnLegosCheckWithoutTheResolver(t *testing.T) {
+	lego := &fakeLegoCheck{ok: true}
+	resolver := &fakeTXTLookup{err: &net.DNSError{Err: "no such host", Name: challengeFQDN, IsNotFound: true}}
+	check := dns01PreCheckFor(model.DNSProviderDynu, resolver.lookup)
 
-	ok, err := check("example.com", challengeFQDN, challengeValue, legosOwnCheck(t))
+	ok, err := check("example.com", challengeFQDN, challengeValue, lego.check)
 	if !ok || err != nil {
 		t.Fatalf("check = %v, %v; want true, nil", ok, err)
 	}
-	if len(fake.names) != 1 || fake.names[0] != challengeFQDN {
-		t.Errorf("looked up %q, want %q once", fake.names, challengeFQDN)
+	if lego.calls != 1 {
+		t.Errorf("lego's check ran %d time(s), want once", lego.calls)
 	}
-	if !fake.hasDeadline || fake.left <= 0 || fake.left > 10*time.Second {
-		t.Errorf("the look-up had a deadline: %v, %s left; want a deadline of at most 10s", fake.hasDeadline, fake.left)
+	if len(resolver.names) != 0 {
+		t.Errorf("the resolver was asked for %q after lego's check confirmed the record", resolver.names)
 	}
 }
 
-// Until the record shows, the check fails with the reason in a few words, so
-// lego keeps polling and quotes the last reason when time runs out. That text
-// is stored with the certificate and sent in notifications, so it names
-// neither the resolver's address nor the resolver's own wording.
-func TestDynuDNS01CheckKeepsPollingWithAGenericReason(t *testing.T) {
-	const resolver = "192.0.2.53:53"
+// Where lego's check does not confirm the record — a nameserver does not
+// answer, or it simply says no — an ordinary look-up through the resolver,
+// which skips the nameservers that do not answer, can. It passes once the
+// expected value is among the TXT records, and each look-up has a deadline of
+// its own.
+func TestDynuDNS01CheckFallsBackToTheResolver(t *testing.T) {
 	cases := []struct {
-		name    string
-		records []string
-		err     error
-		reason  string
+		name string
+		lego *fakeLegoCheck
 	}{
-		{"no such record", nil,
-			&net.DNSError{Err: "no such host", Name: challengeFQDN, Server: resolver, IsNotFound: true}, "no such record"},
-		{"a different value", []string{"an older challenge"}, nil, "found a different value"},
-		{"resolver timed out", nil,
-			&net.DNSError{Err: "i/o timeout", Name: challengeFQDN, Server: resolver, IsTimeout: true}, "lookup timed out"},
-		{"deadline passed", nil,
-			fmt.Errorf("lookup %s on %s: %w", challengeFQDN, resolver, context.DeadlineExceeded), "lookup timed out"},
-		{"server failure", nil,
-			&net.DNSError{Err: "server misbehaving", Name: challengeFQDN, Server: resolver, IsTemporary: true}, "lookup failed"},
+		{"lego's check fails", &fakeLegoCheck{err: legoTimedOut}},
+		{"lego's check says no", &fakeLegoCheck{ok: false}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			check := dns01PreCheckFor(model.DNSProviderDynu, (&fakeTXTLookup{records: tc.records, err: tc.err}).lookup)
+			resolver := &fakeTXTLookup{records: []string{"an older challenge", challengeValue, "v=spf1 -all"}}
+			check := dns01PreCheckFor(model.DNSProviderDynu, resolver.lookup)
 
-			ok, err := check("example.com", challengeFQDN, challengeValue, legosOwnCheck(t))
-			if ok || err == nil {
-				t.Fatalf("check = %v, %v; want false and a reason, so lego keeps polling", ok, err)
+			ok, err := check("example.com", challengeFQDN, challengeValue, tc.lego.check)
+			if !ok || err != nil {
+				t.Fatalf("check = %v, %v; want true, nil", ok, err)
 			}
-			want := "TXT record for " + challengeFQDN + " not visible through the resolver yet: " + tc.reason
-			if err.Error() != want {
-				t.Errorf("error = %q, want %q", err, want)
+			if tc.lego.calls != 1 {
+				t.Errorf("lego's check ran %d time(s), want once, before the resolver", tc.lego.calls)
 			}
-			if tc.err != nil {
-				for _, quoted := range []string{"192.0.2.53", tc.err.Error()} {
-					if strings.Contains(err.Error(), quoted) {
-						t.Errorf("the error quotes %q: %v", quoted, err)
-					}
-				}
+			if len(resolver.names) != 1 || resolver.names[0] != challengeFQDN {
+				t.Errorf("looked up %q, want %q once", resolver.names, challengeFQDN)
+			}
+			if !resolver.hasDeadline || resolver.left <= 0 || resolver.left > 10*time.Second {
+				t.Errorf("the look-up had a deadline: %v, %s left; want a deadline of at most 10s", resolver.hasDeadline, resolver.left)
 			}
 		})
 	}
 }
 
-// Dynu's records are confirmed through the container's resolver, which may
-// still hold a "no such record" it cached before the record existed, so lego
-// gives them ten minutes, looking every ten seconds. Building the provider
-// makes no request.
+// When neither confirms the record, the check fails with the reason in a few
+// words, so lego keeps polling and quotes the last reason when time runs out.
+// That text is stored with the certificate and sent in notifications, so it
+// quotes neither lego's error nor the resolver's: they name nameserver and
+// resolver addresses.
+func TestDynuDNS01CheckKeepsPollingWithAGenericReason(t *testing.T) {
+	const resolverAddr = "192.0.2.53:53"
+	cases := []struct {
+		name     string
+		lego     *fakeLegoCheck
+		records  []string
+		err      error
+		reason   string
+		resolver string // the resolver's own wording, which must not be quoted
+	}{
+		{"no such record", &fakeLegoCheck{err: legoTimedOut}, nil,
+			&net.DNSError{Err: "no such host", Name: challengeFQDN, Server: resolverAddr, IsNotFound: true}, "no such record", "no such host"},
+		{"a different value", &fakeLegoCheck{err: legoTimedOut}, []string{"an older challenge"}, nil,
+			"found a different value", "an older challenge"},
+		{"resolver timed out", &fakeLegoCheck{err: legoTimedOut}, nil,
+			&net.DNSError{Err: "i/o timeout", Name: challengeFQDN, Server: resolverAddr, IsTimeout: true}, "lookup timed out", "i/o timeout"},
+		{"deadline passed", &fakeLegoCheck{err: legoTimedOut}, nil,
+			fmt.Errorf("lookup %s on %s: %w", challengeFQDN, resolverAddr, context.DeadlineExceeded), "lookup timed out", "deadline exceeded"},
+		{"server failure", &fakeLegoCheck{err: legoTimedOut}, nil,
+			&net.DNSError{Err: "server misbehaving", Name: challengeFQDN, Server: resolverAddr, IsTemporary: true}, "lookup failed", "server misbehaving"},
+		{"lego's check says no", &fakeLegoCheck{ok: false}, nil,
+			&net.DNSError{Err: "no such host", Name: challengeFQDN, Server: resolverAddr, IsNotFound: true}, "no such record", "no such host"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			check := dns01PreCheckFor(model.DNSProviderDynu, (&fakeTXTLookup{records: tc.records, err: tc.err}).lookup)
+
+			ok, err := check("example.com", challengeFQDN, challengeValue, tc.lego.check)
+			if ok || err == nil {
+				t.Fatalf("check = %v, %v; want false and a reason, so lego keeps polling", ok, err)
+			}
+			want := "TXT record for " + challengeFQDN + " not visible yet: authoritative nameservers: not confirmed; resolver: " + tc.reason
+			if err.Error() != want {
+				t.Errorf("error = %q, want %q", err, want)
+			}
+			for _, quoted := range []string{"ns5.example.net", "198.51.100.53", "192.0.2.10", "192.0.2.53", "DNS call error", tc.resolver} {
+				if strings.Contains(err.Error(), quoted) {
+					t.Errorf("the error quotes %q: %v", quoted, err)
+				}
+			}
+			if tc.lego.calls != 1 {
+				t.Errorf("lego's check ran %d time(s), want once", tc.lego.calls)
+			}
+		})
+	}
+}
+
+// Dynu's records may need the resolver, which may still remember that the
+// name did not exist, so lego gives them ten minutes, looking every ten
+// seconds. Building the provider makes no request.
 func TestDynuDNS01WaitsTenMinutesLookingEveryTenSeconds(t *testing.T) {
 	p, err := (&Service{}).newDNS01Provider(dnsProviderOf(t, model.DNSProviderDynu, model.DynuCredentials{APIKey: "dynu-key-0123456789"}))
 	if err != nil {
