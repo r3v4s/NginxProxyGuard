@@ -97,7 +97,8 @@
       "roles": "역할",
       "sso": "SSO",
       "notifications": "알림",
-      "trustedProxies": "신뢰 프록시"
+      "trustedProxies": "신뢰 프록시",
+      "dnsEntries": "도메인 예외(DDNS)"
     }
   },
   "loading": "로딩 중...",

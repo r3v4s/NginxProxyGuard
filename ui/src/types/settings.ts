@@ -1,4 +1,5 @@
 import type { StorageStatus } from './storage';
+import type { DNSEntrySettings } from './dnsEntries';
 
 // Global Settings Types
 export interface GlobalSettings {
@@ -436,6 +437,11 @@ export interface SystemSettings {
   // DDNS Settings
   ddns_check_interval_minutes: number; // Default: 5 (minimum 1)
 
+  // Domain entry tunables (#320): the STORED value, normalized by the server.
+  // The values in effect, with the environment switches applied, come from
+  // GET /dns-entries.
+  dns_entry_settings: DNSEntrySettings;
+
   updated_at: string;
 }
 
@@ -528,6 +534,10 @@ export interface UpdateSystemSettingsRequest {
 
   // DDNS Settings
   ddns_check_interval_minutes?: number;
+
+  // Domain entry tunables (#320): only the keys to change. The server merges
+  // them over the stored value and refuses unknown keys and values out of range.
+  dns_entry_settings?: Partial<DNSEntrySettings>;
 }
 
 export interface GeoIPStatus {

@@ -97,7 +97,8 @@
       "roles": "Roles",
       "sso": "SSO",
       "notifications": "Notifications",
-      "trustedProxies": "Trusted Proxies"
+      "trustedProxies": "Trusted Proxies",
+      "dnsEntries": "Domain entries (DDNS)"
     }
   },
   "loading": "Loading...",

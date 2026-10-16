@@ -126,5 +126,127 @@
     "common": "Domains are looked up again on a schedule (every minute by default). A changed address takes effect after the record's TTL, the check interval and the minimum apply gap; an address that goes away is blocked at once. Whoever controls this domain's DNS (the DDNS account owner) controls this exception.",
     "ipv6": "A router's DDNS AAAA record is usually the router's own address, so it does not match the other side's PC over IPv6. Have the other side connect over IPv4, or use a DDNS client on that device that updates its own address. This server also accepts IPv6 connections.",
     "review": "This domain now points somewhere else (a changed CNAME, an address it never had, or too many changes). It may have been taken over, so it lets no one in until you confirm."
+  },
+  "settings": {
+    "title": "Domain entries (DDNS)",
+    "description": "An access list can allow a domain name, such as a DDNS name, next to its IP rules. NPG looks each name up on a schedule and lets nginx allow only the addresses it found. These settings decide how often and how carefully that happens.",
+    "loadError": "Could not load the domain entry settings: {{error}}",
+    "cardTitle": "Settings",
+    "groups": {
+      "lookup": "Looking names up",
+      "apply": "Applying new addresses",
+      "limits": "Limits"
+    },
+    "fields": {
+      "enabled": {
+        "label": "Use domain entries",
+        "desc": "When off, no one gets in through a domain. Review states and approved CNAME targets are kept.",
+        "help": "Turning this off empties every domain's nginx file at once. When you turn it on again, a domain that comes back with an address it had before is allowed after the usual checks; one that comes back with a new address needs review first."
+      },
+      "check_interval_seconds": {
+        "label": "Check interval (seconds)",
+        "desc": "How often every domain in use is looked up again.",
+        "help": "A shorter interval notices address changes sooner but sends more DNS queries. An address that goes away is blocked at the next check; a new one also waits for the minimum apply gap."
+      },
+      "min_reload_gap_seconds": {
+        "label": "Minimum apply gap (seconds)",
+        "desc": "Least time between two nginx reloads that add DNS addresses.",
+        "help": "A new address is allowed only after the same answer came twice in a row and at least this long after the last DNS reload. Removing an address never waits for it."
+      },
+      "stale_grace_hours": {
+        "label": "Grace on lookup errors (hours)",
+        "desc": "How long a domain keeps its last addresses while lookups fail.",
+        "help": "On timeouts and DNS server failures the last addresses stay this long, for IPv4 and IPv6 separately. After that the family is emptied until a lookup succeeds again."
+      },
+      "not_found_checks": {
+        "label": "\"No record\" answers before removing",
+        "desc": "Consecutive \"no record\" answers before a family's addresses are removed.",
+        "help": "One wrong answer does not remove the addresses: they go only after this many \"no record\" answers in a row."
+      },
+      "max_changes_per_day": {
+        "label": "Address changes per day",
+        "desc": "Applied changes of one domain in 24 hours before it needs review.",
+        "help": "A replacement (old address out, new address in) counts once. A domain that changes more often is marked unstable and lets no one in until you allow it again."
+      },
+      "max_per_list": {
+        "label": "Domains per list",
+        "desc": "How many domains one access list can hold.",
+        "help": "Lowering it removes nothing. A list above the limit can still be saved as long as it does not add domains."
+      },
+      "max_total": {
+        "label": "Domains in total",
+        "desc": "How many different domains all lists together can use.",
+        "help": "Lowering it removes nothing. While more domains are in use than the limit, saves that add a domain are refused."
+      },
+      "max_addresses_per_family": {
+        "label": "Addresses per family",
+        "desc": "Most IPv4 addresses, and most IPv6 addresses, one domain can have.",
+        "help": "An answer with more addresses than this is refused for that family as a whole, so a CDN or a wildcard record cannot open a list to many addresses."
+      }
+    },
+    "defaultValue": "Default: {{value}}",
+    "rangeHint": "Enter a whole number from {{min}} to {{max}}.",
+    "inUse": "In use now: {{count}}",
+    "overLimit": "More domains are in use than this limit. Saves that add a domain are refused; the domains already in lists stay.",
+    "envDisabled": "Turned off by the NPG_DNS_ENTRIES_DISABLED environment variable. The value here is used after it is removed.",
+    "envInterval": "Set to {{seconds}} seconds by the NPG_DNS_ENTRIES_INTERVAL environment variable. The value here is used after it is removed.",
+    "turningOff": "Saving turns every domain entry off at once: no one gets in through a domain until you turn them on again.",
+    "turningOn": "After saving, a domain that comes back with an address it had before is allowed after the usual checks; one with a new address needs review.",
+    "saved": "Domain entry settings saved.",
+    "saveFailed": "Could not save the domain entry settings: {{error}}",
+    "disabledBanner": "Domain entries are turned off: no one gets in through a domain until you turn them on below.",
+    "envDisabledBanner": "Domain entries are turned off by the NPG_DNS_ENTRIES_DISABLED environment variable: no one gets in through a domain until it is removed and the API restarts."
+  },
+  "overview": {
+    "title": "Domains in use",
+    "description": "Every domain a list uses, the addresses nginx allows for it now, and what is still waiting. Places you may not read show only as a count.",
+    "loadError": "Could not load the domain entries: {{error}}",
+    "empty": "No list uses a domain yet. Add a domain such as partner.example.com to an access list rule and it shows here.",
+    "total": "{{count}} of at most {{max}} domains",
+    "needsReview": "{{count}} need review",
+    "columns": {
+      "name": "Domain",
+      "uses": "Used by",
+      "status": "Status",
+      "addresses": "Allowed addresses",
+      "warnings": "Warnings",
+      "actions": "Actions"
+    },
+    "useKinds": {
+      "access_list": "Access list"
+    },
+    "use": "{{kind}}: {{name}}",
+    "hiddenUses": "{{count}} other place(s)",
+    "hiddenUsesHelp": "Used in places your role may not read.",
+    "noUses": "No longer used. nginx may still allow it until the change is applied.",
+    "loginBypass": "Skips login on {{count}} host(s)",
+    "loginBypassHelp": "A Satisfy Any access list with this domain is used by hosts with a login (ForwardAuth, auth_request or auth_basic). On those hosts a client at this domain's address gets in without logging in. Turn off Satisfy Any on the list to require both.",
+    "confirmed": "{{name}} is allowed again.",
+    "confirmReloadRejected": "{{name}} is allowed again, but nginx did not accept the new configuration. Check the reason below.",
+    "apply": {
+      "lastReload": "Last DNS apply: {{time}}",
+      "noReload": "No DNS apply since the API started",
+      "pendingAdditions": "Additions waiting: {{count}}",
+      "revokePending": "Removals nginx still allows: {{count}}",
+      "revokePendingHelp": "Addresses NPG removed from a domain that the running nginx still allows. They go at the next successful reload; while that fails, an alert is sent.",
+      "blockedTitle": "The last apply failed: {{reason}}",
+      "blockingFile": "Blocking file: {{file}}",
+      "nextRetry": "Next try: {{time}}",
+      "button": "Apply now",
+      "applying": "Applying...",
+      "buttonHelp": "Runs nginx -t and a reload now instead of waiting for the next try. It changes no trust. If another configuration file blocks it, fix that file first."
+    },
+    "applyResult": {
+      "accepted": "nginx loaded the domain entry files.",
+      "signalled": "nginx was told to reload the domain entry files.",
+      "unconfirmed": "nginx was told to reload, but it is not confirmed yet that it took the files. The next check looks again.",
+      "skipped": "nginx tests are switched off (NGINX_SKIP_TEST), so the files were recorded as applied without a reload.",
+      "blocked": "nginx -t fails because of another configuration file, so nothing was applied.",
+      "failed": "The nginx reload failed. It is tried again automatically.",
+      "not_up": "nginx is not running yet. The files are applied once it is up.",
+      "rejected": "nginx refused the reload and keeps its current configuration. Check the reason below.",
+      "other": "Apply finished: {{outcome}}",
+      "error": "Could not apply: {{error}}"
+    }
   }
 }
