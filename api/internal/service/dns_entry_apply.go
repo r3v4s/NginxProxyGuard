@@ -55,9 +55,11 @@ func (s *DNSEntryService) applyStep(ctx context.Context, wrote bool, rows map[st
 			s.applyWorks(ctx)
 			return false
 		}
-		s.diskMu.Lock()
-		retryAt := s.applyView.retryAt
-		s.diskMu.Unlock()
+		retryAt := func() time.Time {
+			s.diskMu.Lock()
+			defer s.diskMu.Unlock()
+			return s.applyView.retryAt
+		}()
 		if !retryAt.IsZero() && now.Before(retryAt) {
 			return false
 		}
@@ -82,9 +84,11 @@ const (
 // minutes is dropped; when that leaves none open, the apply counts as failed
 // and may signal again.
 func (s *DNSEntryService) checkPostHoc(ctx context.Context, now time.Time) dnsPostHocState {
-	s.diskMu.Lock()
-	open := append([]*dnsPostHoc(nil), s.postHocs...)
-	s.diskMu.Unlock()
+	open := func() []*dnsPostHoc {
+		s.diskMu.Lock()
+		defer s.diskMu.Unlock()
+		return append([]*dnsPostHoc(nil), s.postHocs...)
+	}()
 	if len(open) == 0 {
 		return dnsPostHocNone
 	}
@@ -141,9 +145,11 @@ func (s *DNSEntryService) revocationNotCovered() bool {
 // postHocTaken takes the token of a checked reload that nginx did take,
 // unless a later reload's hook took care of it meanwhile.
 func (s *DNSEntryService) postHocTaken(ctx context.Context, ph *dnsPostHoc) {
-	s.diskMu.Lock()
-	still := slices.Contains(s.postHocs, ph)
-	s.diskMu.Unlock()
+	still := func() bool {
+		s.diskMu.Lock()
+		defer s.diskMu.Unlock()
+		return slices.Contains(s.postHocs, ph)
+	}()
 	if still {
 		s.tokenTaken(ph.token)
 	}
@@ -167,8 +173,8 @@ func (s *DNSEntryService) applyWorks(ctx context.Context) {
 // dropPostHoc forgets a checked reload nginx never took.
 func (s *DNSEntryService) dropPostHoc(ph *dnsPostHoc) {
 	s.diskMu.Lock()
+	defer s.diskMu.Unlock()
 	s.postHocs = slices.DeleteFunc(s.postHocs, func(p *dnsPostHoc) bool { return p == ph })
-	s.diskMu.Unlock()
 }
 
 // recordPostHocFailure counts a reload nginx never took as a failed apply.
@@ -197,9 +203,11 @@ func (s *DNSEntryService) runApply(ctx context.Context) nginx.DNSApplyResult {
 	now := s.now()
 	switch res.Outcome {
 	case "accepted", "signalled", "unconfirmed", "rejected":
-		s.diskMu.Lock()
-		s.lastReload = now
-		s.diskMu.Unlock()
+		func() {
+			s.diskMu.Lock()
+			defer s.diskMu.Unlock()
+			s.lastReload = now
+		}()
 	}
 	if dnsApplyCutShort(ctx, res) {
 		// No failing loop, no ERROR row that nothing would close (the next
@@ -300,6 +308,6 @@ func (s *DNSEntryService) markFailingLocked(ctx context.Context, res nginx.DNSAp
 // applyMu.
 func (s *DNSEntryService) publishApplyViewLocked() {
 	s.diskMu.Lock()
+	defer s.diskMu.Unlock()
 	s.applyView = dnsApplyView{failing: s.retry.failing, last: s.retry.last, retryAt: s.retry.retryAt}
-	s.diskMu.Unlock()
 }

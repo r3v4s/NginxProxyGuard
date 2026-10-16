@@ -120,8 +120,8 @@ func (s *DNSEntryService) afterReload(token any, outcome nginx.ReloadOutcome, sn
 			return
 		}
 		s.diskMu.Lock()
+		defer s.diskMu.Unlock()
 		s.addPostHocLocked(&dnsPostHoc{snap: snap, token: tok, since: s.now()})
-		s.diskMu.Unlock()
 	}
 }
 
@@ -141,34 +141,37 @@ func (s *DNSEntryService) addPostHocLocked(ph *dnsPostHoc) {
 // post-hoc tokens up to tok are taken first and closed: nginx took a later
 // reload, so it read at least those files too.
 func (s *DNSEntryService) tokenTaken(tok *dnsReloadToken) {
-	s.diskMu.Lock()
-	toks := make([]*dnsReloadToken, 0, 2)
-	var open []*dnsPostHoc
-	for _, ph := range s.postHocs {
-		switch {
-		case ph.token.seq > tok.seq:
-			open = append(open, ph)
-		case ph.token != tok:
-			toks = append(toks, ph.token)
-		}
-	}
-	s.postHocs = open
-	if tok.seq > s.takenSeq {
-		s.takenSeq = tok.seq
-	}
-	s.markHostIndexDirty() // a host save's reload: what hosts render may have changed
-	toks = append(toks, tok)
-	gens := make(map[string]int64)
-	var changes []dnsAppliedChange
-	for _, t := range toks {
-		changes = append(changes, s.takeTokenLocked(t)...)
-		for name, g := range t.gens {
-			if g > gens[name] {
-				gens[name] = g
+	gens, changes := func() (map[string]int64, []dnsAppliedChange) {
+		s.diskMu.Lock()
+		defer s.diskMu.Unlock()
+		toks := make([]*dnsReloadToken, 0, 2)
+		var open []*dnsPostHoc
+		for _, ph := range s.postHocs {
+			switch {
+			case ph.token.seq > tok.seq:
+				open = append(open, ph)
+			case ph.token != tok:
+				toks = append(toks, ph.token)
 			}
 		}
-	}
-	s.diskMu.Unlock()
+		s.postHocs = open
+		if tok.seq > s.takenSeq {
+			s.takenSeq = tok.seq
+		}
+		s.markHostIndexDirty() // a host save's reload: what hosts render may have changed
+		toks = append(toks, tok)
+		gens := make(map[string]int64)
+		var changes []dnsAppliedChange
+		for _, t := range toks {
+			changes = append(changes, s.takeTokenLocked(t)...)
+			for name, g := range t.gens {
+				if g > gens[name] {
+					gens[name] = g
+				}
+			}
+		}
+		return gens, changes
+	}()
 	s.bg.Add(1)
 	go func() {
 		defer s.bg.Done()

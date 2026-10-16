@@ -138,16 +138,21 @@ func (s *DNSEntryService) writeSegment(scope, name string, gen int64, addrs, old
 	changed, err := s.nginx.WriteDNSIncludeFiles(scope, name, gen, addrs)
 	key := dnsSegKey(scope, name)
 	if err != nil {
-		s.diskMu.Lock()
-		_, known := s.disk[key]
-		s.diskMu.Unlock()
+		known := func() bool {
+			s.diskMu.Lock()
+			defer s.diskMu.Unlock()
+			_, known := s.disk[key]
+			return known
+		}()
 		if !known {
 			fileGen, fileAddrs := dnsSegmentOnDisk(onDisk(), scope, name)
-			s.diskMu.Lock()
-			if _, known := s.disk[key]; !known {
-				s.disk[key] = dnsDiskEntry{Scope: scope, Name: name, Gen: fileGen, Addrs: fileAddrs}
-			}
-			s.diskMu.Unlock()
+			func() {
+				s.diskMu.Lock()
+				defer s.diskMu.Unlock()
+				if _, known := s.disk[key]; !known {
+					s.disk[key] = dnsDiskEntry{Scope: scope, Name: name, Gen: fileGen, Addrs: fileAddrs}
+				}
+			}()
 		}
 		return false, err
 	}
@@ -311,13 +316,15 @@ func (s *DNSEntryService) syncFilesLocked(refs []model.DNSReference, rows map[st
 		e   dnsDiskEntry
 	}
 	var rest []stale
-	s.diskMu.Lock()
-	for k, e := range s.disk {
-		if !done[k] && inScope(e.Name) {
-			rest = append(rest, stale{k, e})
+	func() {
+		s.diskMu.Lock()
+		defer s.diskMu.Unlock()
+		for k, e := range s.disk {
+			if !done[k] && inScope(e.Name) {
+				rest = append(rest, stale{k, e})
+			}
 		}
-	}
-	s.diskMu.Unlock()
+	}()
 	sort.Slice(rest, func(i, j int) bool { return rest[i].key < rest[j].key })
 	for _, r := range rest {
 		gen := r.e.Gen
@@ -567,11 +574,13 @@ func (s *DNSEntryService) collectGarbage(ctx context.Context) {
 				// the name gets later: its first reload is audited with the
 				// "before" unknown. Its files, while they stay, still keep that
 				// row above their generations (dnsFloorTx).
-				s.diskMu.Lock()
-				for _, name := range deleted {
-					delete(s.nginxView, name)
-				}
-				s.diskMu.Unlock()
+				func() {
+					s.diskMu.Lock()
+					defer s.diskMu.Unlock()
+					for _, name := range deleted {
+						delete(s.nginxView, name)
+					}
+				}()
 			}
 			return err
 		}()

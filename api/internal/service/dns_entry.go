@@ -31,7 +31,8 @@ import (
 //   - applyMu: one apply run at a time and the retry state. Never taken while
 //     dnsMu is held. Held while ApplyDNSIncludes takes nginx's lock.
 //   - diskMu: a leaf. disk, pendingRevoke, nginxView, postHocs, applyView and
-//     lastReload. The reload hooks take it inside nginx's lock.
+//     lastReload. The reload hooks take it inside nginx's lock. Released with
+//     defer too: left held by a panic, it would stop every reload after it.
 //
 // alertMu and reviewMu guard the alert mirrors; nothing but the event calls
 // runs under them, and under alertMu the read of the rows the apply alerts

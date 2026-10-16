@@ -302,10 +302,11 @@ func (s *DNSEntryService) nextDelay(st model.DNSEntrySettings) time.Duration {
 		d = st.CheckInterval()
 	}
 	now := s.now()
-	s.diskMu.Lock()
-	retryAt := s.applyView.retryAt
-	open := len(s.postHocs) > 0
-	s.diskMu.Unlock()
+	retryAt, open := func() (time.Time, bool) {
+		s.diskMu.Lock()
+		defer s.diskMu.Unlock()
+		return s.applyView.retryAt, len(s.postHocs) > 0
+	}()
 	if retryAt.After(now) && retryAt.Sub(now) < d {
 		d = retryAt.Sub(now)
 	}

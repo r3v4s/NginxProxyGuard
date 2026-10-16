@@ -52,7 +52,58 @@ func dnsReturns(t *testing.T, what string, fn func()) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatalf("%s did not return: the panic left dnsMu locked", what)
+		t.Fatalf("%s did not return: the panic left a lock held", what)
+	}
+}
+
+// dnsPanickingClock is the test clock, except that its first read once
+// armed panics.
+type dnsPanickingClock struct {
+	*dnsTestClock
+	armed atomic.Bool
+}
+
+func (c *dnsPanickingClock) Now() time.Time {
+	if c.armed.CompareAndSwap(true, false) {
+		panic("injected: a clock read panicked")
+	}
+	return c.dnsTestClock.Now()
+}
+
+// A panic inside a section that holds diskMu on a check's goroutine (here the
+// reload hook that keeps an unconfirmed reload for its post-hoc check reads
+// the clock under it) reaches the scheduler, which recovers it. diskMu is
+// released on the way out: the reload hooks take it inside nginx's global
+// lock, so a diskMu left held would stop the next reload and every nginx
+// operation waiting behind it.
+func TestDNSPanicInsideTheDiskLockLeavesReloadsUsable(t *testing.T) {
+	r := dnsPartnerRig(t, "203.0.113.10")
+	ctx := context.Background()
+	r.settle()
+	clock := &dnsPanickingClock{dnsTestClock: r.clock}
+	r.svc.now = clock.Now
+	r.lookup.set("partner.example.com", "127.0.0.1") // refused: the check revokes and applies at once
+	hooks := r.svc.ReloadHooks()
+	r.nginx.mu.Lock()
+	r.nginx.results = []nginx.DNSApplyResult{{Outcome: "unconfirmed", Snapshot: &nginx.ReloadSnapshot{}}}
+	r.nginx.hooks = &nginx.ReloadHooks{Before: hooks.Before,
+		After: func(tok any, outcome nginx.ReloadOutcome, snap *nginx.ReloadSnapshot) {
+			clock.armed.Store(true) // the hook's first clock read is the one under diskMu
+			hooks.After(tok, outcome, snap)
+		}}
+	r.nginx.mu.Unlock()
+
+	if !dnsPanics(func() { r.svc.Tick(ctx) }) {
+		t.Fatal("the injected panic did not reach the caller")
+	}
+	dnsReturns(t, "the next reload's Before hook", func() { hooks.Before() })
+	r.nginx.mu.Lock()
+	r.nginx.hooks = &hooks
+	r.nginx.mu.Unlock()
+	dnsReturns(t, "the next check", func() { r.svc.Tick(ctx) })
+	r.settle()
+	if got := r.partnerFile(t); len(got) != 0 {
+		t.Fatalf("partner file = %v, want the refused address revoked", got)
 	}
 }
 
