@@ -380,6 +380,18 @@ func SampleMessage(lang, eventKey string) model.RenderedMessage {
 		fields["detail"] = "71.9% · 128.7 GB / 188.0 GB"
 		fields["free"] = "50.3 GB"
 		fields["roles"] = "db,nginx_logs,backups,docker"
+	case "dns_entry.review":
+		severity = "warning"
+		fields["subject"] = "partner.example.com"
+		fields["reason"] = "cname_changed"
+		fields["count"] = "1"
+		fields["detail"] = tr(lang, "sample.dnsReview")
+	case "dns_entry.apply_failed":
+		severity = "error"
+		fields["subject"] = "revoke"
+		fields["reason"] = "blocked"
+		fields["count"] = "1"
+		fields["detail"] = tr(lang, "sample.dnsApplyFailed")
 	default:
 		fields["detail"] = tr(lang, "sample.test")
 	}

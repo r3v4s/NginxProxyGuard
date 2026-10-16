@@ -277,6 +277,13 @@ func formatActionLabel(action string) string {
 		"upstream_updated":         "업스트림 수정",
 		"ip_banned":                "IP 차단",
 		"ip_unbanned":              "IP 차단 해제",
+		"dns_entry_confirmed":      "도메인 항목 확인",
+		"dns_entry_apply_requested": "도메인 항목 지금 다시 적용",
+		"dns_entry_applied":        "도메인 항목 적용",
+		"dns_entry_review_needed":  "도메인 항목 검토 필요",
+		"dns_entry_revoke_blocked": "도메인 항목 회수 막힘·풀림",
+		"dns_entries_env_disabled": "도메인 항목 환경변수로 꺼짐",
+		"dns_entry_settings_changed": "도메인 항목 설정 변경",
 	}
 
 	if label, ok := labels[action]; ok {
@@ -296,6 +303,7 @@ func formatResourceTypeLabel(resourceType string) string {
 		"api_token":     "API 토큰",
 		"access_list":   "접근 목록",
 		"redirect_host": "리다이렉트 호스트",
+		"dns_entry":     "도메인 항목",
 	}
 
 	if label, ok := labels[resourceType]; ok {

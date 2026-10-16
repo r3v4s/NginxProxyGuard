@@ -1841,6 +1841,14 @@
       "disk.space_recovered": {
         "label": "Disk space back to normal",
         "desc": "Sent only when a disk that was running low drops back below its recovery line, 80% by default."
+      },
+      "dns_entry.review": {
+        "label": "Domain entry needs review",
+        "desc": "A domain in an access list changed its CNAME target, came back with addresses it never had after being empty, or changed too often in a day. NPG allows none of its addresses until you confirm it on the access list. One message per domain, and one more when it is confirmed."
+      },
+      "dns_entry.apply_failed": {
+        "label": "Domain entry change not applied",
+        "desc": "nginx did not take a change of domain entries. Removed addresses are reported at the first failure, because nginx still allows them; added addresses after 15 minutes. Fix the file the message names, or press Apply now in Settings → Security → Domain entries (DDNS)."
       }
     },
     "modes": {

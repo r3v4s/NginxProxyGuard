@@ -76,6 +76,14 @@ var notificationStrings = map[string]map[string]string{
 		"value.action.unavailable":           "could not check what can be compressed; free space by hand",
 		"event.test":                         "test notification",
 
+		// Domain entries (#320). Both recover under their own key.
+		"event.dns_entry.review":                "domain entry needs review",
+		"event.dns_entry.review.resolved":       "domain entry confirmed",
+		"event.dns_entry.apply_failed":          "domain entry change not applied",
+		"event.dns_entry.apply_failed.resolved": "domain entry changes applied",
+		"sample.dnsReview":                      "partner.example.com needs review: its CNAME target changed from home.example.com to edge.example.com. NPG allows none of its addresses until an operator confirms it.",
+		"sample.dnsApplyFailed":                 "nginx still allows addresses removed from 1 domain entry (partner.example.com): nginx -t fails in proxy_host_1.conf.",
+
 		"field.host":     "host",
 		"field.ip":       "address",
 		"field.country":  "country",
@@ -158,6 +166,14 @@ var notificationStrings = map[string]map[string]string{
 		"value.action.dry_run":               "시험 실행: 압축할 대상만 기록합니다",
 		"value.action.unavailable":           "압축할 대상을 확인하지 못했습니다. 공간을 직접 확보하세요",
 		"event.test":                         "테스트 알림",
+
+		// Domain entries (#320).
+		"event.dns_entry.review":                "도메인 항목 검토 필요",
+		"event.dns_entry.review.resolved":       "도메인 항목 확인됨",
+		"event.dns_entry.apply_failed":          "도메인 항목 변경 미반영",
+		"event.dns_entry.apply_failed.resolved": "도메인 항목 변경 반영됨",
+		"sample.dnsReview":                      "partner.example.com 검토 필요: CNAME 대상이 home.example.com에서 edge.example.com(으)로 바뀌었습니다. 운영자가 확인할 때까지 이 도메인의 주소를 허용하지 않습니다.",
+		"sample.dnsApplyFailed":                 "도메인 항목 1개(partner.example.com)에서 뺀 주소를 nginx가 아직 허용합니다: proxy_host_1.conf에서 nginx -t가 실패합니다.",
 
 		"field.host":     "호스트",
 		"field.ip":       "주소",

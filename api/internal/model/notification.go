@@ -74,6 +74,14 @@ var EventCatalogue = []EventDescriptor{
 	{Key: "disk.space_low", Severity: "warning"},
 	{Key: "disk.space_critical", Severity: "error"},
 	{Key: "disk.space_recovered", Severity: "info"},
+	// Domain entries (#320). Edge-triggered, and each recovers under its own
+	// key. review: one name is closed until an operator confirms it (subject:
+	// the name). apply_failed: nginx has not taken a change of the include
+	// files — subject "revoke" at the first failed apply while removed
+	// addresses are still allowed, "apply" when added ones have waited 15
+	// minutes.
+	{Key: "dns_entry.review", Severity: "warning"},
+	{Key: "dns_entry.apply_failed", Severity: "error"},
 }
 
 // SeverityOf returns the catalogue severity of an event, or "" for an unknown

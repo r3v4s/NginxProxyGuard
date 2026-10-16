@@ -289,6 +289,7 @@ func NewDNSEntryService(deps DNSEntryDeps, opts DNSEntryOptions) *DNSEntryServic
 	if s.saveResolve <= 0 {
 		s.saveResolve = 3 * time.Second
 	}
+	s.events = &dnsEventReporter{svc: s}
 	return s
 }
 

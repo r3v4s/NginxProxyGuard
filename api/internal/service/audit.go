@@ -501,6 +501,100 @@ func (s *AuditService) LogAccessListDeleted(ctx context.Context, name string) er
 	return s.logEntry(ctx, "access_list_deleted", "access_list", "", name, nil)
 }
 
+// ─── Domain entries (#320) ──────────────────────────────────────────────
+//
+// resource_type "dns_entry". resource_name is one domain name (at most 253
+// characters, so it fits varchar(255)), a fixed word, or empty — never a list
+// of names. No helper uses the "name" details key: logEntry overwrites it
+// with resource_name. Audit rows may carry addresses (they stay on the box);
+// notifications never do.
+
+// dnsAuditNamesMax caps the names a dns_entry_revoke_blocked row lists;
+// names_total carries the full count.
+const dnsAuditNamesMax = 20
+
+// LogDNSEntryConfirmed records that an operator approved a name in review:
+// the addresses NPG observed and now allows, the CNAME target it pinned, and
+// the scopes that use the name.
+func (s *AuditService) LogDNSEntryConfirmed(ctx context.Context, name string, addrs []string, canonical string, scopes []string) error {
+	return s.logEntry(ctx, "dns_entry_confirmed", "dns_entry", "", name, map[string]interface{}{
+		"addresses":      auditStrings(addrs),
+		"canonical_name": canonical,
+		"scopes":         auditStrings(scopes),
+	})
+}
+
+// LogDNSEntryApplyRequested records "Apply now" and its outcome, a reload
+// nginx refused included.
+func (s *AuditService) LogDNSEntryApplyRequested(ctx context.Context, outcome string) error {
+	return s.logEntry(ctx, "dns_entry_apply_requested", "dns_entry", "", "", map[string]interface{}{
+		"outcome": outcome,
+	})
+}
+
+// LogDNSEntryApplied records that nginx took a new address set of a name:
+// the record of which addresses were trusted from when. before is nil when
+// NPG does not know what nginx held (after a restart) and is stored as null,
+// which an empty list would not say.
+func (s *AuditService) LogDNSEntryApplied(ctx context.Context, name string, before, after []string, gen int64) error {
+	return s.logEntry(ctx, "dns_entry_applied", "dns_entry", "", name, map[string]interface{}{
+		"before":     before,
+		"after":      auditStrings(after),
+		"generation": gen,
+	})
+}
+
+// LogDNSEntryReviewNeeded records that a name entered review and was closed.
+func (s *AuditService) LogDNSEntryReviewNeeded(ctx context.Context, name, reason string) error {
+	return s.logEntry(ctx, "dns_entry_review_needed", "dns_entry", "", name, map[string]interface{}{
+		"reason": reason,
+	})
+}
+
+// LogDNSEntryRevokeBlocked records that nginx still allowed addresses NPG had
+// removed because an apply failed (blocked true), or that it no longer does
+// (blocked false). It lists at most dnsAuditNamesMax names.
+func (s *AuditService) LogDNSEntryRevokeBlocked(ctx context.Context, blocked bool, outcome, file string, names []string) error {
+	shown := names
+	if len(shown) > dnsAuditNamesMax {
+		shown = shown[:dnsAuditNamesMax]
+	}
+	return s.logEntry(ctx, "dns_entry_revoke_blocked", "dns_entry", "", "revoke", map[string]interface{}{
+		"blocked":     blocked,
+		"outcome":     outcome,
+		"file":        file,
+		"names":       auditStrings(shown),
+		"names_total": len(names),
+	})
+}
+
+// LogDNSEntriesEnvDisabled records, once per start, that
+// NPG_DNS_ENTRIES_DISABLED keeps every domain entry closed whatever the
+// settings say.
+func (s *AuditService) LogDNSEntriesEnvDisabled(ctx context.Context) error {
+	return s.logEntry(ctx, "dns_entries_env_disabled", "dns_entry", "", "", map[string]interface{}{})
+}
+
+// LogDNSEntrySettingsChanged records the domain entry tunables an operator
+// changed, as {key: [before, after]} for the changed keys only. changes is
+// copied: logEntry adds "name" to the map it is given.
+func (s *AuditService) LogDNSEntrySettingsChanged(ctx context.Context, changes map[string]interface{}) error {
+	details := make(map[string]interface{}, len(changes)+1)
+	for k, v := range changes {
+		details[k] = v
+	}
+	return s.logEntry(ctx, "dns_entry_settings_changed", "settings", "", "dns_entry_settings", details)
+}
+
+// auditStrings returns list, or an empty list for nil, so a details value
+// reads [] rather than null where null would mean "unknown".
+func auditStrings(list []string) []string {
+	if list == nil {
+		return []string{}
+	}
+	return list
+}
+
 // LogRedirectHostCreated logs redirect host creation
 func (s *AuditService) LogRedirectHostCreated(ctx context.Context, domains []string, destination string) error {
 	domainStr := ""

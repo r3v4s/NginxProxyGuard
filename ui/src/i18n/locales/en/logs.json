@@ -502,7 +502,14 @@
       "role_updated": "Role Updated",
       "role_deleted": "Role Deleted",
       "user_role_assigned": "User Role Assigned",
-      "user_password_reset": "User Password Reset"
+      "user_password_reset": "User Password Reset",
+      "dns_entry_confirmed": "Domain Entry Confirmed",
+      "dns_entry_apply_requested": "Domain Entries Apply Requested",
+      "dns_entry_applied": "Domain Entry Applied",
+      "dns_entry_review_needed": "Domain Entry Needs Review",
+      "dns_entry_revoke_blocked": "Domain Entry Removal Blocked/Unblocked",
+      "dns_entries_env_disabled": "Domain Entries Off by Environment",
+      "dns_entry_settings_changed": "Domain Entry Settings Changed"
     },
     "tabs": {
       "admin": "Admin Activity",

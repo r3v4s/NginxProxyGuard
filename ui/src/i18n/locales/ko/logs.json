@@ -502,7 +502,14 @@
       "role_updated": "역할 수정",
       "role_deleted": "역할 삭제",
       "user_role_assigned": "사용자 역할 변경",
-      "user_password_reset": "사용자 비밀번호 초기화"
+      "user_password_reset": "사용자 비밀번호 초기화",
+      "dns_entry_confirmed": "도메인 항목 확인",
+      "dns_entry_apply_requested": "도메인 항목 지금 다시 적용",
+      "dns_entry_applied": "도메인 항목 적용",
+      "dns_entry_review_needed": "도메인 항목 검토 필요",
+      "dns_entry_revoke_blocked": "도메인 항목 회수 막힘·풀림",
+      "dns_entries_env_disabled": "도메인 항목 환경변수로 꺼짐",
+      "dns_entry_settings_changed": "도메인 항목 설정 변경"
     },
     "tabs": {
       "admin": "관리자 활동",

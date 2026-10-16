@@ -14034,6 +14034,8 @@ components:
             - disk.space_low
             - disk.space_critical
             - disk.space_recovered
+            - dns_entry.review
+            - dns_entry.apply_failed
         severity:
           type: string
           enum: [error, warning, info]
