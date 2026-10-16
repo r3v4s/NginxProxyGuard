@@ -78,7 +78,8 @@ func (h *DNSEntryHandler) ApplyNow(c echo.Context) error {
 	ctx := c.Request().Context()
 	res := h.svc.ApplyNow(ctx)
 	if h.audit != nil {
-		h.audit.LogDNSEntryApplyRequested(service.ContextWithAudit(ctx, c), res.Outcome)
+		// Also when the client left meanwhile: nginx may have taken the files.
+		h.audit.LogDNSEntryApplyRequested(service.ContextWithAudit(context.WithoutCancel(ctx), c), res.Outcome)
 	}
 	if res.Outcome == string(nginx.ReloadRejected) {
 		return internalError(c, "apply the domain entries to nginx", &nginx.ReloadRejectedError{Detail: res.Detail})

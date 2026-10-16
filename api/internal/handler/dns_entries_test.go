@@ -25,6 +25,9 @@ type fakeDNSEntryService struct {
 	view     model.DNSStatusView
 	apply    nginx.DNSApplyResult
 	applies  int
+	// applying, when set, runs while the apply runs: a test cancels the
+	// request there.
+	applying func()
 }
 
 func (f *fakeDNSEntryService) Overview(_ context.Context, canRead func(scope string) bool, view model.DNSStatusView) (model.DNSEntryOverview, error) {
@@ -38,14 +41,22 @@ func (f *fakeDNSEntryService) Overview(_ context.Context, canRead func(scope str
 
 func (f *fakeDNSEntryService) ApplyNow(context.Context) nginx.DNSApplyResult {
 	f.applies++
+	if f.applying != nil {
+		f.applying()
+	}
 	return f.apply
 }
 
-// fakeDNSApplyAudit records the outcomes "apply now" audited.
-type fakeDNSApplyAudit struct{ outcomes []string }
+// fakeDNSApplyAudit records the outcomes "apply now" audited, and whether
+// each was recorded on a context already cancelled.
+type fakeDNSApplyAudit struct {
+	outcomes  []string
+	cancelled []bool
+}
 
-func (f *fakeDNSApplyAudit) LogDNSEntryApplyRequested(_ context.Context, outcome string) error {
+func (f *fakeDNSApplyAudit) LogDNSEntryApplyRequested(ctx context.Context, outcome string) error {
 	f.outcomes = append(f.outcomes, outcome)
+	f.cancelled = append(f.cancelled, ctx.Err() != nil)
 	return nil
 }
 
@@ -176,5 +187,18 @@ func TestDNSEntryApplyNowAnswersWithTheOutcome(t *testing.T) {
 
 	if rec := callWithGrants(t, NewDNSEntryHandler(nil, nil).ApplyNow, admin, http.MethodPost, ""); rec.Code != http.StatusInternalServerError {
 		t.Errorf("without the DNS entry service: status %d", rec.Code)
+	}
+}
+
+// "Apply now" whose client leaves while nginx applies is audited all the
+// same: nginx may have taken the files.
+func TestDNSEntryApplyNowIsAuditedWhenTheClientLeaves(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	svc := &fakeDNSEntryService{apply: nginx.DNSApplyResult{Outcome: "accepted"}, applying: cancel}
+	audit := &fakeDNSApplyAudit{}
+	callWithGrantsCtx(t, ctx, (&DNSEntryHandler{svc: svc, audit: audit}).ApplyNow, permGrants{"settings:write": true}, http.MethodPost, "")
+	if !reflect.DeepEqual(audit.outcomes, []string{"accepted"}) || !reflect.DeepEqual(audit.cancelled, []bool{false}) {
+		t.Errorf("audited %v, on a cancelled context %v; want the outcome recorded once the client left", audit.outcomes, audit.cancelled)
 	}
 }

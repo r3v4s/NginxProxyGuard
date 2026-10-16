@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -99,8 +100,9 @@ func (h *AccessListHandler) ConfirmDNS(c echo.Context) error {
 		canonical = *status.ObservedCanonicalName
 	}
 	// Recorded before the outcome: the domain is published even when nginx
-	// refuses the reload that applies it, as a list save is.
-	h.audit.LogDNSEntryConfirmed(service.ContextWithAudit(ctx, c), name, status.ObservedAddresses, canonical, dnsRefScopes(refs))
+	// refuses the reload that applies it, as a list save is, and even when
+	// the client left while nginx applied it.
+	h.audit.LogDNSEntryConfirmed(service.ContextWithAudit(context.WithoutCancel(ctx), c), name, status.ObservedAddresses, canonical, dnsRefScopes(refs))
 	if result.Outcome == string(nginx.ReloadRejected) {
 		return internalError(c, "apply the confirmed domain to nginx", &nginx.ReloadRejectedError{Detail: result.Detail})
 	}

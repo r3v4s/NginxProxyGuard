@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -193,15 +194,17 @@ func (h *AccessListHandler) Update(c echo.Context) error {
 	if list == nil {
 		return notFoundError(c, "Access list")
 	}
+	post, cancel := afterAccessListCommit(ctx)
+	defer cancel()
 	// Recorded before the nginx regeneration: the change is saved even if
 	// applying it to nginx fails below.
-	h.audit.LogAccessListUpdated(service.ContextWithAudit(ctx, c), list.Name, accessListChanges(before, list))
-	h.syncDNSNames(ctx, list, beforeNames, afterNames)
+	h.audit.LogAccessListUpdated(service.ContextWithAudit(post, c), list.Name, accessListChanges(before, list))
+	h.syncDNSNames(post, list, beforeNames, afterNames)
 
 	// Access list rules are rendered statically into each dependent host's
 	// nginx config, so the edit must fan out to every referencing host —
 	// otherwise nginx silently keeps enforcing the stale allow/deny rules.
-	if err := h.proxyHosts.RegenerateConfigsForAccessList(ctx, id); err != nil {
+	if err := h.proxyHosts.RegenerateConfigsForAccessList(post, id); err != nil {
 		return internalError(c, "apply access list changes to nginx", err)
 	}
 
@@ -231,20 +234,36 @@ func (h *AccessListHandler) Delete(c echo.Context) error {
 	if err := h.repo.Delete(ctx, id); err != nil {
 		return databaseError(c, "delete access list", err)
 	}
-	h.audit.LogAccessListDeleted(service.ContextWithAudit(ctx, c), existing.Name)
+	post, cancel := afterAccessListCommit(ctx)
+	defer cancel()
+	h.audit.LogAccessListDeleted(service.ContextWithAudit(post, c), existing.Name)
 	// The deleted list's domain files are emptied before the hosts are
 	// regenerated: the next reload stops allowing them even if this fails.
-	h.syncDNSNames(ctx, existing, accessListDNSNames(existing.Items), nil)
+	h.syncDNSNames(post, existing, accessListDNSNames(existing.Items), nil)
 
 	// Regenerate dependent host configs so the deleted allow/deny rules stop
 	// being enforced by the running nginx.
 	if len(hostIDs) > 0 {
-		if err := h.proxyHosts.RegenerateConfigsForHostIDs(ctx, hostIDs); err != nil {
+		if err := h.proxyHosts.RegenerateConfigsForHostIDs(post, hostIDs); err != nil {
 			return internalError(c, "apply access list deletion to nginx", err)
 		}
 	}
 
 	return noContentResponse(c)
+}
+
+// accessListApplyTimeout bounds what a list update or delete does after its
+// commit: the audit, the domain files (up to 3 s of lookups) and the hosts'
+// regeneration with its nginx -t and reload.
+const accessListApplyTimeout = 2 * time.Minute
+
+// afterAccessListCommit is the context of the work after a list's commit.
+// It keeps the request's values but not its end: a client that leaves (a
+// phone closed during the lookups) must not cut that work short, or nginx
+// keeps the old rules, a removed address still allowed, and nothing
+// retries.
+func afterAccessListCommit(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), accessListApplyTimeout)
 }
 
 // accessListRulesRefused answers a save whose rules or domains were refused:

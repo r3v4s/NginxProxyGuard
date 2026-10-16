@@ -79,7 +79,9 @@ func prepareDNSEntrySettings(req *model.UpdateSystemSettingsRequest, cur *model.
 // it records {key: [before, after]} for the changed keys
 // (dns_entry_settings_changed) in auditCtx, the request's user, and then
 // hands both values to the DNS entry service. It returns the changes, nil
-// when nothing changed. audit and svc may be nil.
+// when nothing changed. audit and svc may be nil. Both run to the end when
+// the client has left: the row is saved, and a switch-off left undone would
+// wait for the next check.
 func finishDNSEntrySettingsSave(ctx, auditCtx context.Context, save dnsSettingsSave, audit dnsSettingsAuditor, svc dnsSettingsChanger) map[string]interface{} {
 	if !save.set {
 		return nil
@@ -88,6 +90,7 @@ func finishDNSEntrySettingsSave(ctx, auditCtx context.Context, save dnsSettingsS
 	if len(changes) == 0 {
 		return nil
 	}
+	ctx, auditCtx = context.WithoutCancel(ctx), context.WithoutCancel(auditCtx)
 	if audit != nil {
 		audit.LogDNSEntrySettingsChanged(auditCtx, changes)
 	}

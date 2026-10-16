@@ -9,22 +9,28 @@ import (
 	"nginx-proxy-guard/internal/model"
 )
 
-// fakeSettingsChanger records what a save hands to the DNS entry service.
+// fakeSettingsChanger records what a save hands to the DNS entry service,
+// and whether each call came on a context already cancelled.
 type fakeSettingsChanger struct {
-	calls [][2]model.DNSEntrySettings
+	calls     [][2]model.DNSEntrySettings
+	cancelled []bool
 }
 
-func (f *fakeSettingsChanger) SettingsChanged(_ context.Context, before, after model.DNSEntrySettings) {
+func (f *fakeSettingsChanger) SettingsChanged(ctx context.Context, before, after model.DNSEntrySettings) {
 	f.calls = append(f.calls, [2]model.DNSEntrySettings{before, after})
+	f.cancelled = append(f.cancelled, ctx.Err() != nil)
 }
 
-// fakeSettingsAudit records the dns_entry_settings_changed entries.
+// fakeSettingsAudit records the dns_entry_settings_changed entries, and
+// whether each came on a context already cancelled.
 type fakeSettingsAudit struct {
-	changes []map[string]interface{}
+	changes   []map[string]interface{}
+	cancelled []bool
 }
 
-func (f *fakeSettingsAudit) LogDNSEntrySettingsChanged(_ context.Context, changes map[string]interface{}) error {
+func (f *fakeSettingsAudit) LogDNSEntrySettingsChanged(ctx context.Context, changes map[string]interface{}) error {
 	f.changes = append(f.changes, changes)
+	f.cancelled = append(f.cancelled, ctx.Err() != nil)
 	return nil
 }
 
@@ -117,6 +123,24 @@ func TestFinishDNSEntrySettingsSave(t *testing.T) {
 	}
 	if got := finishDNSEntrySettingsSave(ctx, ctx, dnsSettingsSave{set: true, before: before, after: after}, nil, nil); !reflect.DeepEqual(got, want) {
 		t.Errorf("without an audit or DNS entry service: changes %v, want %v", got, want)
+	}
+}
+
+// The row is saved: a client that leaves now loses neither the audit nor the
+// switch. A switch-off it lost would wait for the next check to empty the
+// files.
+func TestFinishDNSEntrySettingsSaveOutlivesTheRequest(t *testing.T) {
+	before := model.DefaultDNSEntrySettings()
+	after := before
+	after.Enabled = false
+	audit, svc := &fakeSettingsAudit{}, &fakeSettingsChanger{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the client left after the UPDATE
+
+	finishDNSEntrySettingsSave(ctx, ctx, dnsSettingsSave{set: true, before: before, after: after}, audit, svc)
+
+	if !reflect.DeepEqual(audit.cancelled, []bool{false}) || !reflect.DeepEqual(svc.cancelled, []bool{false}) {
+		t.Errorf("audit on a cancelled context %v, switch %v; want both done on a live one", audit.cancelled, svc.cancelled)
 	}
 }
 

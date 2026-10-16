@@ -28,10 +28,22 @@ func (l *callLog) add(format string, args ...interface{}) {
 	l.calls = append(l.calls, fmt.Sprintf(format, args...))
 }
 
-// fakeAccessListStore keeps one list.
+// ctxNote marks a call made on a context that is already cancelled: a
+// handler that did its work after the commit on the request's context lost
+// it when the client left.
+func ctxNote(ctx context.Context) string {
+	if ctx.Err() != nil {
+		return " (cancelled)"
+	}
+	return ""
+}
+
+// fakeAccessListStore keeps one list. committed, when set, runs once an
+// update or a delete is stored: a test cancels the request there.
 type fakeAccessListStore struct {
-	log  *callLog
-	list *model.AccessList
+	log       *callLog
+	list      *model.AccessList
+	committed func()
 }
 
 func (s *fakeAccessListStore) List(context.Context, int, int) ([]model.AccessList, int, error) {
@@ -72,11 +84,17 @@ func (s *fakeAccessListStore) Update(_ context.Context, _ string, req *model.Upd
 	}
 	s.list = &stored
 	list := stored
+	if s.committed != nil {
+		s.committed()
+	}
 	return &list, nil
 }
 
 func (s *fakeAccessListStore) Delete(context.Context, string) error {
 	s.log.add("delete")
+	if s.committed != nil {
+		s.committed()
+	}
 	return nil
 }
 
@@ -90,14 +108,18 @@ func storedItems(items []model.CreateAccessListItemRequest) []model.AccessListIt
 	return out
 }
 
-// fakeAccessListHosts stands for the hosts that render a list.
+// fakeAccessListHosts stands for the hosts that render a list. bounded
+// records whether each regeneration had a deadline.
 type fakeAccessListHosts struct {
 	log     *callLog
 	hostIDs []string
+	bounded []bool
 }
 
-func (f *fakeAccessListHosts) RegenerateConfigsForAccessList(context.Context, string) error {
-	f.log.add("regen")
+func (f *fakeAccessListHosts) RegenerateConfigsForAccessList(ctx context.Context, _ string) error {
+	f.log.add("regen%s", ctxNote(ctx))
+	_, ok := ctx.Deadline()
+	f.bounded = append(f.bounded, ok)
 	return nil
 }
 
@@ -106,8 +128,10 @@ func (f *fakeAccessListHosts) GetHostIDsByAccessList(context.Context, string) ([
 	return f.hostIDs, nil
 }
 
-func (f *fakeAccessListHosts) RegenerateConfigsForHostIDs(context.Context, []string) error {
-	f.log.add("regen hosts")
+func (f *fakeAccessListHosts) RegenerateConfigsForHostIDs(ctx context.Context, _ []string) error {
+	f.log.add("regen hosts%s", ctxNote(ctx))
+	_, ok := ctx.Deadline()
+	f.bounded = append(f.bounded, ok)
 	return nil
 }
 
@@ -122,19 +146,19 @@ func (f *fakeAccessListAudit) LogAccessListCreated(context.Context, string) erro
 	return nil
 }
 
-func (f *fakeAccessListAudit) LogAccessListUpdated(_ context.Context, _ string, details map[string]interface{}) error {
-	f.log.add("audit updated")
+func (f *fakeAccessListAudit) LogAccessListUpdated(ctx context.Context, _ string, details map[string]interface{}) error {
+	f.log.add("audit updated%s", ctxNote(ctx))
 	f.updated = details
 	return nil
 }
 
-func (f *fakeAccessListAudit) LogAccessListDeleted(context.Context, string) error {
-	f.log.add("audit deleted")
+func (f *fakeAccessListAudit) LogAccessListDeleted(ctx context.Context, _ string) error {
+	f.log.add("audit deleted%s", ctxNote(ctx))
 	return nil
 }
 
-func (f *fakeAccessListAudit) LogDNSEntryConfirmed(_ context.Context, name string, addrs []string, canonical string, scopes []string) error {
-	f.log.add("audit confirmed %s %v %s %v", name, addrs, canonical, scopes)
+func (f *fakeAccessListAudit) LogDNSEntryConfirmed(ctx context.Context, name string, addrs []string, canonical string, scopes []string) error {
+	f.log.add("audit confirmed %s %v %s %v%s", name, addrs, canonical, scopes, ctxNote(ctx))
 	return nil
 }
 
@@ -151,6 +175,9 @@ type fakeAccessListDNS struct {
 	confirmed  model.DNSEntryStatus
 	result     nginx.DNSApplyResult
 	confirmErr error
+	// confirming, when set, runs while Confirm applies: a test cancels the
+	// request there, after the confirm is stored.
+	confirming func()
 }
 
 func (f *fakeAccessListDNS) ValidateScopeNames(_ context.Context, scope string, names []string) error {
@@ -159,8 +186,8 @@ func (f *fakeAccessListDNS) ValidateScopeNames(_ context.Context, scope string, 
 	return f.limitErr
 }
 
-func (f *fakeAccessListDNS) SyncScope(_ context.Context, scope string, names []string) error {
-	f.log.add("sync %s %v", scope, names)
+func (f *fakeAccessListDNS) SyncScope(ctx context.Context, scope string, names []string) error {
+	f.log.add("sync %s %v%s", scope, names, ctxNote(ctx))
 	return f.syncErr
 }
 
@@ -177,6 +204,9 @@ func (f *fakeAccessListDNS) References(context.Context, string) ([]model.DNSRefe
 
 func (f *fakeAccessListDNS) Confirm(_ context.Context, name string, expected []string, expectedCanonical string) (model.DNSEntryStatus, nginx.DNSApplyResult, error) {
 	f.log.add("confirm %s %v %s", name, expected, expectedCanonical)
+	if f.confirming != nil {
+		f.confirming()
+	}
 	return f.confirmed, f.result, f.confirmErr
 }
 
@@ -331,6 +361,72 @@ func TestAccessListDeleteEmptiesItsDomainFiles(t *testing.T) {
 	want := []string{"get", "hosts", "delete", "audit deleted", "sync acl:" + testListID + " []", "regen hosts"}
 	if !reflect.DeepEqual(calls.calls, want) {
 		t.Errorf("calls = %v, want %v", calls.calls, want)
+	}
+}
+
+// A client that leaves once the list is stored (a phone that closes during
+// the domain lookups) cuts nothing short: the audit, the domain files and
+// the hosts' regeneration still run, the regeneration with a deadline of its
+// own. Otherwise nginx would keep the old rules, a removed IP still allowed,
+// and nothing would retry.
+func TestAccessListSaveFinishesWhenTheClientLeaves(t *testing.T) {
+	t.Run("update", func(t *testing.T) {
+		h, calls, _, _ := newDNSListHandler(&model.AccessList{ID: testListID, Name: "partners", Items: []model.AccessListItem{
+			addressRule("allow", "192.0.2.10", 0), domainRule("partner.example.com", 1),
+		}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		h.repo.(*fakeAccessListStore).committed = cancel
+		rec := callWithGrantsCtx(t, ctx, h.Update, listWriter, http.MethodPut,
+			`{"items":[{"directive":"allow","address":"192.0.2.11"}]}`, "id", testListID)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d; body %s", rec.Code, rec.Body)
+		}
+		want := []string{"get", "update", "audit updated", "sync acl:" + testListID + " []", "regen"}
+		if !reflect.DeepEqual(calls.calls, want) {
+			t.Errorf("calls = %v, want %v", calls.calls, want)
+		}
+		if bounded := h.proxyHosts.(*fakeAccessListHosts).bounded; !reflect.DeepEqual(bounded, []bool{true}) {
+			t.Errorf("regeneration deadlines = %v, want one", bounded)
+		}
+	})
+	t.Run("delete", func(t *testing.T) {
+		h, calls, _, _ := newDNSListHandler(&model.AccessList{ID: testListID, Name: "partners", Items: []model.AccessListItem{domainRule("partner.example.com", 0)}})
+		hosts := h.proxyHosts.(*fakeAccessListHosts)
+		hosts.hostIDs = []string{"00000000-0000-4000-8000-0000000016b1"}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		h.repo.(*fakeAccessListStore).committed = cancel
+		rec := callWithGrantsCtx(t, ctx, h.Delete, listWriter, http.MethodDelete, "", "id", testListID)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("status %d; body %s", rec.Code, rec.Body)
+		}
+		want := []string{"get", "hosts", "delete", "audit deleted", "sync acl:" + testListID + " []", "regen hosts"}
+		if !reflect.DeepEqual(calls.calls, want) {
+			t.Errorf("calls = %v, want %v", calls.calls, want)
+		}
+		if !reflect.DeepEqual(hosts.bounded, []bool{true}) {
+			t.Errorf("regeneration deadlines = %v, want one", hosts.bounded)
+		}
+	})
+}
+
+// A confirm whose client leaves while nginx applies it is stored and
+// published, so it is audited all the same.
+func TestAccessListConfirmDNSIsAuditedWhenTheClientLeaves(t *testing.T) {
+	h, calls, dns, _ := newDNSListHandler(confirmList())
+	dns.refs = []model.DNSReference{thisListUse()}
+	canonical := "partner.example.com"
+	dns.confirmed = model.DNSEntryStatus{Hostname: "partner.example.com", Status: model.DNSStatusOK, Addresses: []string{"203.0.113.10"},
+		ObservedAddresses: []string{"203.0.113.10"}, ObservedCanonicalName: &canonical}
+	dns.result = nginx.DNSApplyResult{Outcome: "accepted"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dns.confirming = cancel
+	callWithGrantsCtx(t, ctx, h.ConfirmDNS, listWriter, http.MethodPost, confirmBody, "id", testListID)
+	want := "audit confirmed partner.example.com [203.0.113.10] partner.example.com [acl:" + testListID + "]"
+	if last := calls.calls[len(calls.calls)-1]; last != want {
+		t.Errorf("calls = %v, want %q last", calls.calls, want)
 	}
 }
 

@@ -30,7 +30,14 @@ func (g permGrants) CanToken(_ context.Context, _ *model.APIToken, permission st
 // signed-in user who holds exactly g.
 func callWithGrants(t *testing.T, h echo.HandlerFunc, g permGrants, method, body string, params ...string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(method, "/", strings.NewReader(body))
+	return callWithGrantsCtx(t, context.Background(), h, g, method, body, params...)
+}
+
+// callWithGrantsCtx is callWithGrants on a request whose context is ctx: a
+// test cancels it to stand for a client that leaves.
+func callWithGrantsCtx(t *testing.T, ctx context.Context, h echo.HandlerFunc, g permGrants, method, body string, params ...string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, "/", strings.NewReader(body)).WithContext(ctx)
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	c := echo.New().NewContext(req, rec)
