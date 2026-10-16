@@ -32,9 +32,10 @@ type dnsTickResult struct {
 // be seen (nextDelay).
 //  1. (no lock) read the references; resolve every used name, four at a
 //     time, while the feature is on — names in review too, for display.
-//  2. (dnsMu) one transaction: the references read again (a save between 1
-//     and 2 must not see its name marked unused), then every name's
-//     transition, then every file compared with what the rows want.
+//  2. (dnsMu) the feature switch read again (the answers are dropped when
+//     it changed), then one transaction: the references read again (a save
+//     between 1 and 2 must not see its name marked unused), then every
+//     name's transition, then every file compared with what the rows want.
 //  3. (no lock) apply when something is not in nginx yet; alerts and events.
 func (s *DNSEntryService) Tick(ctx context.Context) time.Duration {
 	s.tickMu.Lock()
@@ -81,6 +82,13 @@ func (s *DNSEntryService) checkNames(ctx context.Context) (dnsTickResult, error)
 	var changes []dnsNameChange
 	var unused []string
 	s.dnsMu.Lock()
+	if cur := s.currentSwitch(ctx); cur != sw {
+		// The switch changed during the lookups. A settings save stores it,
+		// then switches every name under dnsMu, so it is read again here: the
+		// answers are dropped, and nothing looked up while the feature was on
+		// publishes once "off" is stored.
+		sw, obs, res.notes = cur, nil, nil
+	}
 	err = s.states.WithTx(ctx, func(tx repository.DNSEntryTx) error {
 		changes, unused = nil, nil
 		r, err := tx.ListReferences(ctx)
@@ -146,6 +154,12 @@ func (s *DNSEntryService) checkNames(ctx context.Context) (dnsTickResult, error)
 		s.closeReview(ctx, name, false)
 	}
 	return res, nil
+}
+
+// currentSwitch reads the feature switch again.
+func (s *DNSEntryService) currentSwitch(ctx context.Context) dnsSwitch {
+	st, known := s.currentSettings(ctx)
+	return dnsSwitch{known: known, enabled: st.Enabled}
 }
 
 // droppedSegmentsLocked returns, per name, the highest generation of the

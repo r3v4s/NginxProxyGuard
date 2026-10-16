@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"reflect"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -311,6 +314,77 @@ func TestDNSSettingsChangedSwitchesEveryName(t *testing.T) {
 	r.tick(t)
 	if got := file("same.example.com"); !dnsEqual(got, []string{"203.0.113.10"}) {
 		t.Errorf("unchanged name after the gap: file = %v, want it back", got)
+	}
+}
+
+// dnsSwitchingLookuper runs flip, once, at the first lookup: while the check
+// or the save that asks holds no lock.
+type dnsSwitchingLookuper struct {
+	*dnsTestLookuper
+	once sync.Once
+	flip func()
+}
+
+func (l *dnsSwitchingLookuper) LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error) {
+	l.once.Do(l.flip)
+	return l.dnsTestLookuper.LookupNetIP(ctx, network, host)
+}
+
+// The feature is switched off while a check or a save looks a pending name
+// up. The answer it got while the feature was on publishes nothing once
+// "off" is stored: the name stays switched off, its file stays empty and
+// nginx is never given the address.
+func TestDNSAnswersTakenBeforeASwitchOffPublishNothing(t *testing.T) {
+	for _, path := range []string{"check", "save"} {
+		t.Run(path, func(t *testing.T) {
+			r := newDNSTestRig(t)
+			ctx := context.Background()
+			r.svc.lastGC = r.clock.Now()
+			const name = "new.example.com"
+			a := dnsACL(dnsTestListA)
+			r.store.setRefs(dnsRef(dnsTestListA, name))
+			if path == "check" {
+				r.store.put(model.DNSEntryState{Hostname: name, Status: model.DNSStatusPending})
+				if err := r.svc.ReconcileFiles(ctx, false); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r.lookup.set(name, "203.0.113.40")
+			on := model.DefaultDNSEntrySettings()
+			off := on
+			off.Enabled = false
+			r.svc.lookuper = &dnsSwitchingLookuper{dnsTestLookuper: r.lookup, flip: func() {
+				r.settings.set(`{"enabled":false}`, nil) // a settings save stores it, then switches
+				r.svc.SettingsChanged(ctx, on, off)
+			}}
+			nothingPublished := func(when string) {
+				t.Helper()
+				st, _ := r.store.row(name)
+				got, _ := r.nginx.file(a, name)
+				if !st.Disabled || len(st.Published) != 0 || len(got) != 0 {
+					t.Fatalf("%s: row %+v, file %v; want it switched off with nothing published or written", when, st, got)
+				}
+				for _, ap := range r.events.snapshot().applies {
+					if slices.Contains(ap.after, "203.0.113.40") {
+						t.Fatalf("%s: nginx was given 203.0.113.40 (%+v)", when, ap)
+					}
+				}
+			}
+
+			if path == "check" {
+				r.tick(t)
+			} else if err := r.svc.SyncScope(ctx, a, []string{name}); err != nil {
+				t.Fatal(err)
+			}
+			nothingPublished("after the " + path + " that looked the name up")
+			select {
+			case <-r.svc.Wake():
+				r.tick(t) // the check the switch asked for
+			default:
+				t.Fatal("switching off must wake the scheduler")
+			}
+			nothingPublished("after the check the switch asked for")
+		})
 	}
 }
 

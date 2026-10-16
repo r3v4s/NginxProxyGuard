@@ -63,12 +63,13 @@ func (s *DNSEntryService) ValidateScopeNames(ctx context.Context, scope string, 
 // database within one interval if a caller forgets it.
 //  1. (no lock) resolve, within SaveResolveTimeout, the names that are new to
 //     the service: no row, unused, or pending and never published.
-//  2. (dnsMu) one transaction: rows for new names; a pending name's first
-//     answer published at once (an operator action, outside the budget); a
-//     name re-added within 7 days takes back its state (Reactivate); a name
-//     that left the scope — its file here held addresses — gets a new
-//     generation and a revocation, or is marked unused when nothing else
-//     uses it.
+//  2. (dnsMu) the feature switch read again (the answers are dropped when
+//     it changed), then one transaction: rows for new names; a pending
+//     name's first answer published at once (an operator action, outside
+//     the budget); a name re-added within 7 days takes back its state
+//     (Reactivate); a name that left the scope — its file here held
+//     addresses — gets a new generation and a revocation, or is marked
+//     unused when nothing else uses it.
 //  3. (dnsMu) the files of every touched name.
 //
 // The caller's own reload carries the change to nginx: the reload hooks mark
@@ -111,6 +112,11 @@ func (s *DNSEntryService) SyncScope(ctx context.Context, scope string, names []s
 	var refs []model.DNSReference
 	rows := make(map[string]model.DNSEntryState)
 	s.dnsMu.Lock()
+	if cur := s.currentSwitch(ctx); cur != sw {
+		// As in a check: a switch stored during the lookups drops the
+		// answers, so a save publishes nothing once "off" is stored.
+		sw, obs = cur, nil
+	}
 	gone := s.scopeNamesLocked(scope, keep)
 	err := s.states.WithTx(ctx, func(tx repository.DNSEntryTx) error {
 		changes, unused = nil, nil
