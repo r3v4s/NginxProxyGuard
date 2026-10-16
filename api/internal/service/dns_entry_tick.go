@@ -27,7 +27,8 @@ type dnsTickResult struct {
 
 // Tick runs one check and returns how long the scheduler waits
 // before the next: the interval (NPG_DNS_ENTRIES_INTERVAL first), shorter
-// when a retry falls due sooner.
+// when a retry falls due sooner or while a reload's acceptance is still to
+// be seen (nextDelay).
 //  1. (no lock) read the references; resolve every used name, four at a
 //     time, while the feature is on — names in review too, for display.
 //  2. (dnsMu) one transaction: the references read again (a save between 1
@@ -225,20 +226,27 @@ func (s *DNSEntryService) lastReloadAt() *time.Time {
 }
 
 // nextDelay is the wait before the next check: NPG_DNS_ENTRIES_INTERVAL when
-// set, else the configured interval; sooner when a retry is due sooner;
-// never under a second.
+// set, else the configured interval; sooner when a retry falls due sooner;
+// at most 15 seconds while a post-hoc check is open, so the check that sees
+// nginx take the reload, or gives up on it, comes in time; never under a
+// second. A retry time that has passed shortens nothing: the check that was
+// to run it did not (a post-hoc check held it back, or the check failed),
+// and asking again at once would only spin.
 func (s *DNSEntryService) nextDelay(st model.DNSEntrySettings) time.Duration {
 	d := s.envInterval
 	if d <= 0 {
 		d = st.CheckInterval()
 	}
+	now := s.now()
 	s.diskMu.Lock()
 	retryAt := s.applyView.retryAt
+	open := len(s.postHocs) > 0
 	s.diskMu.Unlock()
-	if !retryAt.IsZero() {
-		if until := retryAt.Sub(s.now()); until < d {
-			d = until
-		}
+	if retryAt.After(now) && retryAt.Sub(now) < d {
+		d = retryAt.Sub(now)
+	}
+	if open && d > dnsPostHocPoll {
+		d = dnsPostHocPoll
 	}
 	if d < time.Second {
 		d = time.Second

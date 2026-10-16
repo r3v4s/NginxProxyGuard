@@ -11,6 +11,7 @@ import (
 
 const (
 	dnsPostHocMaxWait  = 10 * time.Minute // no new nginx child this long after the signal = failed
+	dnsPostHocPoll     = 15 * time.Second // the longest wait between checks while a post-hoc check is open
 	dnsNotUpAlertAfter = 15 * time.Minute // nginx not up this long counts for the alerts
 	dnsMaxRetryDelay   = 10 * time.Minute // backoff 1, 2, 4, 8, then every 10 minutes
 )
@@ -207,8 +208,13 @@ func (s *DNSEntryService) runApply(ctx context.Context) nginx.DNSApplyResult {
 	case "unconfirmed":
 		if res.Snapshot == nil {
 			s.recordSuccessLocked(ctx, res) // nothing to check it against: counts as applied
+		} else {
+			// The post-hoc check decides (applyStep): it ends the retry when
+			// nginx took the reload, and signals again after 10 minutes when
+			// it did not. A retry time left from an earlier failure would only
+			// pass unused while the check is open.
+			s.retry.retryAt = time.Time{}
 		}
-		// With a snapshot the post-hoc check decides (applyStep).
 	case "not_up":
 		if s.retry.notUpSince.IsZero() {
 			s.retry.notUpSince = now

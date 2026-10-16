@@ -389,6 +389,39 @@ func TestDNSUnconfirmedReloadIsCheckedBeforeSignallingAgain(t *testing.T) {
 	}
 }
 
+// A failed apply is retried, and the retry's reload comes back unconfirmed
+// with nginx never seen taking it. The checks that look for nginx taking it,
+// and the one that gives up after 10 minutes and signals again, come every
+// 15 seconds, never at once. A retry that falls due while no such check is
+// open runs on time.
+func TestDNSUnconfirmedRetryNeverSpinsTheChecks(t *testing.T) {
+	r := dnsPartnerRig(t, "203.0.113.10")
+	r.settings.set(`{"check_interval_seconds":300}`, nil)
+	r.lookup.set("partner.example.com", "127.0.0.1") // refused: a revocation waits
+	r.nginx.results = []nginx.DNSApplyResult{{Outcome: "blocked"}, {Outcome: "unconfirmed", Snapshot: &nginx.ReloadSnapshot{}}}
+
+	if d := r.tick(t); d != time.Minute {
+		t.Fatalf("delay after the failed apply = %v, want the 1 minute retry", d)
+	}
+	r.clock.Advance(time.Minute)
+	d := r.tick(t)
+	if r.nginx.applyCount() != 2 {
+		t.Fatalf("applies = %d, want the retry run when it fell due", r.nginx.applyCount())
+	}
+	checks, shortest := 0, d
+	for start := r.clock.Now(); r.clock.Now().Sub(start) < 15*time.Minute; checks++ {
+		shortest = min(shortest, d)
+		r.clock.Advance(d)
+		d = r.tick(t)
+	}
+	if shortest < 15*time.Second || checks > 60 {
+		t.Fatalf("%d checks in 15 minutes, the shortest wait %v; want none sooner than 15 s", checks, shortest)
+	}
+	if r.nginx.applyCount() != 3 {
+		t.Fatalf("applies = %d, want one more signal once the check gave up after 10 minutes", r.nginx.applyCount())
+	}
+}
+
 // As a property: whatever DNS answers and however nginx fails,
 // after a check whose writes went through every file holds exactly what the
 // database wants, and a failed apply never puts anything back.
@@ -532,7 +565,20 @@ func TestDNSTickDelay(t *testing.T) {
 		t.Fatalf("delay = %v, want the retry that is due sooner", d)
 	}
 	r.svc.applyView.retryAt = r.clock.Now().Add(-time.Minute)
+	if d := r.svc.nextDelay(st); d != 300*time.Second {
+		t.Fatalf("delay = %v, want the interval: a retry time that has passed shortens nothing", d)
+	}
+	r.svc.applyView.retryAt = r.clock.Now().Add(100 * time.Millisecond)
 	if d := r.svc.nextDelay(st); d != time.Second {
 		t.Fatalf("delay = %v, want at least a second", d)
+	}
+	r.svc.applyView.retryAt = time.Time{}
+	r.svc.postHocs = []*dnsPostHoc{{since: r.clock.Now()}}
+	if d := r.svc.nextDelay(st); d != 15*time.Second {
+		t.Fatalf("delay = %v, want 15 s while a post-hoc check is open", d)
+	}
+	r.svc.envInterval = 5 * time.Second
+	if d := r.svc.nextDelay(st); d != 5*time.Second {
+		t.Fatalf("delay = %v, want the interval when it is shorter than 15 s", d)
 	}
 }
