@@ -799,6 +799,11 @@ func (m *Manager) GenerateConfigFull(ctx context.Context, data ProxyHostConfigDa
 			return fmt.Errorf("failed to ensure filter subscription IP geo config: %w", err)
 		}
 	}
+	// So must the file of each domain entry the access list block includes
+	// (#320); one the DNS entry service has not written yet is created empty.
+	if err := m.ensureDNSIncludes(data); err != nil {
+		return fmt.Errorf("failed to ensure domain include files: %w", err)
+	}
 
 	// Check if AdvancedConfig contains a custom location / block
 	// If so, skip generating the default location / block to avoid duplicates

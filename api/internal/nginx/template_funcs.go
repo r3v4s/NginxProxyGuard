@@ -191,6 +191,8 @@ func GetTemplateFuncMap(apiHost string) template.FuncMap {
 		"headerValue":     headerValue,
 		"accessListRules": accessListRules,
 		"uriBlockRules":   uriBlockRules,
+		// An access list's domain entries (#320, access_list_dns.go).
+		"accessListDNSIncludes": accessListDNSIncludes,
 	}
 }
 

@@ -1096,6 +1096,59 @@ func goldenCases() []goldenCase {
 		})
 	}
 
+	// 25-26) access list domain entries (#320): each name is an include of
+	// the file the DNS entry service writes for it, after the list's address
+	// rules (an explicit deny included) and before the final deny all. A
+	// list of names alone keeps its block and deny all; on an SSL host the
+	// block, so the include too, is written in both server blocks.
+	{
+		alID := "00000000-0000-0000-0000-0000000000a5"
+		host := goldenBaseHost("00000000-0000-0000-0000-000000000a19", "domains.example.com")
+		host.AccessListID = &alID
+		cases = append(cases, goldenCase{
+			name: "access_list_domains",
+			data: ProxyHostConfigData{
+				Host:           host,
+				GlobalSettings: baseGlobalSettings(),
+				AccessList: &model.AccessList{
+					ID:         alID,
+					Name:       "partners",
+					SatisfyAny: false,
+					Items: []model.AccessListItem{
+						{ID: "00000000-0000-0000-0000-0000000000c1", AccessListID: alID, Directive: "allow", Address: "192.0.2.0/24", SortOrder: 0, CreatedAt: fixtureNow},
+						{ID: "00000000-0000-0000-0000-0000000000c2", AccessListID: alID, Directive: "deny", Address: "198.51.100.7", Description: "old office", SortOrder: 1, CreatedAt: fixtureNow},
+						{ID: "00000000-0000-0000-0000-0000000000c3", AccessListID: alID, Directive: "deny", Address: "all", Hostname: "partner.example.com", SortOrder: 2, CreatedAt: fixtureNow},
+						{ID: "00000000-0000-0000-0000-0000000000c4", AccessListID: alID, Directive: "deny", Address: "all", Hostname: "shop-partner.example.com", SortOrder: 3, CreatedAt: fixtureNow},
+					},
+					CreatedAt: fixtureNow,
+					UpdatedAt: fixtureNow,
+				},
+			},
+		})
+
+		onlyID := "00000000-0000-0000-0000-0000000000a6"
+		hostOnly := goldenSSLHost("00000000-0000-0000-0000-000000000a1a", "domains-only.example.com")
+		hostOnly.SSLForceHTTPS = false
+		hostOnly.AccessListID = &onlyID
+		cases = append(cases, goldenCase{
+			name: "access_list_domains_only",
+			data: ProxyHostConfigData{
+				Host:           hostOnly,
+				GlobalSettings: baseGlobalSettings(),
+				AccessList: &model.AccessList{
+					ID:         onlyID,
+					Name:       "partner-only",
+					SatisfyAny: true,
+					Items: []model.AccessListItem{
+						{ID: "00000000-0000-0000-0000-0000000000c5", AccessListID: onlyID, Directive: "deny", Address: "all", Hostname: "partner.example.com", SortOrder: 0, CreatedAt: fixtureNow},
+					},
+					CreatedAt: fixtureNow,
+					UpdatedAt: fixtureNow,
+				},
+			},
+		})
+	}
+
 	return cases
 }
 

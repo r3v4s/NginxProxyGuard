@@ -192,6 +192,9 @@
 {{end}}{{- end}}
 {{range accessListRules .AccessList}}
     {{.Directive}} {{.Address}};{{if .Description}} # {{commentText .Description}}{{end}}
+{{end}}{{range accessListDNSIncludes .AccessList}}
+    # dns: {{commentText .Name}}
+    include {{.Path}};
 {{end}}
     deny all;
 {{end}}{{end}}

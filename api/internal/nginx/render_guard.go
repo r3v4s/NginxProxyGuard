@@ -71,12 +71,28 @@ func headerValue(s string) string {
 // out, so the list's final "deny all" still applies to that address; any other
 // rule becomes "deny all" in its place, because leaving out a deny would let
 // an allow after it admit the address the deny was meant to stop.
+//
+// A domain row (#320: Hostname set, stored as deny all) is not a rule here.
+// accessListDNSIncludes writes it as an include line after these rules. A
+// domain row whose file path cannot be built (a name that breaks the name
+// rules, or a list ID that is not a UUID) is written as "deny all" in its
+// place, as versions without domain rows write every domain row.
 func accessListRules(list *model.AccessList) []model.AccessListItem {
 	if list == nil {
 		return nil
 	}
 	rules := make([]model.AccessListItem, 0, len(list.Items))
 	for _, item := range list.Items {
+		if item.Hostname != "" {
+			if accessListDNSPath(list, item) != "" {
+				continue // an include line (accessListDNSIncludes)
+			}
+			warnSkippedOnce("access list "+list.ID+" domain "+item.ID+" "+item.Hostname,
+				"[DNSEntries] WARN: Access list %s: domain entry %.80q is not a usable domain name, so it is written as \"deny all\" in its place. Edit the access list to correct or remove it.",
+				list.ID, item.Hostname)
+			rules = append(rules, model.AccessListItem{ID: item.ID, Directive: "deny", Address: "all"})
+			continue
+		}
 		address := strings.TrimSpace(item.Address)
 		if !model.IsAccessListDirective(item.Directive) || !model.IsAccessListAddress(address) {
 			if item.Directive == "allow" {

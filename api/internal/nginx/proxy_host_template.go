@@ -120,3 +120,24 @@ func (d ProxyHostConfigData) RateLimitEnabled() bool {
 func (d ProxyHostConfigData) ChallengeGate() bool {
 	return (d.GeoRestriction != nil && d.GeoRestriction.ChallengeMode) || d.CloudChallenge()
 }
+
+// AccessPhaseAuth reports whether the host asks for a login: an auth
+// provider (ForwardAuth; the service sets it only when it is enabled and the
+// host is not a stream), or auth_request or auth_basic anywhere in its
+// Advanced Config (AdvancedConfigHasAuth). It errs towards true: a mention in
+// any block counts.
+func (d ProxyHostConfigData) AccessPhaseAuth() bool {
+	return d.AuthProvider != nil || (d.Host != nil && AdvancedConfigHasAuth(d.Host.AdvancedConfig))
+}
+
+// ListSkipsLogin reports whether the host's access list lets the addresses
+// it allows skip the host's login: the block renders "satisfy any" (it is
+// left out next to the challenge gate, _security.conf.tmpl) on a host with a
+// login (AccessPhaseAuth). The access list editor, the host form and the DNS
+// entry overview warn about domain entries in such a list. A client the list
+// does not allow is sent to the login there, not given the list's 403, so
+// the fail2ban gate leaves the host out (#320).
+func (d ProxyHostConfigData) ListSkipsLogin() bool {
+	return d.AccessList != nil && len(d.AccessList.Items) > 0 && d.AccessList.SatisfyAny &&
+		!d.ChallengeGate() && d.AccessPhaseAuth()
+}
