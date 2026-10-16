@@ -41,10 +41,8 @@ func (s *DNSEntryService) References(ctx context.Context, name string) ([]model.
 // is closed but the name stays switched off. The switch is read again under
 // dnsMu: a settings save stores "off" before it switches the names off, and
 // a confirm that comes in between counts as one made while the feature is
-// off. Such a confirm publishes nothing, so nginx is not asked to reload
-// (the next check applies its files) and the apply result is empty. The
-// handler maps the errors and a rejected apply. The status is returned
-// whole (the handler filters it); its observed_addresses and
+// off. The handler maps the errors and a rejected apply. The status is
+// returned whole (the handler filters it); its observed_addresses and
 // observed_canonical_name are what was confirmed, also while the feature is
 // off and addresses is empty: the dns_entry_confirmed audit records them.
 func (s *DNSEntryService) Confirm(ctx context.Context, name string, expected []string, expectedCanonical string) (model.DNSEntryStatus, nginx.DNSApplyResult, error) {
@@ -126,10 +124,7 @@ func (s *DNSEntryService) Confirm(ctx context.Context, name string, expected []s
 	if dnsReportable(eff) {
 		s.events.nameChanged(ctx, name, eff, next)
 	}
-	var res nginx.DNSApplyResult
-	if !next.Disabled {
-		res = s.runApply(ctx)
-	}
+	res := s.runApply(ctx)
 	shown := next
 	switch res.Outcome {
 	case "accepted", "signalled", "skipped":
