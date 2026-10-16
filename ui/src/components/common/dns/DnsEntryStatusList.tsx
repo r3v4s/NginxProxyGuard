@@ -48,6 +48,10 @@ function EntryDetails({ hostname, status }: { hostname: string; status: DNSEntry
   const time = (iso: string | null) => formatDnsTime(iso, i18n.language);
   const addresses = status.addresses ?? [];
   const pending = status.pending_addresses ?? [];
+  // Capped like the allowed addresses: a long answer cannot stretch the card.
+  const pendingText =
+    pending.slice(0, VISIBLE_ADDRESSES).join(', ') +
+    (pending.length > VISIBLE_ADDRESSES ? ` ${t('list.more', { count: pending.length - VISIBLE_ADDRESSES })}` : '');
   const warnings = status.warnings ?? [];
   const familyProblems = FAMILIES.filter((family) => {
     const state = familyStateKey(status.families?.[family]?.state);
@@ -90,8 +94,8 @@ function EntryDetails({ hostname, status }: { hostname: string; status: DNSEntry
       {pending.length > 0 && (
         <p className="text-amber-700 dark:text-amber-300">
           {status.next_apply_at
-            ? t('list.pendingAt', { time: time(status.next_apply_at), addresses: pending.join(', ') })
-            : t('list.pending', { addresses: pending.join(', ') })}
+            ? t('list.pendingAt', { time: time(status.next_apply_at), addresses: pendingText })
+            : t('list.pending', { addresses: pendingText })}
         </p>
       )}
 
