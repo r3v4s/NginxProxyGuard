@@ -480,10 +480,11 @@ func dnsDuplicates(refs []model.DNSReference, rows map[string]model.DNSEntryStat
 }
 
 // refreshWarnings recomputes every name's warnings at the end of a
-// check and stores the ones that changed.
+// check and stores the ones that changed. Without a row there is nothing to
+// warn about, and nothing is read for it.
 func (s *DNSEntryService) refreshWarnings(ctx context.Context, refs []model.DNSReference, notes map[string]dnsentry.ObserveNotes) {
 	rows, err := s.states.GetStates(ctx, nil)
-	if err != nil {
+	if err != nil || len(rows) == 0 {
 		return
 	}
 	used := dnsUseCounts(refs)

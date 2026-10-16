@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -187,6 +189,78 @@ func TestDNSRefreshWarnings(t *testing.T) {
 	r.svc.refreshWarnings(ctx, r.mustRefs(), nil)
 	if st, _ := r.store.row("partner.example.com"); !dnsEqual(st.Warnings, want["partner.example.com"]) {
 		t.Errorf("partner without a new answer: warnings = %v, want them kept", st.Warnings)
+	}
+}
+
+// dnsCountingWarnSources records every read made for the warnings.
+type dnsCountingWarnSources struct {
+	dnsTestWarnSources
+	mu    sync.Mutex
+	reads []string
+}
+
+func (w *dnsCountingWarnSources) note(what string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.reads = append(w.reads, what)
+}
+
+func (w *dnsCountingWarnSources) made() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.reads...)
+}
+
+func (w *dnsCountingWarnSources) ListEnabled(ctx context.Context) ([]model.DDNSRecord, error) {
+	w.note("ddns records")
+	return w.dnsTestWarnSources.ListEnabled(ctx)
+}
+
+func (w *dnsCountingWarnSources) Get(ctx context.Context) (*model.GlobalSettings, error) {
+	w.note("global settings")
+	return w.dnsTestWarnSources.Get(ctx)
+}
+
+func (w *dnsCountingWarnSources) GetActiveGlobalBans(ctx context.Context) ([]model.BannedIP, error) {
+	w.note("global bans")
+	return w.dnsTestWarnSources.GetActiveGlobalBans(ctx)
+}
+
+func (w *dnsCountingWarnSources) GetActiveBansForHost(ctx context.Context, proxyHostID string) ([]model.BannedIP, error) {
+	w.note("host bans")
+	return w.dnsTestWarnSources.GetActiveBansForHost(ctx, proxyHostID)
+}
+
+// dnsCountingSettings counts the reads of the system settings.
+type dnsCountingSettings struct {
+	*dnsTestSettings
+	n atomic.Int64
+}
+
+func (s *dnsCountingSettings) Get(ctx context.Context) (*model.SystemSettings, error) {
+	s.n.Add(1)
+	return s.dnsTestSettings.Get(ctx)
+}
+
+// Without any domain entry a check reads nothing for the warnings: not the
+// DDNS records, the global settings, the bans or the system settings.
+// Without Valkey each of those reads logs a cache line, at every check.
+func TestDNSRefreshWarningsReadsNothingWithoutDomainEntries(t *testing.T) {
+	r := newDNSTestRig(t)
+	r.svc.lastGC = r.clock.Now()
+	src := &dnsCountingWarnSources{}
+	r.svc.selfIPs, r.svc.global, r.svc.bans = src, src, src
+
+	r.tick(t)
+	if reads := src.made(); len(reads) != 0 {
+		t.Errorf("a check without domain entries read %v for the warnings", reads)
+	}
+
+	settings := &dnsCountingSettings{dnsTestSettings: r.settings}
+	r.svc.settings = settings
+	r.svc.refreshWarnings(context.Background(), nil, nil)
+	if n := settings.n.Load(); n != 0 || len(src.made()) != 0 {
+		t.Errorf("warnings without domain entries read the system settings %d time(s) and %v", n, src.made())
 	}
 }
 
