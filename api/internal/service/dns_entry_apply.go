@@ -149,11 +149,14 @@ func (s *DNSEntryService) postHocTaken(ctx context.Context, ph *dnsPostHoc) {
 	s.applyWorks(ctx)
 }
 
-// applyWorks ends a failing run when nginx took the files some other way.
+// applyWorks ends a failing run when nginx took the files some other way,
+// and forgets the run's backoff and any nginx outage with it: a retry left
+// waiting by an unconfirmed reload has no retry time, but its failure count
+// and the start of the outage must not carry over to the next one.
 func (s *DNSEntryService) applyWorks(ctx context.Context) {
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
-	if !s.retry.failing && s.retry.retryAt.IsZero() {
+	if !s.retry.failing && s.retry.retryAt.IsZero() && s.retry.failures == 0 && s.retry.notUpSince.IsZero() {
 		return
 	}
 	s.recordSuccessLocked(ctx, nginx.DNSApplyResult{Outcome: "accepted"})

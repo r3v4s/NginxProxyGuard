@@ -463,6 +463,48 @@ func TestDNSColdBootAppliesOnceNginxIsUp(t *testing.T) {
 	}
 }
 
+// nginx was not up, then the retry's reload comes back unconfirmed and the
+// post-hoc check sees nginx take it: the outage is over, and nothing of it is
+// kept. nginx not up again two days later is a new outage: it does not count
+// as failing at once, and it is retried after 1 minute.
+func TestDNSNginxOutageIsForgottenOnceAReloadIsTaken(t *testing.T) {
+	r := dnsPartnerRig(t, "203.0.113.10")
+	r.lookup.set("partner.example.com", "127.0.0.1") // refused: a revocation waits
+	r.nginx.results = []nginx.DNSApplyResult{{Outcome: "not_up"}, {Outcome: "unconfirmed", Snapshot: &nginx.ReloadSnapshot{}}}
+	retry := func() dnsRetryState {
+		r.svc.applyMu.Lock()
+		defer r.svc.applyMu.Unlock()
+		return r.svc.retry
+	}
+
+	d := r.tick(t) // nginx not up: retried after a minute
+	r.clock.Advance(d)
+	d = r.tick(t) // the retry's reload comes back unconfirmed
+	r.nginx.mu.Lock()
+	r.nginx.taken = true
+	r.nginx.mu.Unlock()
+	r.clock.Advance(d)
+	r.tick(t) // the post-hoc check sees nginx take it
+	if st, _ := r.store.row("partner.example.com"); st.RevokePendingSince != nil {
+		t.Fatalf("row = %+v, want the revocation applied by the reload nginx took", st)
+	}
+	if rs := retry(); rs.failures != 0 || !rs.notUpSince.IsZero() || !rs.retryAt.IsZero() || rs.failing {
+		t.Fatalf("retry state %+v once nginx took the reload, want nothing of the outage left", rs)
+	}
+
+	r.clock.Advance(48 * time.Hour)
+	r.nginx.mu.Lock()
+	r.nginx.results, r.nginx.applies = []nginx.DNSApplyResult{{Outcome: "not_up"}}, 0
+	r.nginx.mu.Unlock()
+	r.svc.runApply(context.Background())
+	if ev := r.events.snapshot(); len(ev.failing) != 0 {
+		t.Fatalf("apply loop transitions %v; want none: a new outage is no failure before 15 minutes", ev.failing)
+	}
+	if next := retry().retryAt.Sub(r.clock.Now()); next != time.Minute {
+		t.Fatalf("next retry in %v, want 1 minute: a new outage starts the backoff again", next)
+	}
+}
+
 // dnsAlerted reports whether subject was recorded with failing.
 func dnsAlerted(r *dnsTestRig, subject string, failing bool) bool {
 	for _, a := range r.events.snapshot().alerts {
