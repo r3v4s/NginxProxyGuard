@@ -27,6 +27,9 @@ type SettingsHandler struct {
 	backupPath       string
 	redisCache       *cache.RedisClient
 	tunnelService    *service.CloudflareTunnelService
+	// dnsEntries is the DNS entry service (SetDNSEntries, #320). nil skips
+	// the restore's domain entry steps.
+	dnsEntries restoreDNSEntries
 }
 
 func NewSettingsHandler(
@@ -47,6 +50,15 @@ func NewSettingsHandler(
 		backupPath:       settingsService.GetBackupPath(),
 		redisCache:       settingsService.GetRedisCache(),
 		tunnelService:    tunnelService,
+	}
+}
+
+// SetDNSEntries wires the DNS entry service into backup restore (#320): the
+// import runs under the service's lock, the restored names' include files
+// are written before nginx -t, and the names are resolved right after.
+func (h *SettingsHandler) SetDNSEntries(svc *service.DNSEntryService) {
+	if svc != nil {
+		h.dnsEntries = svc
 	}
 }
 

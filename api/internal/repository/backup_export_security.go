@@ -74,8 +74,13 @@ func (r *BackupRepository) exportAccessLists(ctx context.Context) ([]model.Acces
 		}
 		al.Description = desc.String
 
-		// Get access list items
-		items, _ := r.getAccessListItems(ctx, al.ID)
+		// Get access list items. A failed read fails the backup instead of
+		// exporting the list without its rules: such a list restores with
+		// no rules, and a list with no rules leaves its hosts open (#320).
+		items, err := r.getAccessListItems(ctx, al.ID)
+		if err != nil {
+			return nil, err
+		}
 		al.Items = items
 
 		exports = append(exports, model.AccessListExport{AccessList: al})
@@ -85,8 +90,11 @@ func (r *BackupRepository) exportAccessLists(ctx context.Context) ([]model.Acces
 }
 
 func (r *BackupRepository) getAccessListItems(ctx context.Context, accessListID string) ([]model.AccessListItemData, error) {
+	// hostname is set on a domain row (#320). The row is exported as stored,
+	// (deny, all, hostname): a version without domain rows restores it as
+	// "deny all" instead of skipping an allow it cannot read.
 	query := `
-		SELECT directive, address, description, sort_order
+		SELECT directive, address, description, sort_order, hostname
 		FROM access_list_items WHERE access_list_id = $1 ORDER BY sort_order
 	`
 
@@ -99,16 +107,17 @@ func (r *BackupRepository) getAccessListItems(ctx context.Context, accessListID 
 	var items []model.AccessListItemData
 	for rows.Next() {
 		var item model.AccessListItemData
-		var desc sql.NullString
-		err := rows.Scan(&item.Directive, &item.Address, &desc, &item.SortOrder)
+		var desc, hostname sql.NullString
+		err := rows.Scan(&item.Directive, &item.Address, &desc, &item.SortOrder, &hostname)
 		if err != nil {
 			return nil, err
 		}
 		item.Description = desc.String
+		item.Hostname = hostname.String
 		items = append(items, item)
 	}
 
-	return items, nil
+	return items, rows.Err()
 }
 
 func (r *BackupRepository) exportWAFExclusions(ctx context.Context) ([]model.WAFExclusionExport, error) {

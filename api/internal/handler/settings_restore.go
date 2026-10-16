@@ -50,7 +50,7 @@ func (h *SettingsHandler) RestoreBackup(c echo.Context) error {
 	}
 
 	// Audit log
-	h.audit.LogBackupRestore(c.Request().Context(), backup.Filename)
+	h.audit.LogBackupRestore(c.Request().Context(), backup.Filename, dnsRestoreAuditExtra(result.DNSEntries))
 
 	// Return detailed result with appropriate HTTP status
 	httpStatus := http.StatusOK
@@ -92,7 +92,7 @@ func (h *SettingsHandler) performRestore(ctx context.Context, backup *model.Back
 				return result, fmt.Errorf("failed to parse export.json: %w", err)
 			}
 			// Import database data first - if this fails, no files are touched
-			certIDMap, err = h.backupRepo.ImportAllData(ctx, exportData)
+			certIDMap, result.DNSEntries, err = h.importBackupDatabase(ctx, exportData)
 			if err != nil {
 				result.DatabaseError = scrubbedClientText(err.Error())
 				result.DetermineStatus()
@@ -282,6 +282,10 @@ func (h *SettingsHandler) performRestore(ctx context.Context, backup *model.Back
 			}
 		}
 
+		// Domain entry include files (#320), before nginx -t reads the
+		// restored configs. Config-only restores need it too.
+		h.reconcileDNSEntryFiles(ctx)
+
 		// Test nginx config before reload. A failing test is tried once more
 		// with nginx.conf rendered from the restored settings
 		// (testRestoredConfig).
@@ -360,6 +364,9 @@ func (h *SettingsHandler) performRestore(ctx context.Context, backup *model.Back
 		// forget — the goroutine runs on its own context.
 		h.tunnelService.SyncCatchallAtStartup(ctx)
 	}
+
+	// Resolve the restored domain names now, not at the next tick (#320).
+	h.kickDNSEntriesAfterRestore(result)
 
 	result.DetermineStatus()
 	return result, nil
@@ -442,7 +449,7 @@ func (h *SettingsHandler) UploadAndRestoreBackup(c echo.Context) error {
 	}
 
 	// Audit log
-	h.audit.LogBackupRestore(c.Request().Context(), backup.Filename)
+	h.audit.LogBackupRestore(c.Request().Context(), backup.Filename, dnsRestoreAuditExtra(result.DNSEntries))
 
 	// Determine HTTP status based on result
 	httpStatus := http.StatusOK

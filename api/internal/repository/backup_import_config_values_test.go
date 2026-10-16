@@ -44,21 +44,22 @@ func TestImportAccessList_KeepsRulesNginxCanUse(t *testing.T) {
 		WithArgs("first line second line", "a b", true, false).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(listID))
 	mock.ExpectExec(`INSERT INTO access_list_items`).
-		WithArgs(listID, "allow", "192.0.2.0/24", "office LAN", 0).
+		WithArgs(listID, "allow", "192.0.2.0/24", "office LAN", 0, nil).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// Rules that are not an allow and cannot be written fail closed: each is
-	// restored as "deny all" in its place.
+	// restored as "deny all" in its place. The rules are numbered in the
+	// order they are written; a skipped rule leaves no gap.
 	mock.ExpectExec(`INSERT INTO access_list_items`).
-		WithArgs(listID, "deny", "all", "", 3).
+		WithArgs(listID, "deny", "all", "", 1, nil).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO access_list_items`).
-		WithArgs(listID, "deny", "all", "old entry", 4).
+		WithArgs(listID, "deny", "all", "old entry", 2, nil).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO access_list_items`).
-		WithArgs(listID, "deny", "all", "first line second line", 5).
+		WithArgs(listID, "deny", "all", "first line second line", 3, nil).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	_, err := repo.importAccessList(context.Background(), tx, &model.AccessListExport{AccessList: model.AccessListData{
+	_, names, err := repo.importAccessList(context.Background(), tx, &model.AccessListExport{AccessList: model.AccessListData{
 		Name: "first line\nsecond line", Description: "a\r\nb", SatisfyAny: true,
 		Items: []model.AccessListItemData{
 			{Directive: "allow", Address: " 192.0.2.0/24 ", Description: "office LAN", SortOrder: 0},
@@ -71,6 +72,9 @@ func TestImportAccessList_KeepsRulesNginxCanUse(t *testing.T) {
 	}})
 	if err != nil {
 		t.Fatalf("import: %v", err)
+	}
+	if names != nil {
+		t.Errorf("names = %q, want none: the list has no domain rows", names)
 	}
 }
 

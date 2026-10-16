@@ -388,11 +388,17 @@ func (s *AuditService) LogBackupCreate(ctx context.Context, filename string) err
 	return s.logEntry(ctx, "backup_created", "backup", "", filename, nil)
 }
 
-// LogBackupRestore logs backup restoration
-func (s *AuditService) LogBackupRestore(ctx context.Context, filename string) error {
-	return s.logEntry(ctx, "backup_restored", "backup", "", filename, map[string]interface{}{
-		"action": "restore",
-	})
+// LogBackupRestore logs backup restoration. extra adds details (nil adds
+// none): a restore names the domain entries it brought back and those that
+// wait for review (#320). It cannot replace "action" or "name".
+func (s *AuditService) LogBackupRestore(ctx context.Context, filename string, extra map[string]interface{}) error {
+	details := map[string]interface{}{"action": "restore"}
+	for k, v := range extra {
+		if k != "action" && k != "name" {
+			details[k] = v
+		}
+	}
+	return s.logEntry(ctx, "backup_restored", "backup", "", filename, details)
 }
 
 // LogBackupDelete logs backup deletion

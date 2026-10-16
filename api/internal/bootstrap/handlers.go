@@ -74,6 +74,7 @@ func InitHandlers(
 	)
 	h.Security = handler.NewSecurityHandler(svcs.Security, svcs.Audit)
 	h.Settings = handler.NewSettingsHandler(svcs.Settings, svcs.Audit, svcs.CloudflareTunnel)
+	h.Settings.SetDNSEntries(svcs.DNSEntries)
 	h.SystemLog = handler.NewSystemLogHandler(repos.SystemLog)
 	h.LogFilterPreset = handler.NewLogFilterPresetHandler(repos.LogFilterPreset)
 	h.Auth = handler.NewAuthHandler(svcs.Auth, svcs.Audit)

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log"
+	"sort"
 	"strings"
 
 	"github.com/lib/pq"
@@ -35,7 +36,9 @@ func (r *BackupRepository) importAuthProvider(ctx context.Context, tx *sql.Tx, a
 	return newID, nil
 }
 
-func (r *BackupRepository) importAccessList(ctx context.Context, tx *sql.Tx, al *model.AccessListExport) (string, error) {
+// importAccessList inserts a backup's access list and its rules, and returns
+// the new list's id and the domain names its rules use (#320).
+func (r *BackupRepository) importAccessList(ctx context.Context, tx *sql.Tx, al *model.AccessListExport) (string, []string, error) {
 	query := `
 		INSERT INTO access_lists (name, description, satisfy_any, pass_auth)
 		VALUES ($1, $2, $3, $4)
@@ -51,38 +54,105 @@ func (r *BackupRepository) importAccessList(ctx context.Context, tx *sql.Tx, al 
 	// would roll back everything else in it. Such a rule fails closed, as the
 	// renderer's accessListRules does: an allow is left out, anything else is
 	// restored as "deny all" in its place, so an allow after it cannot admit
-	// the address it was meant to stop.
+	// the address it was meant to stop. Domain rows follow their own rule
+	// (restorableAccessListRules).
 	var newID string
 	err := tx.QueryRowContext(ctx, query,
 		model.SingleLine(al.AccessList.Name), model.SingleLine(al.AccessList.Description), al.AccessList.SatisfyAny, al.AccessList.PassAuth,
 	).Scan(&newID)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
-	// Import access list items
-	for _, item := range al.AccessList.Items {
+	// Import access list items, numbered in the order they are written.
+	rules, names := restorableAccessListRules(model.SingleLine(al.AccessList.Name), al.AccessList.Items)
+	itemQuery := `
+		INSERT INTO access_list_items (access_list_id, directive, address, description, sort_order, hostname)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`
+	for i, rule := range rules {
+		var hostname interface{} // NULL on every rule but a domain row
+		if rule.hostname != "" {
+			hostname = rule.hostname
+		}
+		if _, err := tx.ExecContext(ctx, itemQuery, newID, rule.directive, rule.address, rule.description, i, hostname); err != nil {
+			return "", nil, err
+		}
+	}
+
+	return newID, names, nil
+}
+
+// restoredAccessListRule is one access list rule as the import writes it.
+type restoredAccessListRule struct {
+	directive, address, description string
+	hostname                        string // a domain row's name, else ""
+}
+
+// restorableAccessListRules returns the rules a backup's access list is
+// restored with, in the order they are written, and the domain names among
+// them (#320). listName is the list's name on one line, for the log.
+//
+// A domain row is restored as (deny, all, hostname) whatever the file says
+// around the name, before the address check (which would drop it as an
+// allow of a non-address). A name this version refuses keeps its place as a
+// plain "deny all": the list stays closed and never shrinks — a list left
+// without rules opens its hosts. A name twice keeps its first row. Address
+// rules come first, then domain rows, each in the file's sort_order (file
+// order on a tie), so an older version that renders the rows in that order
+// never sees a domain placeholder ahead of an address rule.
+func restorableAccessListRules(listName string, items []model.AccessListItemData) ([]restoredAccessListRule, []string) {
+	type candidate struct {
+		rule   restoredAccessListRule
+		domain bool
+		order  int // the file's sort_order
+	}
+	candidates := make([]candidate, 0, len(items))
+	for _, item := range items {
+		description := model.SingleLine(item.Description)
+		if item.Hostname != "" {
+			name := model.NormalizeDNSName(item.Hostname)
+			if err := model.ValidateDNSName(name); err != nil {
+				log.Printf("[Backup] Restored a domain rule of access list %.80q as \"deny all\": %.60q is not a domain name this version accepts. Correct it if it is still needed.", listName, item.Hostname)
+				name = ""
+			}
+			candidates = append(candidates, candidate{restoredAccessListRule{"deny", "all", description, name}, true, item.SortOrder})
+			continue
+		}
 		directive := item.Directive
 		address := strings.TrimSpace(item.Address)
 		if !model.IsAccessListDirective(directive) || !model.IsAccessListAddress(address) {
 			if directive == "allow" {
-				log.Printf("[Backup] Skipped a rule of access list %.80q: %.20q %.60q is not \"allow\" or \"deny\" with an IP address, a CIDR range or \"all\". Add it again if it is still needed.", model.SingleLine(al.AccessList.Name), item.Directive, item.Address)
+				log.Printf("[Backup] Skipped a rule of access list %.80q: %.20q %.60q is not \"allow\" or \"deny\" with an IP address, a CIDR range or \"all\". Add it again if it is still needed.", listName, item.Directive, item.Address)
 				continue
 			}
-			log.Printf("[Backup] Restored a rule of access list %.80q as \"deny all\": %.20q %.60q is not \"allow\" or \"deny\" with an IP address, a CIDR range or \"all\". Correct it if it is still needed.", model.SingleLine(al.AccessList.Name), item.Directive, item.Address)
+			log.Printf("[Backup] Restored a rule of access list %.80q as \"deny all\": %.20q %.60q is not \"allow\" or \"deny\" with an IP address, a CIDR range or \"all\". Correct it if it is still needed.", listName, item.Directive, item.Address)
 			directive, address = "deny", "all"
 		}
-		itemQuery := `
-			INSERT INTO access_list_items (access_list_id, directive, address, description, sort_order)
-			VALUES ($1, $2, $3, $4, $5)
-		`
-		_, err = tx.ExecContext(ctx, itemQuery, newID, directive, address, model.SingleLine(item.Description), item.SortOrder)
-		if err != nil {
-			return "", err
-		}
+		candidates = append(candidates, candidate{restoredAccessListRule{directive, address, description, ""}, false, item.SortOrder})
 	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].domain != candidates[j].domain {
+			return !candidates[i].domain
+		}
+		return candidates[i].order < candidates[j].order
+	})
 
-	return newID, nil
+	rules := make([]restoredAccessListRule, 0, len(candidates))
+	var names []string
+	seen := make(map[string]bool)
+	for _, c := range candidates {
+		if name := c.rule.hostname; name != "" {
+			if seen[name] {
+				log.Printf("[Backup] Skipped a domain rule of access list %.80q: %.60q is already in the list.", listName, name)
+				continue
+			}
+			seen[name] = true
+			names = append(names, name)
+		}
+		rules = append(rules, c.rule)
+	}
+	return rules, names
 }
 
 func (r *BackupRepository) importWAFExclusion(ctx context.Context, tx *sql.Tx, we *model.WAFExclusionExport) error {

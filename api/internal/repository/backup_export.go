@@ -232,5 +232,14 @@ func (r *BackupRepository) ExportAllData(ctx context.Context) (*model.ExportData
 	}
 	export.DDNSRecords = ddnsRecords
 
+	// Export the state of the access lists' domain entries (#320). Read last,
+	// for the names in the lists already exported above, so the records
+	// match the rules this backup carries.
+	dnsEntryStates, err := r.exportDNSEntryStates(ctx, exportedDNSNames(export.AccessLists))
+	if err != nil {
+		return nil, fmt.Errorf("failed to export dns entry states: %w", err)
+	}
+	export.DNSEntryStates = dnsEntryStates
+
 	return export, nil
 }

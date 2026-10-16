@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/lib/pq"
+	"nginx-proxy-guard/internal/dnsentry"
 	"nginx-proxy-guard/internal/model"
 )
 
@@ -97,6 +99,7 @@ func (r *BackupRepository) importSystemSettings(ctx context.Context, tx *sql.Tx,
 			real_ip_header = COALESCE($59, real_ip_header),
 			raw_log_archive_enabled = COALESCE($60, raw_log_archive_enabled),
 			raw_log_archive_retention_days = COALESCE($61, raw_log_archive_retention_days),
+			dns_entry_settings = COALESCE($62::jsonb, dns_entry_settings),
 			updated_at = NOW()
 	`
 
@@ -148,6 +151,9 @@ func (r *BackupRepository) importSystemSettings(ctx context.Context, tx *sql.Tx,
 		return v, nil
 	})
 
+	// Domain entry tunables (#320): nil (an older backup) keeps the live value.
+	dnsEntrySettings := dnsEntrySettingsFromBackup(ss.DNSEntrySettings)
+
 	_, err := tx.ExecContext(ctx, query,
 		ss.GeoIPEnabled, ss.GeoIPAutoUpdate, ss.GeoIPUpdateInterval,
 		ss.MaxmindAccountID, ss.MaxmindLicenseKey,
@@ -174,8 +180,132 @@ func (r *BackupRepository) importSystemSettings(ctx context.Context, tx *sql.Tx,
 		ss.GlobalTrustedIPsBypassWAF,
 		trustedProxyCIDRs, trustedProxyPreset, realIPHeader,
 		ss.RawLogArchiveEnabled, ss.RawLogArchiveRetentionDays,
+		dnsEntrySettings,
 	)
 	return err
+}
+
+// dnsEntrySettingsFromBackup is the dns_entry_settings value a restore writes
+// (#320): the backup's object read as the API reads the column (a missing key
+// takes its default, a number out of range is clamped, an unreadable value
+// gives the defaults), passed as a JSON string because a jsonb parameter must
+// not be []byte. nil — keep the live value — when the backup predates the
+// field or holds null there (the decoder keeps a JSON null as the four
+// bytes null).
+func dnsEntrySettingsFromBackup(raw json.RawMessage) interface{} {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	b, err := json.Marshal(model.ParseDNSEntrySettings(raw))
+	if err != nil {
+		return nil
+	}
+	return string(b)
+}
+
+// importDNSEntryStates merges the backup's domain entry state records into
+// dns_entry_states (#320), in the import's transaction, after every list
+// section. names are the domain names the restored access lists use; a
+// record for any other name is ignored. Each record goes through
+// dnsentry.MergeRestored with the live row, read FOR UPDATE, and the merged
+// row is written whole: a review is kept or added, never dropped, the live
+// pin and published history win over the backup's, and nothing is
+// published.
+func (r *BackupRepository) importDNSEntryStates(ctx context.Context, tx *sql.Tx, states []model.DNSEntryStateExport, names []string) error {
+	// A record's hostname, review_reason (with the status needs_review),
+	// canonical_name and last_applied reach the row only through
+	// MergeRestored and the state repository's UpsertState
+	// (backup_sync_test.go looks for these column names here).
+	return mergeRestoredDNSEntryStates(ctx, newDNSEntryTx(tx), states, names, model.DefaultAddressPolicy(), time.Now())
+}
+
+// mergeRestoredDNSEntryStates is importDNSEntryStates on any DNSEntryTx, with
+// the address policy and the clock passed in for tests.
+func mergeRestoredDNSEntryStates(ctx context.Context, store DNSEntryTx, states []model.DNSEntryStateExport, names []string,
+	policy *model.AddressPolicy, now time.Time) error {
+	used := make(map[string]bool, len(names))
+	for _, name := range names {
+		used[name] = true
+	}
+	var records []model.DNSEntryStateExport
+	var keys []string
+	seen := make(map[string]bool)
+	for _, rec := range states {
+		name := model.NormalizeDNSName(rec.Hostname)
+		if !used[name] {
+			continue
+		}
+		rec.Hostname = name
+		records = append(records, rec)
+		if !seen[name] {
+			seen[name] = true
+			keys = append(keys, name)
+		}
+	}
+	if len(records) == 0 {
+		return nil
+	}
+	sort.Strings(keys)
+
+	live, err := store.GetStates(ctx, keys)
+	if err != nil {
+		return err
+	}
+	// Records merge in file order; a second record for a name merges into
+	// the first one's result, so a review in either stays.
+	merged := make(map[string]model.DNSEntryState, len(keys))
+	for _, rec := range records {
+		var existing *model.DNSEntryState
+		if st, ok := merged[rec.Hostname]; ok {
+			existing = &st
+		} else if st, ok := live[rec.Hostname]; ok {
+			existing = &st
+		}
+		st, ok := dnsentry.MergeRestored(existing, rec, policy, now)
+		if !ok {
+			log.Printf("[Backup] Skipped the domain entry state of %.60q: not a domain name this version accepts.", rec.Hostname)
+			continue
+		}
+		merged[rec.Hostname] = st
+	}
+	for _, name := range keys {
+		if st, ok := merged[name]; ok {
+			if err := store.UpsertState(ctx, st); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// RestoredDNSEntries reads, after an import, the domain names the access
+// lists use and which of them wait for review (#320), for the restore audit.
+// It reads the merged rows, not what the backup said.
+func (r *BackupRepository) RestoredDNSEntries(ctx context.Context) (model.DNSRestoreSummary, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT n.hostname, COALESCE(s.status, '') = $1
+		FROM (SELECT DISTINCT hostname FROM access_list_items WHERE hostname IS NOT NULL) n
+		LEFT JOIN dns_entry_states s ON s.hostname = n.hostname
+		ORDER BY n.hostname
+	`, model.DNSStatusNeedsReview)
+	if err != nil {
+		return model.DNSRestoreSummary{}, err
+	}
+	defer rows.Close()
+
+	var out model.DNSRestoreSummary
+	for rows.Next() {
+		var name string
+		var needsReview bool
+		if err := rows.Scan(&name, &needsReview); err != nil {
+			return model.DNSRestoreSummary{}, err
+		}
+		out.Names = append(out.Names, name)
+		if needsReview {
+			out.NeedsReview = append(out.NeedsReview, name)
+		}
+	}
+	return out, rows.Err()
 }
 
 // importLogSettings updates the singleton log_settings row. Only called when

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/lib/pq"
 	"nginx-proxy-guard/internal/model"
@@ -107,7 +108,8 @@ func (r *BackupRepository) exportSystemSettings(ctx context.Context) (*model.Sys
 		       COALESCE(ui_error_page_language, 'auto') as ui_error_page_language,
 		       COALESCE(system_logs_levels, '{"npg-proxy": "info", "npg-api": "info", "npg-db": "warn", "npg-ui": "warn"}'::jsonb) as system_logs_levels,
 		       COALESCE(system_logs_exclude_patterns, ARRAY['/health', '/nginx_status', '/.well-known/', 'HEAD /']) as system_logs_exclude_patterns,
-		       COALESCE(system_logs_stdout_excluded, ARRAY['npg-proxy']) as system_logs_stdout_excluded
+		       COALESCE(system_logs_stdout_excluded, ARRAY['npg-proxy']) as system_logs_stdout_excluded,
+		       COALESCE(dns_entry_settings, '{}'::jsonb) as dns_entry_settings
 		FROM system_settings LIMIT 1
 	`
 
@@ -120,7 +122,7 @@ func (r *BackupRepository) exportSystemSettings(ctx context.Context) (*model.Sys
 	var globalTrustedIPs, globalBlockExploitsExceptions, uiFontFamily, uiErrorPageLanguage string
 	var globalTrustedIPsBypassWAF bool
 	var trustedProxyCIDRs, trustedProxyPreset, realIPHeader string
-	var systemLogsLevels []byte
+	var systemLogsLevels, dnsEntrySettings []byte
 	var systemLogsExcludePatterns, systemLogsStdoutExcluded pq.StringArray
 	var rawLogArchiveEnabled bool
 	var rawLogArchiveRetentionDays int
@@ -151,6 +153,7 @@ func (r *BackupRepository) exportSystemSettings(ctx context.Context) (*model.Sys
 		&globalBlockExploitsExceptions,
 		&uiFontFamily, &uiErrorPageLanguage,
 		&systemLogsLevels, &systemLogsExcludePatterns, &systemLogsStdoutExcluded,
+		&dnsEntrySettings,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -184,8 +187,64 @@ func (r *BackupRepository) exportSystemSettings(ctx context.Context) (*model.Sys
 	ss.SystemLogsStdoutExcluded = []string(systemLogsStdoutExcluded)
 	ss.RawLogArchiveEnabled = &rawLogArchiveEnabled
 	ss.RawLogArchiveRetentionDays = &rawLogArchiveRetentionDays
+	ss.DNSEntrySettings = json.RawMessage(dnsEntrySettings)
 
 	return &ss, nil
+}
+
+// exportDNSEntryStates exports, for the domain names the exported access
+// lists use, the part of their dns_entry_states rows a restore needs to keep
+// them closed until an operator has looked at them (#320): the review flag
+// and its reason, the pinned CNAME target and the last published addresses.
+// Nothing the state machine derives travels: a restored name starts empty
+// and earns its addresses on its own answers.
+func (r *BackupRepository) exportDNSEntryStates(ctx context.Context, names []string) ([]model.DNSEntryStateExport, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT hostname, status, COALESCE(review_reason, ''), COALESCE(canonical_name, ''), last_applied
+		FROM dns_entry_states WHERE hostname = ANY($1) ORDER BY hostname
+	`, pq.Array(names))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []model.DNSEntryStateExport
+	for rows.Next() {
+		var rec model.DNSEntryStateExport
+		var status, reason string
+		var lastApplied pq.StringArray
+		if err := rows.Scan(&rec.Hostname, &status, &reason, &rec.CanonicalName, &lastApplied); err != nil {
+			return nil, err
+		}
+		if status == model.DNSStatusNeedsReview {
+			rec.NeedsReview, rec.ReviewReason = true, reason
+		}
+		if len(lastApplied) > 0 {
+			rec.LastApplied = []string(lastApplied)
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
+// exportedDNSNames returns the domain names of the exported access lists,
+// sorted, each once.
+func exportedDNSNames(lists []model.AccessListExport) []string {
+	seen := make(map[string]bool)
+	var names []string
+	for _, l := range lists {
+		for _, item := range l.AccessList.Items {
+			if item.Hostname != "" && !seen[item.Hostname] {
+				seen[item.Hostname] = true
+				names = append(names, item.Hostname)
+			}
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // exportLogSettings exports the singleton log_settings row (log retention /

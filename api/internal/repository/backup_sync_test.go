@@ -170,6 +170,52 @@ func TestBackupSyncCriticalTables(t *testing.T) {
 				"raw_log_rotate_count",
 			},
 		},
+		{
+			// #320: a domain row is (deny, all, hostname). A hostname dropped
+			// on either side restores it as a plain deny all, and the domain
+			// stops admitting anyone.
+			name:       "access_list_items",
+			exportFile: "backup_export_security.go",
+			exportFunc: "getAccessListItems",
+			importFile: "backup_import_security.go",
+			importFunc: "importAccessList",
+			columns: []string{
+				"address",
+				"description",
+				"directive",
+				"hostname",
+				"sort_order",
+			},
+		},
+		{
+			// #320: the domain entry tunables, one jsonb column, on the raw
+			// log settings' function pair.
+			name:       "system_settings (domain entries)",
+			exportFile: "backup_export_settings.go",
+			exportFunc: "exportSystemSettings",
+			importFile: "backup_import_settings.go",
+			importFunc: "importSystemSettings",
+			columns: []string{
+				"dns_entry_settings",
+			},
+		},
+		{
+			// #320: the state record of a domain name. The import hands it to
+			// dnsentry.MergeRestored and writes the merged row through the
+			// state repository, so its body names these columns in a comment;
+			// TestBackupDomainEntriesAgainstTheDatabase checks the values.
+			name:       "dns_entry_states",
+			exportFile: "backup_export_settings.go",
+			exportFunc: "exportDNSEntryStates",
+			importFile: "backup_import_settings.go",
+			importFunc: "importDNSEntryStates",
+			columns: []string{
+				"canonical_name",
+				"hostname",
+				"last_applied",
+				"review_reason",
+			},
+		},
 	}
 
 	for _, tc := range cases {

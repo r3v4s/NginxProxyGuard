@@ -72,13 +72,16 @@ func (r *BackupRepository) ImportAllData(ctx context.Context, data *model.Export
 		certificateIDMap[cert.ID] = newID
 	}
 
-	// Import Access Lists (proxy hosts depend on them)
+	// Import Access Lists (proxy hosts depend on them). dnsNames collects
+	// the domain names the restored lists use (#320).
+	var dnsNames []string
 	for _, al := range data.AccessLists {
-		newID, err := r.importAccessList(ctx, tx, &al)
+		newID, names, err := r.importAccessList(ctx, tx, &al)
 		if err != nil {
 			return nil, fmt.Errorf("failed to import access list %s: %w", al.AccessList.Name, err)
 		}
 		accessListIDMap[al.AccessList.ID] = newID
+		dnsNames = append(dnsNames, names...)
 	}
 
 	// Import Auth Providers (proxy hosts depend on them) (#179)
@@ -367,6 +370,13 @@ func (r *BackupRepository) ImportAllData(ctx context.Context, data *model.Export
 		if err := r.importDDNSRecord(ctx, tx, &rec); err != nil {
 			return nil, fmt.Errorf("failed to import ddns record %s: %w", rec.Hostname, err)
 		}
+	}
+
+	// Merge the state of the restored domain entries (#320), after every
+	// list section, in this transaction: a restore that fails leaves the
+	// live rows as they were.
+	if err := r.importDNSEntryStates(ctx, tx, data.DNSEntryStates, dnsNames); err != nil {
+		return nil, fmt.Errorf("failed to import dns entry states: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
