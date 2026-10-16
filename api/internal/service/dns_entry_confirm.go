@@ -144,23 +144,35 @@ func (s *DNSEntryService) Confirm(ctx context.Context, name string, expected []s
 }
 
 // ApplyNow is "apply now" (POST /dns-entries/apply): the files
-// are put in line with the database first — no state changes — and nginx
+// are put in line with the database first — no state transition — and nginx
 // reads them at once, whatever the retry schedule says. It changes no trust.
 func (s *DNSEntryService) ApplyNow(ctx context.Context) nginx.DNSApplyResult {
 	s.repairFiles(ctx)
 	return s.runApply(ctx)
 }
 
-// repairFiles rewrites every file that differs from what the rows want.
+// repairFiles rewrites every file that differs from what the rows want. The
+// rows are read in a transaction, as a check reads them: a row below a
+// generation the process still holds for its name (a restored row) is
+// raised above it first, so no file is written with a generation an older
+// file of the name carries.
 func (s *DNSEntryService) repairFiles(ctx context.Context) {
 	s.dnsMu.Lock()
 	defer s.dnsMu.Unlock()
-	refs, err := s.states.ListReferences(ctx)
-	if err != nil {
-		log.Printf("[DNSEntries] WARN: apply now: could not read the domain references: %v", err)
-		return
-	}
-	rows, err := s.states.GetStates(ctx, nil)
+	var refs []model.DNSReference
+	var rows map[string]model.DNSEntryState
+	err := s.states.WithTx(ctx, func(tx repository.DNSEntryTx) error {
+		r, err := tx.ListReferences(ctx)
+		if err != nil {
+			return err
+		}
+		cur, err := tx.GetStates(ctx, nil)
+		if err != nil {
+			return err
+		}
+		refs, rows = r, cur
+		return nil
+	})
 	if err != nil {
 		log.Printf("[DNSEntries] WARN: apply now: could not read the domain entries: %v", err)
 		return

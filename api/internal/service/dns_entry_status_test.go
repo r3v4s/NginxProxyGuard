@@ -408,3 +408,35 @@ func TestDNSApplyNowRepairsTheFilesAndAppliesAtOnce(t *testing.T) {
 		t.Fatal("a successful apply ends the retry schedule")
 	}
 }
+
+// A restore can write a row back below the generation a file of its name
+// still carries, until something raises it. Apply now reads the rows the
+// way a check does, so its files are written above that generation, and a
+// write that fails keeps the name unapplied: the revocation stays pending
+// while the file still allows the old address.
+func TestDNSApplyNowRepairsAboveTheGenerationsFilesCarry(t *testing.T) {
+	ctx := context.Background()
+	r := newDNSTestRig(t)
+	r.store.setRefs(dnsRef(dnsTestListA, "partner.example.com"))
+	r.store.put(dnsOKRow("partner.example.com", 9, "203.0.113.10"))
+	if err := r.svc.ReconcileFiles(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	restored := dnsOKRow("partner.example.com", 2)
+	since := r.clock.Now()
+	restored.AppliedGeneration, restored.RevokePendingSince, restored.EmptyCause = 1, &since, model.DNSEmptyRestored
+	r.store.put(restored)
+	r.nginx.mu.Lock()
+	r.nginx.writeErr = errors.New("no space left on device")
+	r.nginx.mu.Unlock()
+
+	r.svc.ApplyNow(ctx)
+	r.settle()
+
+	if got := r.partnerFile(t); !dnsEqual(got, []string{"203.0.113.10"}) {
+		t.Fatalf("file = %v, want the old address still in it (the write failed)", got)
+	}
+	if st, _ := r.store.row("partner.example.com"); st.RevokePendingSince == nil || st.AppliedGeneration >= st.Generation || st.Generation <= 9 {
+		t.Fatalf("row = %+v; while the file still allows 203.0.113.10 the revocation must stay pending, above the file's generation 9", st)
+	}
+}
