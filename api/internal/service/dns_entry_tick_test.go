@@ -179,6 +179,119 @@ func TestDNSTickAppliesARepairedFileAtOnce(t *testing.T) {
 	}
 }
 
+// List A drops a name list B keeps, and a check sees it before the save's
+// SyncScope does (SyncScope failed, or the check's transaction came first).
+// Emptying A's file is a revocation like any other: it gets a generation of
+// its own and waits as a revocation, so a blocked apply raises the revoke
+// alert and keeps being retried, and only a reload that read the emptied
+// file ends it. SyncScope then finds nothing left to do.
+func TestDNSTickTracksAScopeDropAsARevocation(t *testing.T) {
+	r := newDNSTestRig(t)
+	ctx := context.Background()
+	r.svc.lastGC = r.clock.Now()
+	const name = "partner.example.com"
+	a := dnsACL(dnsTestListA)
+	r.store.setRefs(dnsRef(dnsTestListA, name), dnsRef(dnsTestListB, name))
+	r.store.put(dnsOKRow(name, 1, "203.0.113.10"))
+	r.lookup.set(name, "203.0.113.10")
+	if err := r.svc.ReconcileFiles(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	r.nginx.results = []nginx.DNSApplyResult{{Outcome: "blocked", BlockingFile: "proxy_host_shop_example_com.conf"}}
+	r.store.setRefs(dnsRef(dnsTestListB, name)) // list A committed without the name
+
+	r.tick(t)
+	if err := r.svc.SyncScope(ctx, a, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.nginx.file(a, name); len(got) != 0 {
+		t.Fatalf("list A file = %v, want it emptied", got)
+	}
+	if st, _ := r.store.row(name); st.Generation != 2 || st.AppliedGeneration != 1 || st.RevokePendingSince == nil {
+		t.Fatalf("row = %+v, want generation 2 waiting as a revocation, and nothing more from the save", st)
+	}
+	if !dnsAlerted(r, "revoke", true) {
+		t.Fatalf("alerts = %+v, want revoke failing: a revocation's apply is blocked", r.events.snapshot().alerts)
+	}
+
+	for i := 0; i < 4; i++ {
+		r.clock.Advance(3 * time.Minute)
+		r.tick(t)
+	}
+	if r.nginx.applyCount() != 4 {
+		t.Fatalf("applies = %d, want the blocked revocation retried after 1, 2 and 4 minutes", r.nginx.applyCount())
+	}
+	if ev := r.events.snapshot(); strings.Join(ev.failing, ",") != "true:blocked" {
+		t.Fatalf("apply loop transitions = %v, want it failing and never recovered while blocked", ev.failing)
+	}
+	if st, _ := r.store.row(name); st.RevokePendingSince == nil || !r.svc.dnsAllows(a, "203.0.113.10") {
+		t.Fatalf("row %+v; want the revocation still waiting: no reload read the emptied file", st)
+	}
+
+	// nginx -t passes again: the next retry's reload reads the emptied file.
+	r.nginx.mu.Lock()
+	r.nginx.results = []nginx.DNSApplyResult{{Outcome: "accepted"}}
+	r.nginx.mu.Unlock()
+	r.clock.Advance(10 * time.Minute)
+	r.tick(t)
+	if st, _ := r.store.row(name); st.RevokePendingSince != nil || st.AppliedGeneration != 2 || r.svc.dnsAllows(a, "203.0.113.10") {
+		t.Fatalf("row %+v; want the revocation applied by the reload that read the emptied file", st)
+	}
+	if !dnsAlerted(r, "revoke", false) {
+		t.Fatalf("alerts = %+v, want revoke recovered", r.events.snapshot().alerts)
+	}
+}
+
+// The same drop while the post-hoc check of an older reload is open. That
+// reload read A's file before it was emptied, so the emptied file is
+// signalled at once, and nginx taking the older reload does not count as
+// taking the revocation.
+func TestDNSTickSignalsAScopeDropAnOlderReloadDidNotRead(t *testing.T) {
+	r := newDNSTestRig(t)
+	ctx := context.Background()
+	r.svc.lastGC = r.clock.Now()
+	const name = "partner.example.com"
+	a := dnsACL(dnsTestListA)
+	r.store.setRefs(dnsRef(dnsTestListA, name), dnsRef(dnsTestListB, name), dnsRef(dnsTestListA, "shop.example.com"))
+	r.store.put(dnsOKRow(name, 1, "203.0.113.10"))
+	r.store.put(dnsOKRow("shop.example.com", 1, "203.0.113.20"))
+	r.lookup.set(name, "203.0.113.10")
+	r.lookup.set("shop.example.com", "127.0.0.1") // shop's revocation is signalled first
+	if err := r.svc.ReconcileFiles(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	older, newer := &nginx.ReloadSnapshot{}, &nginx.ReloadSnapshot{}
+	r.nginx.results = []nginx.DNSApplyResult{{Outcome: "unconfirmed", Snapshot: older}, {Outcome: "unconfirmed", Snapshot: newer}}
+	r.nginx.takenSnaps = map[*nginx.ReloadSnapshot]bool{older: false, newer: false}
+	r.tick(t) // the older reload: it reads A's file with 203.0.113.10
+
+	r.store.setRefs(dnsRef(dnsTestListB, name), dnsRef(dnsTestListA, "shop.example.com")) // list A drops partner
+	r.clock.Advance(time.Minute)
+	r.tick(t)
+	if r.nginx.applyCount() != 2 {
+		t.Fatalf("applies = %d, want the emptied file signalled at once: the open check's reload read it full", r.nginx.applyCount())
+	}
+
+	r.nginx.mu.Lock()
+	r.nginx.takenSnaps[older] = true // nginx is seen taking the older reload only
+	r.nginx.mu.Unlock()
+	r.clock.Advance(time.Minute)
+	r.tick(t)
+	if st, _ := r.store.row(name); st.RevokePendingSince == nil || !r.svc.dnsAllows(a, "203.0.113.10") {
+		t.Fatalf("row %+v; want the revocation still waiting: the reload nginx took read A's file before it was emptied", st)
+	}
+
+	r.nginx.mu.Lock()
+	r.nginx.takenSnaps[newer] = true
+	r.nginx.mu.Unlock()
+	r.clock.Advance(time.Minute)
+	r.tick(t)
+	st, _ := r.store.row(name)
+	if st.RevokePendingSince != nil || st.AppliedGeneration != st.Generation || r.svc.dnsAllows(a, "203.0.113.10") || r.nginx.applyCount() != 2 {
+		t.Fatalf("row %+v after %d applies; want the revocation applied by the newer reload and no further signal", st, r.nginx.applyCount())
+	}
+}
+
 // dnsHangingLookuper never answers: every lookup waits until its context
 // ends, as when the resolver drops the queries.
 type dnsHangingLookuper struct{}

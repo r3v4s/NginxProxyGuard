@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -93,6 +94,7 @@ func (s *DNSEntryService) checkNames(ctx context.Context) (dnsTickResult, error)
 		res.refs = r
 		res.scopes = dnsUseCounts(r)
 		scopesOf := dnsScopesByName(r)
+		dropped := s.droppedSegmentsLocked(scopesOf)
 		res.rows = make(map[string]model.DNSEntryState, len(cur))
 		for _, name := range dnsNamesOf(cur, res.scopes) {
 			prev, exists := cur[name]
@@ -109,6 +111,10 @@ func (s *DNSEntryService) checkNames(ctx context.Context) (dnsTickResult, error)
 				next.Generation++
 				changed := now
 				next.LastChangedAt = &changed
+				touched = true
+			}
+			if held, ok := dropped[name]; ok {
+				next = dnsRevokeDropped(next, held, now)
 				touched = true
 			}
 			if !exists || touched {
@@ -140,6 +146,43 @@ func (s *DNSEntryService) checkNames(ctx context.Context) (dnsTickResult, error)
 		s.closeReview(ctx, name, false)
 	}
 	return res, nil
+}
+
+// droppedSegmentsLocked returns, per name, the highest generation of the
+// files this process holds with addresses for a scope that no longer uses
+// the name. The check empties them, which is a revocation nginx has to
+// take. Caller holds dnsMu.
+func (s *DNSEntryService) droppedSegmentsLocked(scopesOf map[string][]string) map[string]int64 {
+	s.diskMu.Lock()
+	defer s.diskMu.Unlock()
+	out := make(map[string]int64)
+	for _, e := range s.disk {
+		if len(e.Addrs) == 0 || slices.Contains(scopesOf[e.Name], e.Scope) {
+			continue
+		}
+		if g, ok := out[e.Name]; !ok || e.Gen > g {
+			out[e.Name] = e.Gen
+		}
+	}
+	return out
+}
+
+// dnsRevokeDropped records, as a save does, that files of scopes which
+// dropped the name are emptied while they held addresses: a revocation that
+// waits for a reload, alerted and retried like any other. The generation
+// moves above held, the highest one those files were written with, so no
+// reload that read them counts as having read the emptied ones.
+func dnsRevokeDropped(st model.DNSEntryState, held int64, now time.Time) model.DNSEntryState {
+	if st.Generation <= held {
+		st.Generation = held + 1
+		changed := now
+		st.LastChangedAt = &changed
+	}
+	if st.RevokePendingSince == nil {
+		since := now
+		st.RevokePendingSince = &since
+	}
+	return st
 }
 
 // dnsTickTransition is one name's transition in a check. Used and on: the
