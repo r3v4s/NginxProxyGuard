@@ -27,8 +27,9 @@ const (
 
 // dnsEntriesEnvDisabledMessage is the startup warning while the emergency
 // switch is set: in the container log, in the system log, and the reason for
-// the dns_entries_env_disabled audit row.
-const dnsEntriesEnvDisabledMessage = "NPG_DNS_ENTRIES_DISABLED is set: every domain entry stays closed and no client is allowed through a domain name, whatever the settings say. Remove it and restart the API to use domain entries again."
+// the dns_entries_env_disabled audit row. A restarted container keeps its
+// environment, so it says to recreate the container.
+const dnsEntriesEnvDisabledMessage = "NPG_DNS_ENTRIES_DISABLED is set: every domain entry stays closed and no client is allowed through a domain name, whatever the settings say. Remove it and recreate the API container (docker compose up -d) to use domain entries again."
 
 // dnsEntriesEnvDisabled reads NPG_DNS_ENTRIES_DISABLED like DiskGuard reads
 // its switch: 1, true or yes, in any case, spaces ignored.

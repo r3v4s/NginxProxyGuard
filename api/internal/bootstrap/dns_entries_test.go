@@ -111,6 +111,12 @@ func TestAnnounceDNSEntriesEnvDisabled(t *testing.T) {
 	if !strings.HasPrefix(out.String(), "[DNSEntries] WARN: NPG_DNS_ENTRIES_DISABLED is set") {
 		t.Fatalf("container log = %q, want it to start with the WARN line", out.String())
 	}
+	// A restart keeps the old environment: only a recreated container drops
+	// the variable.
+	if !strings.Contains(dnsEntriesEnvDisabledMessage, "recreate the API container (docker compose up -d)") ||
+		strings.Contains(dnsEntriesEnvDisabledMessage, "restart") {
+		t.Errorf("message = %q, want it to say to recreate the API container", dnsEntriesEnvDisabledMessage)
+	}
 	if !strings.Contains(out.String(), "could not record NPG_DNS_ENTRIES_DISABLED in the audit log") {
 		t.Errorf("container log = %q, want the failed audit write reported", out.String())
 	}
