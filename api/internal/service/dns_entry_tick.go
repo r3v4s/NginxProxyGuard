@@ -56,6 +56,8 @@ func (s *DNSEntryService) Tick(ctx context.Context) time.Duration {
 		s.evaluateApplyAlerts(ctx, nil)
 	}
 	s.announceReviews(ctx, res.rows, res.scopes)
+	s.refreshHostIndex(ctx, res.refs)
+	s.refreshWarnings(ctx, res.refs, res.notes)
 	return s.nextDelay(res.st)
 }
 

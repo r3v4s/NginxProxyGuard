@@ -214,6 +214,10 @@ func (s *DNSEntryService) SyncScope(ctx context.Context, scope string, names []s
 		s.closeReview(ctx, name, false)
 	}
 	s.announceReviews(ctx, rows, dnsUseCounts(refs))
+	if kind, owner, ok := model.ParseDNSScope(scope); ok && kind == model.DNSScopeKindAccessList {
+		s.rebuildHostIndex(ctx, refs, owner)
+		s.markHostIndexDirty() // the next check rebuilds the other lists too
+	}
 	return nil
 }
 
@@ -303,6 +307,7 @@ func (s *DNSEntryService) SettingsChanged(ctx context.Context, before, after mod
 			log.Printf("[DNSEntries] WARN: could not switch the domain entries %s at once; the next check does it: %v", dnsOnOff(isOn), err)
 		}
 	}
+	s.markHostIndexDirty() // the next check rebuilds the host index
 	if wasOn != isOn || after.CheckIntervalSeconds < before.CheckIntervalSeconds {
 		s.Kick()
 	}

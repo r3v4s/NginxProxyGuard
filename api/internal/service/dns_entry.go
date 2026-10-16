@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"nginx-proxy-guard/internal/dnsentry"
@@ -88,6 +89,9 @@ type DNSEntryService struct {
 	reviewMu        sync.Mutex
 	reviewAnnounced map[string]bool // names in review already announced (empty after a restart)
 	reviewClosing   map[string]bool // closes that failed, retried each tick (value: confirmed)
+
+	hostIdx      atomic.Pointer[dnsHostIndex] // rebuilt by Tick and SyncScope, read lock-free
+	hostIdxDirty atomic.Bool                  // the next check rebuilds the host index
 }
 
 // DNSEntryOptions are the service's settings that do not come from the

@@ -156,6 +156,7 @@ func (s *DNSEntryService) tokenTaken(tok *dnsReloadToken) {
 	if tok.seq > s.takenSeq {
 		s.takenSeq = tok.seq
 	}
+	s.markHostIndexDirty() // a host save's reload: what hosts render may have changed
 	toks = append(toks, tok)
 	gens := make(map[string]int64)
 	var changes []dnsAppliedChange
