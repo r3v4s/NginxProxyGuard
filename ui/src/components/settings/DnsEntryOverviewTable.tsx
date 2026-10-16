@@ -28,8 +28,11 @@ export default function DnsEntryOverviewTable({ entries, canConfirm, onConfirm }
   const { t, i18n } = useTranslation('dnsEntries');
   const time = (iso: string | null) => formatDnsTime(iso, i18n.language);
 
+  // The table scrolls sideways inside its card. "relative" keeps the header's
+  // sr-only label (absolutely positioned) in that scroll box: without it the
+  // label's containing block is the page, which then scrolls sideways on a phone.
   return (
-    <div className="overflow-x-auto">
+    <div className="relative overflow-x-auto">
       <table className="w-full min-w-[48rem] text-sm">
         <thead>
           <tr className="border-b border-slate-200 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:border-slate-700 dark:text-slate-400">
