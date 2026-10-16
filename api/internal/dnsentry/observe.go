@@ -20,7 +20,7 @@ type FamilyObs struct {
 // Observation is one resolution of one name, through the policy.
 type Observation struct {
 	V4, V6    FamilyObs
-	CNAMEOK   bool   // both CNAME lookups succeeded and agree after NormalizeCanonical
+	CNAMEOK   bool   // both CNAME chain walks succeeded and ended at the same name
 	Canonical string // the agreed canonical name when CNAMEOK, else ""
 }
 

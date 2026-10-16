@@ -48,6 +48,10 @@ const (
 // defaultPerLookup bounds one lookup when the caller passes no timeout.
 const defaultPerLookup = 5 * time.Second
 
+// maxCNAMEHops is the most CNAME records a walk to the end of a chain
+// follows.
+const maxCNAMEHops = 8
+
 // Lookuper is the part of *net.Resolver a check uses. Tests use a fake.
 type Lookuper interface {
 	LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error)
@@ -73,20 +77,21 @@ type FamilyAnswer struct {
 }
 
 // Answer is one resolution of one name. CNAMEBefore and CNAMEAfter are the
-// canonical names the lookups before and after the address lookups returned,
-// normalized (NormalizeCanonical); "" when that lookup failed.
+// ends of the name's CNAME chain, walked before and after the address lookups
+// and normalized (NormalizeCanonical); "" when that walk failed.
 type Answer struct {
 	V4, V6                  FamilyAnswer
 	CNAMEBefore, CNAMEAfter string
 }
 
-// Resolve looks name up the way every check does: LookupCNAME,
-// then the IPv4 and IPv6 lookups at the same time, then LookupCNAME again.
-// Every lookup has its own perLookup timeout under ctx, so a slow family does
-// not eat the other's time, and asks for the absolute name (name + "."), so
-// resolv.conf's search list is never tried. It always returns an Answer: a
-// lookup cut off by ctx is a transient timeout, which never counts as a
-// change.
+// Resolve looks name up the way every check does: it walks the name's CNAME
+// chain to its end, then runs the IPv4 and IPv6 lookups at the same time, then
+// walks the chain again. Each address lookup has its own perLookup timeout
+// under ctx, so a slow family does not eat the other's time; each walk has
+// one perLookup timeout for all its steps. Every lookup asks for an absolute
+// name (name + "."), so resolv.conf's search list is never tried. It always
+// returns an Answer: a lookup cut off by ctx is a transient timeout, which
+// never counts as a change.
 func Resolve(ctx context.Context, l Lookuper, name string, perLookup time.Duration) Answer {
 	if perLookup <= 0 {
 		perLookup = defaultPerLookup
@@ -109,14 +114,37 @@ func Resolve(ctx context.Context, l Lookuper, name string, perLookup time.Durati
 	return a
 }
 
+// lookupCanonical returns the end of host's CNAME chain, normalized, or ""
+// when the walk fails. One LookupCNAME is not a stable answer for a chain of
+// two or more hops: Go's resolver sends its A, AAAA and CNAME queries at once
+// and takes the name from whichever reply with an answer comes first, the
+// chain's end from an address reply but only the first hop from the CNAME
+// reply. Every answer is a later name on the same chain, so asking again from
+// each answer until a name answers with itself ends at the chain's end,
+// whichever reply came first. A name without a CNAME costs one lookup. The
+// steps share one perLookup timeout, so a long or slow chain cannot take one
+// timeout per hop. The walk fails when a lookup fails, when it comes back to
+// a name it has seen, or when the chain is longer than maxCNAMEHops.
 func lookupCanonical(ctx context.Context, l Lookuper, host string, perLookup time.Duration) string {
 	ctx, cancel := context.WithTimeout(ctx, perLookup)
 	defer cancel()
-	cname, err := l.LookupCNAME(ctx, host)
-	if err != nil {
-		return ""
+	cur := NormalizeCanonical(host)
+	seen := map[string]bool{cur: true}
+	for hops := 0; ; hops++ {
+		cname, err := l.LookupCNAME(ctx, cur+".")
+		if err != nil {
+			return ""
+		}
+		next := NormalizeCanonical(cname)
+		if next == cur {
+			return cur
+		}
+		if next == "" || seen[next] || hops == maxCNAMEHops {
+			return ""
+		}
+		seen[next] = true
+		cur = next
 	}
-	return NormalizeCanonical(cname)
 }
 
 func lookupFamily(ctx context.Context, l Lookuper, network, host string, perLookup time.Duration) FamilyAnswer {

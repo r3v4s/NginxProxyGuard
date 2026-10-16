@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -16,19 +17,24 @@ import (
 )
 
 // fakeLookuper answers from fixed tables and records every call as
-// "<cname|ip4|ip6> <host>". cnames answers successive LookupCNAME calls (the
-// last one repeats); an error in errs (by "cname", "ip4" or "ip6") wins.
-// With meet set, each family lookup waits up to two seconds for the other
-// family's lookup to start, and overlaps counts the lookups that saw it.
+// "<cname|ip4|ip6> <host>", with its context's deadline. cnames answers
+// LookupCNAME by queried host with successive answers (the last one repeats);
+// a host without an entry answers with itself, as a name without a CNAME
+// does. An error in errs (by "cname", "cname <host>", "ip4" or "ip6") wins.
+// Each LookupCNAME takes cnameWait. With meet set, each family lookup waits
+// up to two seconds for the other family's lookup to start, and overlaps
+// counts the lookups that saw it.
 type fakeLookuper struct {
-	mu       sync.Mutex
-	calls    []string
-	left     []time.Duration // time left on each call's context
-	addrs    map[string][]netip.Addr
-	errs     map[string]error
-	cnames   []string
-	meet     *sync.WaitGroup
-	overlaps int
+	mu        sync.Mutex
+	calls     []string
+	left      []time.Duration // time left on each call's context
+	deadlines []time.Time     // each call's context deadline (zero when none)
+	addrs     map[string][]netip.Addr
+	errs      map[string]error
+	cnames    map[string][]string
+	cnameWait time.Duration
+	meet      *sync.WaitGroup
+	overlaps  int
 }
 
 func (f *fakeLookuper) note(call string, ctx context.Context) {
@@ -36,10 +42,12 @@ func (f *fakeLookuper) note(call string, ctx context.Context) {
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, call)
 	left := time.Duration(-1)
-	if dl, ok := ctx.Deadline(); ok {
+	dl, ok := ctx.Deadline()
+	if ok {
 		left = time.Until(dl)
 	}
 	f.left = append(f.left, left)
+	f.deadlines = append(f.deadlines, dl)
 }
 
 func (f *fakeLookuper) LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error) {
@@ -67,22 +75,26 @@ func (f *fakeLookuper) LookupNetIP(ctx context.Context, network, host string) ([
 
 func (f *fakeLookuper) LookupCNAME(ctx context.Context, host string) (string, error) {
 	f.note("cname "+host, ctx)
+	time.Sleep(f.cnameWait)
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	if err := f.errs["cname"]; err != nil {
 		return "", err
 	}
+	if err := f.errs["cname "+host]; err != nil {
+		return "", err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(f.cnames) == 0 {
+	answers := f.cnames[host]
+	if len(answers) == 0 {
 		return host, nil
 	}
-	c := f.cnames[0]
-	if len(f.cnames) > 1 {
-		f.cnames = f.cnames[1:]
+	if len(answers) > 1 {
+		f.cnames[host] = answers[1:]
 	}
-	return c, nil
+	return answers[0], nil
 }
 
 func addrs(ss ...string) []netip.Addr {
@@ -132,27 +144,143 @@ func TestClassifyLookupError(t *testing.T) {
 
 func TestResolveAsksCNAMEThenBothFamiliesThenCNAME(t *testing.T) {
 	f := &fakeLookuper{
-		addrs: map[string][]netip.Addr{"ip4": addrs("203.0.113.10"), "ip6": addrs("2001:db8::10")},
-		meet:  &sync.WaitGroup{},
+		addrs:  map[string][]netip.Addr{"ip4": addrs("203.0.113.10"), "ip6": addrs("2001:db8::10")},
+		cnames: map[string][]string{"alias.example.com.": {"mid.example.com."}, "mid.example.com.": {"final.example.com."}},
+		meet:   &sync.WaitGroup{},
 	}
 	f.meet.Add(2)
 	const perLookup = 3 * time.Second
-	Resolve(context.Background(), f, "partner.example.com", perLookup)
+	Resolve(context.Background(), f, "alias.example.com", perLookup)
 
-	if len(f.calls) != 4 || f.calls[0] != "cname partner.example.com." || f.calls[3] != "cname partner.example.com." {
-		t.Fatalf("calls = %q, want the CNAME lookup first and last, for the absolute name", f.calls)
+	walk := []string{"cname alias.example.com.", "cname mid.example.com.", "cname final.example.com."}
+	if len(f.calls) != 8 || !slices.Equal(f.calls[:3], walk) || !slices.Equal(f.calls[5:], walk) {
+		t.Fatalf("calls = %q, want the CNAME chain walked to its end first and last, by absolute names", f.calls)
 	}
-	middle := map[string]bool{f.calls[1]: true, f.calls[2]: true}
-	if !middle["ip4 partner.example.com."] || !middle["ip6 partner.example.com."] {
-		t.Fatalf("calls = %q, want one ip4 and one ip6 lookup between the CNAME lookups", f.calls)
+	middle := map[string]bool{f.calls[3]: true, f.calls[4]: true}
+	if !middle["ip4 alias.example.com."] || !middle["ip6 alias.example.com."] {
+		t.Fatalf("calls = %q, want one ip4 and one ip6 lookup of the name itself between the walks", f.calls)
 	}
 	if f.overlaps != 2 {
 		t.Errorf("the two family lookups did not run at the same time (overlaps %d)", f.overlaps)
 	}
 	for i, left := range f.left {
 		if left <= 0 || left > perLookup {
-			t.Errorf("call %q had %v left on its context, want its own timeout of at most %v", f.calls[i], left, perLookup)
+			t.Errorf("call %q had %v left on its context, want a timeout of at most %v", f.calls[i], left, perLookup)
 		}
+	}
+}
+
+// A slow family must not eat the other's time, so each address lookup has
+// its own timeout. A long or slow chain must not take one timeout per hop, so
+// the steps of a walk share one.
+func TestResolveGivesEachWalkOneTimeoutAndEachFamilyItsOwn(t *testing.T) {
+	f := &fakeLookuper{
+		addrs:     map[string][]netip.Addr{"ip4": addrs("203.0.113.10")},
+		cnames:    map[string][]string{"alias.example.com.": {"mid.example.com."}, "mid.example.com.": {"final.example.com."}},
+		cnameWait: 5 * time.Millisecond, // a deadline set at a later step is a later deadline
+	}
+	Resolve(context.Background(), f, "alias.example.com", 3*time.Second)
+	if len(f.deadlines) != 8 {
+		t.Fatalf("calls = %q, want a walk of three steps, the two family lookups, then the walk again", f.calls)
+	}
+	before, families, after := f.deadlines[:3], f.deadlines[3:5], f.deadlines[5:]
+	for _, walk := range [][]time.Time{before, after} {
+		if !walk[1].Equal(walk[0]) || !walk[2].Equal(walk[0]) {
+			t.Errorf("walk deadlines %v, want one deadline for all the steps of a walk", walk)
+		}
+	}
+	for i, d := range families {
+		if !d.After(before[0]) {
+			t.Errorf("%q has the first walk's deadline, want its own", f.calls[3+i])
+		}
+	}
+	if !after[0].After(before[0]) {
+		t.Errorf("the second walk has the first walk's deadline, want its own")
+	}
+}
+
+// Go's resolver answers one LookupCNAME of a name two or more hops from the
+// end of its chain from whichever of its parallel replies comes first: the
+// chain's end from the address reply, its first hop from the CNAME reply. A
+// walk on from either answer ends at the same name.
+func TestResolveFollowsTheCNAMEChainToItsEnd(t *testing.T) {
+	for _, answers := range [][]string{
+		{"mid.example.com.", "mid.example.com."},
+		{"final.example.com.", "final.example.com."},
+		{"mid.example.com.", "final.example.com."},
+		{"final.example.com.", "mid.example.com."},
+	} {
+		f := &fakeLookuper{
+			addrs: map[string][]netip.Addr{"ip4": addrs("203.0.113.10")},
+			cnames: map[string][]string{
+				"alias.example.com.": answers, // the first walk's answer, then the second walk's
+				"mid.example.com.":   {"final.example.com."},
+			},
+		}
+		a := Resolve(context.Background(), f, "alias.example.com", time.Second)
+		o, _ := Observe(a, docsAsPublic(), 4)
+		if a.CNAMEBefore != "final.example.com" || a.CNAMEAfter != "final.example.com" || !o.CNAMEOK || o.Canonical != "final.example.com" {
+			t.Errorf("alias answering %q: CNAME %q then %q, CNAMEOK %v %q; want final.example.com both times", answers, a.CNAMEBefore, a.CNAMEAfter, o.CNAMEOK, o.Canonical)
+		}
+	}
+}
+
+// A chain whose end changes between the two walks is a change, also when the
+// name's own CNAME record stays the same.
+func TestResolveSeesAChangeAtTheEndOfTheChain(t *testing.T) {
+	f := &fakeLookuper{
+		addrs: map[string][]netip.Addr{"ip4": addrs("203.0.113.10")},
+		cnames: map[string][]string{
+			"alias.example.com.": {"mid.example.com."},
+			"mid.example.com.":   {"final.example.com.", "other.example.com."},
+		},
+	}
+	a := Resolve(context.Background(), f, "alias.example.com", time.Second)
+	if a.CNAMEBefore != "final.example.com" || a.CNAMEAfter != "other.example.com" {
+		t.Errorf("CNAME = %q, %q; want final.example.com, then other.example.com", a.CNAMEBefore, a.CNAMEAfter)
+	}
+	if o, _ := Observe(a, docsAsPublic(), 4); o.CNAMEOK || o.Canonical != "" {
+		t.Errorf("CNAME = %v %q, want no agreed canonical name", o.CNAMEOK, o.Canonical)
+	}
+}
+
+// A walk that comes back to a name it has seen, follows more than eight
+// hops, or fails a lookup on the way gives no canonical name, like a failed
+// lookup.
+func TestResolveGivesUpOnALoopALongChainOrAFailedStep(t *testing.T) {
+	chain := func(hops int) map[string][]string {
+		m := map[string][]string{}
+		for i := 0; i < hops; i++ {
+			m[fmt.Sprintf("hop%d.example.com.", i)] = []string{fmt.Sprintf("hop%d.example.com.", i+1)}
+		}
+		return m
+	}
+	a := Resolve(context.Background(), &fakeLookuper{cnames: chain(8)}, "hop0.example.com", time.Second)
+	if a.CNAMEBefore != "hop8.example.com" || a.CNAMEAfter != "hop8.example.com" {
+		t.Errorf("eight hops: CNAME %q, %q; want hop8.example.com, the end", a.CNAMEBefore, a.CNAMEAfter)
+	}
+	a = Resolve(context.Background(), &fakeLookuper{cnames: chain(9)}, "hop0.example.com", time.Second)
+	if a.CNAMEBefore != "" || a.CNAMEAfter != "" {
+		t.Errorf("nine hops: CNAME %q, %q; want none", a.CNAMEBefore, a.CNAMEAfter)
+	}
+
+	loop := &fakeLookuper{cnames: map[string][]string{"a.example.com.": {"b.example.com."}, "b.example.com.": {"a.example.com."}}}
+	a = Resolve(context.Background(), loop, "a.example.com", time.Second)
+	if a.CNAMEBefore != "" || a.CNAMEAfter != "" {
+		t.Errorf("a loop: CNAME %q, %q; want none", a.CNAMEBefore, a.CNAMEAfter)
+	}
+	// It stops when it comes back to a name, not at the hop limit.
+	if n := strings.Count(strings.Join(loop.calls, "\n"), "cname "); n != 4 {
+		t.Errorf("a loop took %d CNAME lookups, want two for each walk: %q", n, loop.calls)
+	}
+
+	failing := &fakeLookuper{
+		cnames: map[string][]string{"alias.example.com.": {"mid.example.com."}},
+		errs:   map[string]error{"cname mid.example.com.": &net.DNSError{Err: "server misbehaving", Server: "192.0.2.53:53", IsTemporary: true}},
+	}
+	a = Resolve(context.Background(), failing, "alias.example.com", time.Second)
+	if a.CNAMEBefore != "" || a.CNAMEAfter != "" {
+		t.Errorf("a failed second step: CNAME %q, %q; want none", a.CNAMEBefore, a.CNAMEAfter)
 	}
 }
 
@@ -165,9 +293,12 @@ func TestResolveNormalizesTheAnswer(t *testing.T) {
 			"ip4": addrs("198.51.100.7", "::ffff:100.64.32.10", "100.64.32.10"),
 			"ip6": addrs("2001:db8::10", "2001:db8::10"),
 		},
-		cnames: []string{"Partner.Example.COM."},
+		cnames: map[string][]string{"partner.example.com.": {"Partner.Example.COM."}},
 	}
 	a := Resolve(context.Background(), f, "partner.example.com", time.Second)
+	if len(f.calls) != 4 {
+		t.Errorf("calls = %q, want one CNAME lookup for each walk: the name answers with itself", f.calls)
+	}
 	if a.V4.Outcome != "ok" || fmt.Sprint(a.V4.Addrs) != "[100.64.32.10 198.51.100.7]" || !a.V4.Addrs[0].Is4() {
 		t.Errorf("V4 = %+v, want the two addresses unmapped, sorted and once each", a.V4)
 	}
