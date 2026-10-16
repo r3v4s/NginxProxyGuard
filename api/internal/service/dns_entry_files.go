@@ -168,6 +168,7 @@ func (s *DNSEntryService) writeSegment(scope, name string, gen int64, addrs, old
 	if len(removed) > 0 {
 		pr.Addrs = dnsUnion(pr.Addrs, removed)
 		pr.Gen = gen
+		s.revokeWritten.Store(true)
 	}
 	// An address written again is allowed by the file itself.
 	pr.Addrs = dnsMinus(pr.Addrs, addrs)

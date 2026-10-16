@@ -70,6 +70,14 @@ type DNSEntryService struct {
 	// alerts alone.
 	reconciled atomic.Bool
 
+	// revokeWritten: a file write took addresses out since the last check's
+	// apply step (writeSegment), outside a check too: a list save whose own
+	// reload failed, the feature switched off, a restore. The next check
+	// applies it as a file it changed itself, so a revocation never waits for
+	// the retry backoff or behind an older reload nginx is found to have
+	// taken. Cleared when a reload nginx took leaves no revocation pending.
+	revokeWritten atomic.Bool
+
 	settingsMu sync.Mutex
 	lastGood   *model.DNSEntrySettings
 

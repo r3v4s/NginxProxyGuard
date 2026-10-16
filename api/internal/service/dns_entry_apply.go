@@ -22,8 +22,17 @@ const (
 // a retry is due. The reloads whose acceptance was not seen
 // are checked first. While one may still be taken, an addition is
 // not signalled again; a revocation that reload does not cover is
-// signalled: it must not wait up to 10 minutes. Returns whether an apply ran.
+// signalled: it must not wait up to 10 minutes. A revocation written outside
+// a check since the last one (revokeWritten) counts as a file this check
+// changed: it gets one attempt now, whatever the retry schedule says and
+// whichever older reload nginx is found to have taken, and a blocked attempt
+// raises the revoke alert. A retry of the same failure still backs off.
+// Returns whether an apply ran.
 func (s *DNSEntryService) applyStep(ctx context.Context, wrote bool, rows map[string]model.DNSEntryState) bool {
+	// Swapped first, whatever wrote is: the flag is this check's to consume.
+	if s.revokeWritten.Swap(false) {
+		wrote = true
+	}
 	now := s.now()
 	force := false
 	switch s.checkPostHoc(ctx, now) {

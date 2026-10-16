@@ -218,6 +218,11 @@ func (s *DNSEntryService) takeTokenLocked(t *dnsReloadToken) []dnsAppliedChange 
 			delete(s.pendingRevoke, k)
 		}
 	}
+	if len(s.pendingRevoke) == 0 {
+		// nginx has every revocation written so far: none waits for the next
+		// check's attempt (a save's own reload took its removal).
+		s.revokeWritten.Store(false)
+	}
 	byName := make(map[string][]string, len(t.gens))
 	for _, e := range t.segs {
 		byName[e.Name] = dnsUnion(byName[e.Name], e.Addrs)

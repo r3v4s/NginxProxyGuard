@@ -73,7 +73,9 @@ func (s *DNSEntryService) ValidateScopeNames(ctx context.Context, scope string, 
 //  3. (dnsMu) the files of every touched name.
 //
 // The caller's own reload carries the change to nginx: the reload hooks mark
-// it applied. When that reload fails, the next tick applies it.
+// it applied. When that reload fails, a check applies it: a removal at the
+// next check, even while a retry waits; an addition when the retry schedule
+// lets a check apply.
 func (s *DNSEntryService) SyncScope(ctx context.Context, scope string, names []string) error {
 	if _, _, ok := model.ParseDNSScope(scope); !ok {
 		return fmt.Errorf("invalid dns scope %q", scope)
@@ -298,7 +300,8 @@ func (s *DNSEntryService) diskAddrsLocked(scope, name string) []string {
 // the next check decides (review stays, pending names publish
 // their first answer, the rest follow the empty-state rule). A shorter
 // interval or a switch wakes the scheduler. Nothing here waits for nginx:
-// the check that Kick starts applies the files.
+// the check that Kick starts has nginx read the files, the ones an off
+// switch emptied also while a retry waits (applyStep).
 func (s *DNSEntryService) SettingsChanged(ctx context.Context, before, after model.DNSEntrySettings) {
 	after = after.Normalize()
 	s.settingsMu.Lock()
