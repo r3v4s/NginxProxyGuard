@@ -245,8 +245,12 @@ func (s *DNSEntryService) finishTaken(ctx context.Context, gens map[string]int64
 // Subject "revoke" fails the first time an apply fails while a revocation
 // waits (failure: the apply result that just failed, nil otherwise) and
 // recovers once no revocation waits. Subject "apply" fails while an addition
-// has waited longer than 15 minutes and recovers when none has.
+// has waited longer than 15 minutes and recovers when none has. Evaluations
+// overlap (reload hooks, the apply loop, the check), so the rows are read
+// under alertMu: a read made before another is never applied after it.
 func (s *DNSEntryService) evaluateApplyAlerts(ctx context.Context, failure *nginx.DNSApplyResult) {
+	s.alertMu.Lock()
+	defer s.alertMu.Unlock()
 	rows, err := s.states.GetStates(ctx, nil)
 	if err != nil {
 		return
@@ -263,8 +267,6 @@ func (s *DNSEntryService) evaluateApplyAlerts(ctx context.Context, failure *ngin
 	}
 	sort.Strings(revoke)
 	sort.Strings(apply)
-	s.alertMu.Lock()
-	defer s.alertMu.Unlock()
 	switch {
 	case failure != nil && len(revoke) > 0:
 		s.setApplyAlertLocked(ctx, &s.revokeMirror, dnsApplyAlert{Subject: "revoke", Failing: true,

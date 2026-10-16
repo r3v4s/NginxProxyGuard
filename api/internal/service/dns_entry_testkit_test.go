@@ -132,6 +132,10 @@ func (f *dnsTestStore) WithTx(ctx context.Context, fn func(tx repository.DNSEntr
 	return nil
 }
 
+// MarkApplied does what the repository's statement does: it raises the
+// applied generation, never past the row's generation, and clears the
+// revocation once that reaches the row's generation; a row it would not
+// change is left alone.
 func (f *dnsTestStore) MarkApplied(ctx context.Context, applied map[string]int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -139,12 +143,10 @@ func (f *dnsTestStore) MarkApplied(ctx context.Context, applied map[string]int64
 	for name, gen := range applied {
 		cp[name] = gen
 		st, ok := f.rows[name]
-		if !ok {
+		if !ok || (st.AppliedGeneration >= min(gen, st.Generation) && st.RevokePendingSince == nil) {
 			continue
 		}
-		if gen > st.AppliedGeneration {
-			st.AppliedGeneration = gen
-		}
+		st.AppliedGeneration = min(max(st.AppliedGeneration, gen), st.Generation)
 		if st.AppliedGeneration >= st.Generation {
 			st.RevokePendingSince = nil
 		}

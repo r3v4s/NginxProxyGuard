@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"log"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -123,14 +124,33 @@ func dnsDesired(st model.DNSEntryState, ok bool) []string {
 // in pendingRevoke every address the set held before (oldExtra: what a
 // directory read found in it) that it no longer holds. The file is written
 // first: a reload that reads the new file while the table still shows the old
-// entry under-claims, which is the safe side. Caller holds dnsMu.
-func (s *DNSEntryService) writeSegment(scope, name string, gen int64, addrs, oldExtra []string) (bool, error) {
+// entry under-claims, which is the safe side.
+//
+// A write that fails keeps the table's entry. When there is none yet (the
+// first write since start), the set is recorded as it is on disk (onDisk: a
+// directory read): the lowest generation its headers carry, 0 for a file
+// without one or a missing file, and the addresses it holds. Without that, a
+// reload token would claim the name's generation from its other files alone
+// while this file still holds older addresses, and dnsAllows would miss
+// them. The next sync writes it again. Caller holds dnsMu.
+func (s *DNSEntryService) writeSegment(scope, name string, gen int64, addrs, oldExtra []string, onDisk func() []nginx.DNSIncludeFile) (bool, error) {
 	addrs = dnsSortedUnique(addrs)
 	changed, err := s.nginx.WriteDNSIncludeFiles(scope, name, gen, addrs)
+	key := dnsSegKey(scope, name)
 	if err != nil {
+		s.diskMu.Lock()
+		_, known := s.disk[key]
+		s.diskMu.Unlock()
+		if !known {
+			fileGen, fileAddrs := dnsSegmentOnDisk(onDisk(), scope, name)
+			s.diskMu.Lock()
+			if _, known := s.disk[key]; !known {
+				s.disk[key] = dnsDiskEntry{Scope: scope, Name: name, Gen: fileGen, Addrs: fileAddrs}
+			}
+			s.diskMu.Unlock()
+		}
 		return false, err
 	}
-	key := dnsSegKey(scope, name)
 	s.diskMu.Lock()
 	defer s.diskMu.Unlock()
 	old := s.disk[key]
@@ -152,6 +172,35 @@ func (s *DNSEntryService) writeSegment(scope, name string, gen int64, addrs, old
 		s.pendingRevoke[key] = pr
 	}
 	return changed, nil
+}
+
+// dnsSegmentOnDisk returns what the files of (scope, name) hold in a
+// directory read: the lowest generation their headers carry (0 when one has
+// no header or is missing) and the addresses they hold.
+func dnsSegmentOnDisk(dir []nginx.DNSIncludeFile, scope, name string) (int64, []string) {
+	key := nginx.DNSIncludeKey(scope, name)
+	exts := nginx.DNSIncludeExts(scope)
+	var gen int64
+	var addrs []string
+	found := 0
+	for _, f := range dir {
+		if f.Key != key || !slices.Contains(exts, f.Ext) {
+			continue
+		}
+		var g int64
+		if f.HasHeader {
+			g = f.Gen
+		}
+		if found == 0 || g < gen {
+			gen = g
+		}
+		found++
+		addrs = dnsUnion(addrs, f.Addrs)
+	}
+	if found < len(exts) {
+		gen = 0
+	}
+	return gen, addrs
 }
 
 // dnsAllows reports whether nginx may allow addr through a file of scope: an
@@ -208,10 +257,19 @@ func (s *DNSEntryService) syncFilesLocked(refs []model.DNSReference, rows map[st
 			fileAddrs[k] = dnsUnion(fileAddrs[k], f.Addrs)
 		}
 	}
+	// What a failed write records the files from: dir, else one directory
+	// read made the first time a write fails.
+	onDisk, looked := dir, dir != nil
+	readOnce := func() []nginx.DNSIncludeFile {
+		if !looked {
+			onDisk, looked = s.readDir(), true
+		}
+		return onDisk
+	}
 	wrote := false
 	write := func(scope, name string, gen int64, addrs []string) {
 		key := "write:" + dnsSegKey(scope, name)
-		changed, err := s.writeSegment(scope, name, gen, addrs, fileAddrs[dnsSegKey(scope, name)])
+		changed, err := s.writeSegment(scope, name, gen, addrs, fileAddrs[dnsSegKey(scope, name)], readOnce)
 		if err != nil {
 			s.logs.fail(key, "[DNSEntries] ERROR: could not write the include file of %s (scope %s); retrying at every check: %v", name, scope, err)
 			return
@@ -302,7 +360,7 @@ func (s *DNSEntryService) ReconcileFiles(ctx context.Context, scanDisk bool) err
 		for _, name := range dnsNamesOf(cur, used) {
 			prev, exists := cur[name]
 			if !exists {
-				prev = dnsNewState(name, now, sw)
+				prev = dnsNewRow(tx, name, now, sw)
 			}
 			next, eff, touched := dnsSettle(prev, used[name] > 0, sw, now, st.StaleGrace())
 			if !exists || touched {
@@ -471,8 +529,10 @@ func (s *DNSEntryService) collectGarbage(ctx context.Context) {
 				s.closeReview(ctx, name, false)
 			}
 		}
+		var deleted []string
 		s.dnsMu.Lock()
 		err := s.states.WithTx(ctx, func(tx repository.DNSEntryTx) error {
+			deleted = nil
 			refs, err := tx.ListReferences(ctx)
 			if err != nil {
 				return err
@@ -490,9 +550,21 @@ func (s *DNSEntryService) collectGarbage(ctx context.Context) {
 				if err := tx.DeleteState(ctx, name); err != nil {
 					return err
 				}
+				deleted = append(deleted, name)
 			}
 			return nil
 		})
+		if err == nil {
+			// What nginx ran under a deleted row says nothing about a row
+			// the name gets later: its first reload is audited with the
+			// "before" unknown. Its files, while they stay, still keep that
+			// row above their generations (dnsFloorTx).
+			s.diskMu.Lock()
+			for _, name := range deleted {
+				delete(s.nginxView, name)
+			}
+			s.diskMu.Unlock()
+		}
 		s.dnsMu.Unlock()
 		if err != nil {
 			log.Printf("[DNSEntries] WARN: could not delete unused domain entries: %v", err)

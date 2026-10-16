@@ -31,9 +31,10 @@ import (
 //     lastReload. The reload hooks take it inside nginx's lock.
 //
 // alertMu and reviewMu guard the alert mirrors; nothing but the event calls
-// runs under them.
+// runs under them, and under alertMu the read of the rows the apply alerts
+// are decided from.
 type DNSEntryService struct {
-	states   dnsStateStore
+	states   dnsStateStore // a dnsFloorStore around DNSEntryDeps.States
 	settings dnsSettingsReader
 	global   dnsGlobalReader
 	hosts    dnsHostReader
@@ -70,7 +71,7 @@ type DNSEntryService struct {
 	retry   dnsRetryState // under applyMu
 
 	diskMu        sync.Mutex
-	disk          map[string]dnsDiskEntry   // segment key → what this process last wrote
+	disk          map[string]dnsDiskEntry   // segment key → what this process last wrote, or found when its first write failed
 	pendingRevoke map[string]dnsRevokeEntry // segment key → addresses removed that nginx may still allow
 	nginxView     map[string]dnsViewEntry   // name → the addresses nginx is known to run (absent = unknown)
 	viewSeeded    bool
@@ -264,6 +265,9 @@ func NewDNSEntryService(deps DNSEntryDeps, opts DNSEntryOptions) *DNSEntryServic
 		nginxView:       make(map[string]dnsViewEntry),
 		reviewAnnounced: make(map[string]bool),
 		reviewClosing:   make(map[string]bool),
+	}
+	if deps.States != nil {
+		s.states = &dnsFloorStore{dnsStateStore: deps.States, svc: s}
 	}
 	if s.policy == nil {
 		s.policy = model.DefaultAddressPolicy()
