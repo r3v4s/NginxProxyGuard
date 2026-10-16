@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"log"
 	"net/netip"
 	"sort"
 	"time"
@@ -72,6 +73,15 @@ func (s *DNSEntryService) markHostIndexDirty() {
 // however many marks. It takes no DNS lock; it only reads the database.
 func (s *DNSEntryService) rebuildHostIndexInBackground() {
 	defer s.bg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			// A bug in a host's render data must not end the process. The
+			// index stays stale, so every 403 counts, until a later mark (the
+			// flag cleared lets it start a rebuild) or the next check builds it.
+			log.Printf("[DNSEntries] ERROR: the host index rebuild stopped unexpectedly; fail2ban counts every 403 until a rebuild works: %v", r)
+			s.hostIdxBuilding.Store(false)
+		}
+	}()
 	for {
 		marks := s.hostIdxMarks.Load()
 		ctx, cancel := context.WithTimeout(context.Background(), dnsHostIndexBuildTimeout)

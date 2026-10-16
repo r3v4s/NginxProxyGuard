@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -307,13 +309,7 @@ func TestDNSMarksDuringARebuildShareOneMoreRebuild(t *testing.T) {
 func TestDNSAReloadRebuildsTheHostIndexAtOnce(t *testing.T) {
 	r, h := dnsGateRig(t)
 	ctx := context.Background()
-	var kept []model.ProxyHost
-	for _, host := range h.byList[dnsTestListA] {
-		if host.ID != dnsGateH1 {
-			kept = append(kept, host)
-		}
-	}
-	h.byList[dnsTestListA] = kept // app1 no longer uses list A
+	h.drop(dnsTestListA, dnsGateH1) // app1 no longer uses list A
 
 	hooks := r.svc.ReloadHooks()
 	hooks.After(hooks.Before(), nginx.ReloadAccepted, nil) // app1's save reloads nginx
@@ -324,5 +320,114 @@ func TestDNSAReloadRebuildsTheHostIndexAtOnce(t *testing.T) {
 	}
 	if !r.svc.ExemptAccessDenial(ctx, dnsGateH4, "203.0.113.99") {
 		t.Error("app4 still uses its list: once the index is rebuilt, its list's own 403 must be left out")
+	}
+}
+
+// drop takes a host off a list, as a host save that changes its list does.
+func (h *dnsTestHosts) drop(listID, hostID string) {
+	var kept []model.ProxyHost
+	for _, host := range h.byList[listID] {
+		if host.ID != hostID {
+			kept = append(kept, host)
+		}
+	}
+	h.byList[listID] = kept
+}
+
+// dnsPanickingBuilder panics on the first config data it is asked for, as a
+// bug in a host's render data would, then builds as dnsTestHosts does.
+type dnsPanickingBuilder struct {
+	*dnsTestHosts
+	panicked atomic.Bool
+}
+
+func (b *dnsPanickingBuilder) BuildConfigData(ctx context.Context, host *model.ProxyHost) (nginx.ProxyHostConfigData, error) {
+	if b.panicked.CompareAndSwap(false, true) {
+		panic("broken render data")
+	}
+	return b.dnsTestHosts.BuildConfigData(ctx, host)
+}
+
+// Every reload rebuilds the host index in the background, so a panic there
+// (a bug in a host's render data) must not end the process. The index stays
+// stale and every 403 counts, until the next mark rebuilds it.
+func TestDNSHostIndexRebuildSurvivesAPanic(t *testing.T) {
+	r, h := dnsGateRig(t)
+	ctx := context.Background()
+	logs := captureLog(t)
+	r.svc.builder = &dnsPanickingBuilder{dnsTestHosts: h}
+
+	r.svc.markHostIndexDirty()
+	r.settle()
+	if n := strings.Count(logs.String(), "[DNSEntries] ERROR: "); n != 1 {
+		t.Fatalf("log = %q, want one [DNSEntries] ERROR line for the rebuild that panicked", logs.String())
+	}
+	if r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99") {
+		t.Fatal("after a rebuild that panicked the index is stale: the 403 must be counted")
+	}
+
+	r.svc.markHostIndexDirty()
+	r.settle()
+	if !r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99") {
+		t.Fatal("the next mark must rebuild the index, and the list's own 403 be left out again")
+	}
+}
+
+// dnsFailingHosts cannot read the hosts of the lists in failLists.
+type dnsFailingHosts struct {
+	*dnsTestHosts
+	mu        sync.Mutex
+	failLists map[string]bool
+}
+
+func (f *dnsFailingHosts) GetByAccessListID(ctx context.Context, accessListID string) ([]model.ProxyHost, error) {
+	f.mu.Lock()
+	failing := f.failLists[accessListID]
+	f.mu.Unlock()
+	if failing {
+		return nil, errors.New("connection refused")
+	}
+	return f.dnsTestHosts.GetByAccessListID(ctx, accessListID)
+}
+
+func (f *dnsFailingHosts) setFailing(listID string, failing bool) {
+	f.mu.Lock()
+	f.failLists[listID] = failing
+	f.mu.Unlock()
+}
+
+// When a list's hosts cannot be read, a rebuild keeps the list's last
+// answer, so the index it puts in place is as stale as the one before: the
+// gate counts the 403 until a build reads the list again. The next check
+// makes that build.
+func TestDNSHostIndexKeptFromAFailedReadStaysStaleUntilTheCheckRebuildsIt(t *testing.T) {
+	r, h := dnsGateRig(t)
+	ctx := context.Background()
+	captureLog(t) // the failed read's WARN line
+	r.svc.lastGC = r.clock.Now()
+	r.lookup.set("partner.example.com", "203.0.113.10")
+	hosts := &dnsFailingHosts{dnsTestHosts: h, failLists: map[string]bool{dnsTestListA: true}}
+	r.svc.hosts = hosts
+
+	// app1 drops list A and its save reloads nginx, but list A's hosts
+	// cannot be read: its last answer, with app1, is kept.
+	h.drop(dnsTestListA, dnsGateH1)
+	hooks := r.svc.ReloadHooks()
+	hooks.After(hooks.Before(), nginx.ReloadAccepted, nil)
+	r.settle()
+	if r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99") {
+		t.Fatal("the rebuild kept list A's last answer: the index must stay stale and the 403 be counted")
+	}
+
+	hosts.setFailing(dnsTestListA, false)
+	r.tick(t)
+	if n := r.nginx.applyCount(); n != 0 {
+		t.Fatalf("%d applies: no reload may rebuild the index here, the check must", n)
+	}
+	if r.svc.ExemptAccessDenial(ctx, dnsGateH1, "203.0.113.99") {
+		t.Error("app1 dropped its domain list: once the check rebuilt the index, its 403s must be counted")
+	}
+	if !r.svc.ExemptAccessDenial(ctx, dnsGateH4, "203.0.113.99") {
+		t.Error("app4 still uses its list: once the check rebuilt the index, its list's own 403 must be left out")
 	}
 }
