@@ -15913,7 +15913,7 @@ components:
             $ref: '#/components/schemas/CreateAccessListItem'
     AccessListDNSConfirm:
       type: object
-      required: [hostname, expected_addresses]
+      required: [hostname, expected_addresses, expected_canonical_name]
       properties:
         hostname:
           type: string
@@ -15925,7 +15925,11 @@ components:
           description: The addresses the client showed (observed_addresses of the domain's state).
         expected_canonical_name:
           type: string
-          description: The CNAME target the client showed (observed_canonical_name), when there is one.
+          description: |
+            The CNAME target the client showed (observed_canonical_name); a name without
+            a CNAME is its own target. A target left out, or other than the one the server
+            sees, is refused with 409 `observation_changed`, whose `observed.canonical_name`
+            is the target to show.
     DNSEntryStatus:
       type: object
       description: |

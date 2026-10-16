@@ -747,8 +747,10 @@ func TestConfirm(t *testing.T) {
 		addrs     []string
 		canonical string
 	}{
-		"other addresses": {[]string{"203.0.113.10"}, ""},
+		"other addresses": {[]string{"203.0.113.10"}, "b.ddns.example.net"},
 		"other target":    {[]string{"203.0.113.20"}, "c.ddns.example.net"},
+		// The operator never saw a target: the 409 shows the one the server sees.
+		"target left out": {[]string{"203.0.113.20"}, ""},
 	} {
 		_, _, err := Confirm(review, obs, exp.addrs, exp.canonical, at(0))
 		var changed *ObservationChangedError

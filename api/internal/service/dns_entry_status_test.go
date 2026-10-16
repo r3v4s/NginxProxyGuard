@@ -396,6 +396,21 @@ func TestDNSConfirm(t *testing.T) {
 			t.Fatalf("status = %+v, want the dialog's next read to show the new answer", s)
 		}
 	})
+	t.Run("target not shown", func(t *testing.T) {
+		r := setup(t)
+		// The dialog showed no target (the last check could not decide it):
+		// a target the operator never saw is not pinned. The 409 carries it,
+		// and the row keeps it for the dialog's next read.
+		_, _, err := r.svc.Confirm(ctx, "partner.example.com", []string{"203.0.113.21"}, "")
+		var changed *dnsentry.ObservationChangedError
+		if !errors.As(err, &changed) || changed.Canonical != "b.cdn.example.com" {
+			t.Fatalf("err = %v, want ObservationChangedError carrying b.cdn.example.com", err)
+		}
+		unchanged(t, r)
+		if st, _ := r.store.row("partner.example.com"); st.CanonicalSeen != "b.cdn.example.com" {
+			t.Fatalf("canonical_seen = %q, want the target the dialog shows next", st.CanonicalSeen)
+		}
+	})
 	t.Run("confirmed", func(t *testing.T) {
 		r := setup(t)
 		status, res, err := r.svc.Confirm(ctx, "Partner.Example.com", []string{"::ffff:203.0.113.21"}, "B.CDN.example.com.")
@@ -424,7 +439,7 @@ func TestDNSConfirm(t *testing.T) {
 	t.Run("feature off", func(t *testing.T) {
 		r := setup(t)
 		r.settings.set(`{"enabled":false}`, nil)
-		status, _, err := r.svc.Confirm(ctx, "partner.example.com", []string{"203.0.113.21"}, "")
+		status, _, err := r.svc.Confirm(ctx, "partner.example.com", []string{"203.0.113.21"}, "b.cdn.example.com")
 		if err != nil {
 			t.Fatal(err)
 		}

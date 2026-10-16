@@ -136,7 +136,7 @@ func TestDNSPanicInsideTheLockLeavesTheServiceUsable(t *testing.T) {
 			r.store.put(review)
 			r.lookup.set("review.example.com", "203.0.113.31")
 		}, run: func(r *dnsTestRig) {
-			_, _, _ = r.svc.Confirm(ctx, "review.example.com", []string{"203.0.113.31"}, "")
+			_, _, _ = r.svc.Confirm(ctx, "review.example.com", []string{"203.0.113.31"}, "review.example.com")
 		}},
 		{name: "warnings", setup: func(r *dnsTestRig) {
 			row, _ := r.store.row("partner.example.com")

@@ -257,12 +257,13 @@ func Reactivate(prev model.DNSEntryState, obs *Observation, now time.Time) (mode
 
 // Confirm is an operator's "allow again" for a name in review.
 // It publishes only the server's own answer, and only when that is what the
-// operator saw: expected (as a set, compared unmapped) and, when not "",
-// expectedCanonical. Errors change nothing: ErrNotInReview, ErrLookupUnavailable
-// (a transient family, an undecided CNAME, or no usable address),
-// *ObservationChangedError. On success the review, the change
-// counters and the not-found counters reset and the pin moves to the observed
-// target.
+// operator saw: expected (as a set, compared unmapped) and expectedCanonical,
+// the CNAME target (a name without a CNAME is its own target), so a target
+// the operator was not shown is never pinned. Errors change nothing:
+// ErrNotInReview, ErrLookupUnavailable (a transient family, an undecided
+// CNAME, or no usable address), *ObservationChangedError. On success the
+// review, the change counters and the not-found counters reset and the pin
+// moves to the observed target.
 func Confirm(prev model.DNSEntryState, obs Observation, expected []string, expectedCanonical string, now time.Time) (model.DNSEntryState, Effects, error) {
 	unchanged := Effects{FromStatus: prev.Status, ToStatus: prev.Status}
 	if prev.Status != model.DNSStatusNeedsReview {
@@ -277,7 +278,7 @@ func Confirm(prev model.DNSEntryState, obs Observation, expected []string, expec
 		return prev, unchanged, ErrLookupUnavailable
 	}
 	expectedCanonical = NormalizeCanonical(expectedCanonical)
-	if !sameSet(observed, canonicalAddrs(expected)) || (expectedCanonical != "" && obs.Canonical != expectedCanonical) {
+	if !sameSet(observed, canonicalAddrs(expected)) || obs.Canonical != expectedCanonical {
 		return prev, unchanged, &ObservationChangedError{Observed: observed, Canonical: obs.Canonical}
 	}
 	n := &c.next
