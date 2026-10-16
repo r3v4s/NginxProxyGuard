@@ -203,7 +203,7 @@
     "loadError": "도메인 항목을 불러오지 못했습니다: {{error}}",
     "empty": "아직 도메인을 쓰는 목록이 없습니다. 접근 목록 규칙에 partner.example.com 같은 도메인을 넣으면 여기에 보입니다.",
     "total": "도메인 {{count}}개 / 최대 {{max}}개",
-    "needsReview": "검토 필요 {{count}}개",
+    "needsReview_other": "검토 필요 {{count}}개",
     "columns": {
       "name": "도메인",
       "uses": "쓰이는 곳",

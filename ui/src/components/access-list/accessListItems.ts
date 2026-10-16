@@ -56,6 +56,14 @@ export function itemKind(item: AccessListItem): AccessListItemKind {
   return entry.kind === 'ip' || entry.kind === 'all' ? 'address' : 'legacy';
 }
 
+/**
+ * What nginx does with a legacy rule: the server's effect, or, from an API
+ * that does not send it, a deny is "deny all" and an allow is ignored.
+ */
+export function legacyEffect(item: AccessListItem): LegacyEffect {
+  return item.effect ?? (item.directive === 'deny' ? 'deny_all' : 'ignored');
+}
+
 /** The form rows of a stored list, in stored order, with one blank row to type into when there is no editable rule. */
 export function rowsFromList(list: AccessList | null): AccessRuleRow[] {
   const rows: AccessRuleRow[] = [];
@@ -68,7 +76,7 @@ export function rowsFromList(list: AccessList | null): AccessRuleRow[] {
       description: item.description ?? '',
     };
     if (kind === 'legacy') {
-      row.legacy = item.effect ?? (item.directive === 'deny' ? 'deny_all' : 'ignored');
+      row.legacy = legacyEffect(item);
     }
     rows.push(row);
   }

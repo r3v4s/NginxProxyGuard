@@ -29,7 +29,7 @@
         "domainAllowOnly": "Domains can only be allowed",
         "asciiName": "Saved as {{name}}",
         "domainsAfterIPs": "Domains are checked after every IP rule, so an IP denied here stays denied.",
-        "legacyTitle": "Entries that are not applied",
+        "legacyTitle": "Entries saved by an older version",
         "legacyHelp": "Saved by an older version with a name instead of an IP. They stay as they are until you move or remove them.",
         "legacyIgnored": "Not applied",
         "legacyDenyAll": "Applied as deny all",

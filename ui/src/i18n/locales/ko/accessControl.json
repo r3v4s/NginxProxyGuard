@@ -29,7 +29,7 @@
         "domainAllowOnly": "도메인은 허용에만 쓸 수 있습니다",
         "asciiName": "{{name}}(으)로 저장됩니다",
         "domainsAfterIPs": "도메인은 모든 IP 규칙 다음에 확인합니다. 여기서 차단한 IP는 계속 차단됩니다.",
-        "legacyTitle": "적용되지 않는 항목",
+        "legacyTitle": "이전 버전에서 저장된 항목",
         "legacyHelp": "이전 버전에서 IP 대신 이름으로 저장된 항목입니다. 옮기거나 지우기 전까지 그대로 남습니다.",
         "legacyIgnored": "적용 안 됨",
         "legacyDenyAll": "모두 차단으로 적용됨",

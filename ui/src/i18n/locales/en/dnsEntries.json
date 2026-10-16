@@ -203,7 +203,8 @@
     "loadError": "Could not load the domain entries: {{error}}",
     "empty": "No list uses a domain yet. Add a domain such as partner.example.com to an access list rule and it shows here.",
     "total": "{{count}} of at most {{max}} domains",
-    "needsReview": "{{count}} need review",
+    "needsReview_one": "{{count}} needs review",
+    "needsReview_other": "{{count}} need review",
     "columns": {
       "name": "Domain",
       "uses": "Used by",

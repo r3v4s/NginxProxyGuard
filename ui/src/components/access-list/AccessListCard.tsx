@@ -3,7 +3,7 @@ import type { AccessList } from '../../types/access';
 import { ChevronRightIcon, EntityCard, IconButton, PencilIcon, TrashIcon } from '../common/listui';
 import { DnsEntryStatusList } from '../common/dns/DnsEntryStatusList';
 import { DnsLoginBypassWarning } from '../common/dns/DnsLoginBypassWarning';
-import { itemKind } from './accessListItems';
+import { itemKind, legacyEffect } from './accessListItems';
 
 function DirectiveBadge({ directive }: { directive: 'allow' | 'deny' }) {
   return (
@@ -114,7 +114,7 @@ export function AccessListCard({ list, isOpen, onToggle, onEdit, onDelete, delet
                     <span className="break-all font-mono text-slate-700 dark:text-slate-300">{item.address}</span>
                     {itemKind(item) === 'legacy' && (
                       <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
-                        {item.directive === 'deny' ? t('form.legacyDenyAll') : t('form.legacyIgnored')}
+                        {legacyEffect(item) === 'deny_all' ? t('form.legacyDenyAll') : t('form.legacyIgnored')}
                       </span>
                     )}
                     {item.description && (
