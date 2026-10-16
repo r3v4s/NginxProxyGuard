@@ -1437,8 +1437,12 @@ paths:
             A value this request changes is out of range (for example
             raw_log_retention_days outside 1-3650), a trusted-proxy entry is
             invalid, or raw_log_archive_enabled is switched on while the archive
-            directory is not ready (the body then also carries "archive"). The
-            body carries the reason in "error".
+            directory is not ready (the body then also carries "archive").
+            dns_entry_settings is refused, and nothing is saved, when it is not
+            an object or has an unknown key, a value of the wrong type or a
+            number outside its range ("dns_entry_settings.max_total must be
+            between 1 and 256 (got 999)"). The body carries the reason in
+            "error".
           content:
             application/json:
               schema:
@@ -1446,6 +1450,66 @@ paths:
                 properties:
                   error:
                     type: string
+  /dns-entries:
+    get:
+      tags: [Settings]
+      summary: Domain entries overview
+      description: |
+        Every domain (DDNS) name in use, and every name nginx may still allow after it
+        was dropped, with its state and uses; the apply state; the effective domain
+        entry settings and the environment switches. A use is named in `uses` only when
+        the caller may read its list (access lists: `access:read`); the others are only
+        counted in `hidden_uses`. The `banned` warning needs `waf:read` and `self_ip`
+        needs `ddns:read`; `blocking_file` and `apply.blocked_detail` need `proxy:read`.
+        Without them they are left out.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: The overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSEntryOverview'
+        '500':
+          description: The domain entries could not be read
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /dns-entries/apply:
+    post:
+      tags: [Settings]
+      summary: Apply the domain entries to nginx now
+      description: |
+        Writes the domain entries' include files as the database says, then runs nginx -t
+        and a reload at once, whatever the retry schedule says. It changes no trust:
+        nothing is published or removed by this call. Recorded in the audit log
+        (`dns_entry_apply_requested`) with its outcome, a refused reload included.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: |
+            The apply ran. `outcome`: `accepted` (nginx took it), `unconfirmed` (the reload
+            went out and is checked later), `signalled` (reload confirmation is off),
+            `skipped` (NGINX_SKIP_TEST), `blocked` (nginx -t fails on a config this cannot
+            repair; `blocking_file` names it and `detail` is nginx's message, both only with
+            `proxy:read`), `failed` (nginx could not be asked) or `not_up` (nginx is not
+            running).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSApplyResponse'
+        '409':
+          description: |
+            `code` is `nginx_reload_rejected`: nginx -t passed, but the running nginx
+            refused the reload and keeps its previous configuration; `details` is nginx's
+            message.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /system-settings/geoip/status:
     get:
       tags: [GeoIP]
@@ -12242,6 +12306,181 @@ components:
           maximum: 3650
           default: 365
           description: Archived files older than this, by the time in their name, are deleted.
+        dns_entry_settings:
+          description: |
+            The domain (DDNS) entry tunables as stored. GET returns every key, a stored
+            value outside its range clamped into it. NPG_DNS_ENTRIES_DISABLED does not
+            change it: GET /dns-entries shows the effective value. In PUT a partial
+            object: a key left out, or sent as null, keeps its stored value; an unknown
+            key, a value of the wrong type or a number out of range is refused with 400.
+          allOf:
+            - $ref: '#/components/schemas/DNSEntrySettings'
+    DNSEntrySettings:
+      type: object
+      description: |
+        Tunables of the domain (DDNS) entries of access lists. Lowering a limit keeps
+        the names already saved; only a save that adds names past it is refused.
+      properties:
+        enabled:
+          type: boolean
+          default: true
+          description: >-
+            false empties the addresses of every domain entry, so nothing is allowed
+            through them, and keeps their state. NPG_DNS_ENTRIES_DISABLED forces it off.
+        check_interval_seconds:
+          type: integer
+          minimum: 30
+          maximum: 3600
+          default: 60
+          description: How often every name in use is looked up again. NPG_DNS_ENTRIES_INTERVAL overrides it.
+        min_reload_gap_seconds:
+          type: integer
+          minimum: 60
+          maximum: 3600
+          default: 300
+          description: Least time between two nginx reloads that add addresses. Removing an address never waits.
+        stale_grace_hours:
+          type: integer
+          minimum: 1
+          maximum: 168
+          default: 24
+          description: How long a name keeps its addresses while lookups fail for a reason that may pass (a timeout, a server failure).
+        not_found_checks:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 2
+          description: Lookups in a row that find no such name before its addresses are removed.
+        max_changes_per_day:
+          type: integer
+          minimum: 2
+          maximum: 48
+          default: 6
+          description: Applied changes of one name in 24 hours before it is closed for review; a replacement counts once.
+        max_per_list:
+          type: integer
+          minimum: 1
+          maximum: 64
+          default: 16
+          description: Domain names in one access list.
+        max_total:
+          type: integer
+          minimum: 1
+          maximum: 256
+          default: 64
+          description: Distinct domain names in the whole install.
+        max_addresses_per_family:
+          type: integer
+          minimum: 1
+          maximum: 16
+          default: 4
+          description: Addresses of one name per family (IPv4, IPv6); a larger answer is refused whole.
+    DNSEntryOverview:
+      type: object
+      description: GET /dns-entries
+      properties:
+        settings:
+          description: The effective settings; enabled is false under NPG_DNS_ENTRIES_DISABLED.
+          allOf:
+            - $ref: '#/components/schemas/DNSEntrySettings'
+        env_disabled:
+          type: boolean
+          description: NPG_DNS_ENTRIES_DISABLED is set; every domain entry stays closed whatever the settings say.
+        env_interval_seconds:
+          type: integer
+          nullable: true
+          description: The check interval NPG_DNS_ENTRIES_INTERVAL forces, in seconds; null when it is not set.
+        total_names:
+          type: integer
+          description: Distinct names in use, against max_total.
+        apply:
+          $ref: '#/components/schemas/DNSApplyState'
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/DNSEntryOverviewEntry'
+          description: Sorted by hostname.
+    DNSEntryOverviewEntry:
+      description: One name of the overview, its state and where it is used.
+      allOf:
+        - $ref: '#/components/schemas/DNSEntryStatus'
+        - type: object
+          properties:
+            uses:
+              type: array
+              items:
+                $ref: '#/components/schemas/DNSEntryUse'
+              description: The uses in lists the caller may read.
+            hidden_uses:
+              type: integer
+              description: Uses in lists the caller may not read.
+            login_bypass_hosts:
+              type: integer
+              description: Hosts with a login where a satisfy-any list with this name lets it in without the login.
+    DNSEntryUse:
+      type: object
+      properties:
+        scope:
+          type: string
+          example: 'acl:00000000-0000-4000-8000-000000000001'
+        kind:
+          type: string
+          enum: [access_list]
+        key:
+          type: string
+          description: The key of this use's include file, npg_dns/<key>.allow, as nginx's messages name it.
+          example: '579249690b065558'
+        owner_id:
+          type: string
+          format: uuid
+        owner_name:
+          type: string
+          description: The list's name.
+    DNSApplyState:
+      type: object
+      properties:
+        last_dns_reload_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: The last reload the domain entries made since the API started.
+        pending_additions:
+          type: integer
+          description: Names whose new addresses nginx has not taken yet.
+        revoke_pending:
+          type: integer
+          description: Names with addresses NPG removed that nginx may still allow.
+        blocked_outcome:
+          type: string
+          nullable: true
+          enum: [blocked, failed, rejected, not_up]
+          description: How the last apply failed, while applying fails.
+        blocked_detail:
+          type: string
+          nullable: true
+          description: nginx's message for it; null without proxy:read.
+        blocking_file:
+          type: string
+          nullable: true
+          description: The config file nginx -t fails on; null without proxy:read.
+        next_retry_at:
+          type: string
+          format: date-time
+          nullable: true
+    DNSApplyResponse:
+      type: object
+      properties:
+        outcome:
+          type: string
+          enum: [accepted, unconfirmed, signalled, skipped, blocked, failed, not_up]
+        detail:
+          type: string
+          nullable: true
+          description: nginx's message when blocked; null without proxy:read.
+        blocking_file:
+          type: string
+          nullable: true
+          description: The config file nginx -t fails on when blocked; null without proxy:read.
     Dashboard:
       type: object
       description: Main dashboard summary returned by GET /dashboard

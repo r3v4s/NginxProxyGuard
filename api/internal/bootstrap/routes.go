@@ -366,6 +366,7 @@ func registerTokenProtectedRoutes(v1 *echo.Group, c *Container) {
 	registerProxyHostRoutes(v1, c.Handlers.ProxyHost)
 	registerDNSProviderRoutes(v1, c.Handlers.DNSProvider)
 	registerDDNSRoutes(v1, c.Handlers.DDNS)
+	registerDNSEntryRoutes(v1, c.Handlers.DNSEntries)
 	registerCertificateRoutes(v1, c.Handlers.Certificate)
 	registerLogRoutes(v1, c.Handlers.Log)
 	registerLogFilterPresetRoutes(v1, c.Handlers.LogFilterPreset)
@@ -555,6 +556,17 @@ func registerDDNSRoutes(v1 *echo.Group, h *handler.DDNSHandler) {
 	g.PUT("/:id", h.Update, settingsWrite)
 	g.DELETE("/:id", h.Delete, settingsWrite)
 	g.POST("/:id/sync", h.SyncOne, settingsWrite)
+}
+
+// registerDNSEntryRoutes: the domain entries' overview and "apply now" of
+// the settings screen (#320) → settings scopes, like the tunables.
+func registerDNSEntryRoutes(v1 *echo.Group, h *handler.DNSEntryHandler) {
+	settingsRead := authMiddleware.RequireAPIPermission(model.PermissionSettingsRead)
+	settingsWrite := authMiddleware.RequireAPIPermission(model.PermissionSettingsWrite)
+
+	g := v1.Group("/dns-entries")
+	g.GET("", h.Overview, settingsRead)
+	g.POST("/apply", h.ApplyNow, settingsWrite)
 }
 
 func registerCertificateRoutes(v1 *echo.Group, h *handler.CertificateHandler) {

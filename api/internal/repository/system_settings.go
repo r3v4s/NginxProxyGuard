@@ -105,6 +105,7 @@ func (r *SystemSettingsRepository) getFromDB(ctx context.Context) (*model.System
 		       COALESCE(system_logs_levels, '{"npg-proxy": "info", "npg-api": "info", "npg-db": "warn", "npg-ui": "warn"}'::jsonb) as system_logs_levels,
 		       COALESCE(system_logs_exclude_patterns, ARRAY['/health', '/nginx_status', '/.well-known/', 'HEAD /']) as system_logs_exclude_patterns,
 		       COALESCE(system_logs_stdout_excluded, ARRAY['npg-proxy']) as system_logs_stdout_excluded,
+		       COALESCE(dns_entry_settings, '{}'::jsonb) as dns_entry_settings,
 		       created_at, updated_at
 		FROM system_settings
 		LIMIT 1
@@ -183,6 +184,7 @@ func (r *SystemSettingsRepository) getFromDB(ctx context.Context) (*model.System
 		&settings.SystemLogsLevels,
 		pq.Array(&settings.SystemLogsExcludePatterns),
 		pq.Array(&settings.SystemLogsStdoutExcluded),
+		&settings.DNSEntrySettings,
 		&settings.CreatedAt,
 		&settings.UpdatedAt,
 	)
@@ -666,6 +668,15 @@ func (r *SystemSettingsRepository) Update(ctx context.Context, req *model.Update
 	if req.SystemLogsStdoutExcluded != nil {
 		setClauses = append(setClauses, fmt.Sprintf("system_logs_stdout_excluded = $%d", argIndex))
 		args = append(args, pq.Array(*req.SystemLogsStdoutExcluded))
+		argIndex++
+	}
+
+	// Domain entry tunables (#320). The handler merges the request over the
+	// stored object, so this is always the whole object. Sent as text with
+	// a cast, as the backup import sends jsonb.
+	if req.DNSEntrySettings != nil {
+		setClauses = append(setClauses, fmt.Sprintf("dns_entry_settings = $%d::jsonb", argIndex))
+		args = append(args, string(*req.DNSEntrySettings))
 		argIndex++
 	}
 

@@ -34,6 +34,7 @@ type SystemSettingsHandler struct {
 	updateChecker        *service.UpdateChecker
 	archiver             *service.RawLogArchiver // raw log archive mover; set by SetRawLogArchiver
 	rawLogOverride       *rawLogPaths            // nil: defaultRawLogPaths (tests point it elsewhere)
+	dnsEntries           dnsSettingsChanger      // DNS entry service (SetDNSEntries, #320); nil: tunables are only stored
 }
 
 func NewSystemSettingsHandler(
@@ -127,16 +128,25 @@ func (h *SystemSettingsHandler) UpdateSystemSettings(c echo.Context) error {
 		req.RawLogEnabled = &t
 	}
 
+	// One read of the stored row serves every field compared with it: the
+	// raw log files, the domain entry tunables (merged over the stored
+	// object, #320) and the WAF-bypass switch (audited as before → after).
+	rawLogFields := req.RawLogRetentionDays != nil || req.RawLogMaxSizeMB != nil || req.RawLogRotateCount != nil ||
+		req.RawLogArchiveRetentionDays != nil || req.RawLogArchiveEnabled != nil
+	var cur *model.SystemSettings
+	if rawLogFields || req.DNSEntrySettings != nil || req.GlobalTrustedIPsBypassWAF != nil {
+		stored, err := h.repo.Get(c.Request().Context())
+		if err != nil {
+			return directInternalError(c, err)
+		}
+		cur = stored
+	}
+
 	// Raw log files: refuse a value only when this request changes it to
 	// something out of range. Stored legacy values echoed back (1825 days /
 	// 9999 files on long-running installs) must never block another save.
 	archiveSwitched := false
-	if req.RawLogRetentionDays != nil || req.RawLogMaxSizeMB != nil || req.RawLogRotateCount != nil ||
-		req.RawLogArchiveRetentionDays != nil || req.RawLogArchiveEnabled != nil {
-		cur, err := h.repo.Get(c.Request().Context())
-		if err != nil {
-			return directInternalError(c, err)
-		}
+	if rawLogFields {
 		if err := model.ValidateRawLogSettings(&req, cur); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": trimInvalidInputPrefix(err)})
 		}
@@ -181,10 +191,20 @@ func (h *SystemSettingsHandler) UpdateSystemSettings(c echo.Context) error {
 		req.RealIPHeader = &normalized
 	}
 
+	// Domain entry tunables (#320): merged over the stored object and saved
+	// whole; a refused key is named.
+	dnsSave, err := prepareDNSEntrySettings(&req, cur)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": trimInvalidInputPrefix(err)})
+	}
+
 	settings, err := h.repo.Update(c.Request().Context(), &req)
 	if err != nil {
 		return directInternalError(c, err)
 	}
+	// Audit a change of the tunables, then let the DNS entry service act on
+	// it at once: switching the feature off empties every name's files now.
+	h.afterDNSEntrySettingsSave(c, dnsSave)
 
 	// Apply the raw log settings if they changed
 	if req.RawLogEnabled != nil || req.RawLogRetentionDays != nil ||
@@ -277,9 +297,7 @@ func (h *SystemSettingsHandler) UpdateSystemSettings(c echo.Context) error {
 
 	// Audit log
 	auditCtx := service.ContextWithAudit(c.Request().Context(), c)
-	h.audit.LogSettingsUpdate(auditCtx, "시스템 설정", map[string]interface{}{
-		"action": "update",
-	})
+	h.audit.LogSettingsUpdate(auditCtx, "시스템 설정", systemSettingsAuditDetails(&req, cur))
 
 	return c.JSON(http.StatusOK, settings.ToResponse())
 }

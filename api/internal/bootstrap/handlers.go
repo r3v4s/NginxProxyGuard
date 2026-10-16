@@ -40,6 +40,7 @@ type Handlers struct {
 	DDNS               *handler.DDNSHandler
 	CloudflareTunnel   *handler.CloudflareTunnelHandler
 	RawLogReclaim      *handler.RawLogReclaimHandler
+	DNSEntries         *handler.DNSEntryHandler
 }
 
 // InitHandlers constructs every HTTP handler with the previously built
@@ -94,6 +95,7 @@ func InitHandlers(
 		svcs.ProxyHost,
 	)
 	h.SystemSettings.SetRawLogArchiver(svcs.RawLogArchiver)
+	h.SystemSettings.SetDNSEntries(svcs.DNSEntries)
 	h.APIToken = handler.NewAPITokenHandler(repos.APIToken, repos.AuditLog)
 	h.AuditLog = handler.NewAuditLogHandler(repos.AuditLog, repos.APIToken)
 	h.Challenge = handler.NewChallengeHandler(svcs.Challenge, svcs.Audit)
@@ -106,6 +108,7 @@ func InitHandlers(
 	h.DDNS = handler.NewDDNSHandler(svcs.DDNS, svcs.ProxyHost)
 	h.CloudflareTunnel = handler.NewCloudflareTunnelHandler(svcs.CloudflareTunnel, svcs.Audit)
 	h.RawLogReclaim = handler.NewRawLogReclaimHandler(svcs.RawLogReclaim, svcs.Audit)
+	h.DNSEntries = handler.NewDNSEntryHandler(svcs.DNSEntries, svcs.Audit)
 
 	return h
 }

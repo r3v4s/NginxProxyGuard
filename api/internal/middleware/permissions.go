@@ -195,6 +195,8 @@ var routePermissions = map[string]string{
 	"POST /api/v1/ddns-records/:id/sync": "ddns:write",
 	"POST /api/v1/ddns-records/import-from-hosts": "ddns:write",
 	"POST /api/v1/ddns-records/sync": "ddns:write",
+	"GET /api/v1/dns-entries": "settings:read",
+	"POST /api/v1/dns-entries/apply": "settings:write",
 	"GET /api/v1/dns-providers": "dnsprovider:read",
 	"POST /api/v1/dns-providers": "dnsprovider:write",
 	"DELETE /api/v1/dns-providers/:id": "dnsprovider:write",
