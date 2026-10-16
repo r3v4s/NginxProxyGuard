@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -136,14 +137,18 @@ func TestAccessListLoginBypassNeedsSatisfyAnyAndDomains(t *testing.T) {
 
 // A client that saves back what it read leaves every rule what it was: a
 // legacy rule stays legacy (only kind=hostname makes a domain), and a client
-// that drops kind keeps the domain it read.
+// that drops kind keeps the domain it read, also next to a legacy rule that
+// reads the same.
 func TestAccessListGetThenPutKeepsEveryRuleWhatItWas(t *testing.T) {
 	stored := []model.AccessListItem{
 		addressRule("allow", "192.0.2.10", 0),
 		addressRule("allow", "old.example.com", 1),
-		domainRule("partner.example.com", 2),
+		// Read back, this legacy rule and the domain after it are both
+		// allow partner.example.com.
+		addressRule("allow", "partner.example.com", 2),
+		domainRule("partner.example.com", 3),
 	}
-	h, _, _, _ := newDNSListHandler(&model.AccessList{ID: testListID, Name: "partners", Items: stored})
+	h, calls, _, audit := newDNSListHandler(&model.AccessList{ID: testListID, Name: "partners", Items: stored})
 	rec := callWithGrants(t, h.Get, listWriter, http.MethodGet, "", "id", testListID)
 	var read model.UpdateAccessListRequest
 	if err := json.Unmarshal(rec.Body.Bytes(), &read); err != nil {
@@ -154,7 +159,7 @@ func TestAccessListGetThenPutKeepsEveryRuleWhatItWas(t *testing.T) {
 		it.Kind = ""
 		kindless[i] = it
 	}
-	want := []string{"address allow 192.0.2.10", "legacy allow old.example.com", "hostname deny all partner.example.com"}
+	want := []string{"address allow 192.0.2.10", "legacy allow old.example.com", "legacy allow partner.example.com", "hostname deny all partner.example.com"}
 	for name, items := range map[string][]model.CreateAccessListItemRequest{"as read": read.Items, "without kind": kindless} {
 		req := model.UpdateAccessListRequest{Items: items}
 		if err := model.ValidateUpdateAccessListRequest(&req, stored); err != nil {
@@ -167,5 +172,21 @@ func TestAccessListGetThenPutKeepsEveryRuleWhatItWas(t *testing.T) {
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: saved as %q, want %q", name, got, want)
 		}
+	}
+
+	// Saved back without kind, the list is unchanged and its domain is
+	// still handed to the DNS service, which keeps allowing it.
+	body, err := json.Marshal(model.UpdateAccessListRequest{Items: kindless})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := callWithGrants(t, h.Update, listWriter, http.MethodPut, string(body), "id", testListID); rec.Code != http.StatusOK {
+		t.Fatalf("PUT without kind: status %d; body %s", rec.Code, rec.Body)
+	}
+	if sync := "sync acl:" + testListID + " [partner.example.com]"; !slices.Contains(calls.calls, sync) {
+		t.Errorf("calls = %v, want %q", calls.calls, sync)
+	}
+	if len(audit.updated) != 0 {
+		t.Errorf("the round trip was audited as %v, want no change", audit.updated)
 	}
 }

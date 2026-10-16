@@ -148,6 +148,46 @@ func TestAccessListUpdateKeepsRulesSentBackAsTheyWereRead(t *testing.T) {
 		alRule("deny", "blocked.example.com"), alRule("allow", "partner.example.com", AccessListKindHostname),
 	}}
 	expectItemError(t, ValidateUpdateAccessListRequest(req, storedDeny), "items[0].address", AccessListCodeDenyAllWithHostname)
+
+	// A legacy rule can read the same as a domain of the list: both are
+	// allow partner.example.com, the legacy rule first. Sent back without
+	// kind, each stored legacy rule takes one rule and the next one is the
+	// domain, so neither is lost.
+	storedPair := []AccessListItem{
+		{Directive: "allow", Address: "partner.example.com"},
+		{Directive: "deny", Address: "all", Hostname: "partner.example.com"},
+	}
+	req = &UpdateAccessListRequest{Items: []CreateAccessListItemRequest{
+		alRule("allow", "partner.example.com"), alRule("allow", "partner.example.com"),
+	}}
+	if err := ValidateUpdateAccessListRequest(req, storedPair); err != nil {
+		t.Fatal(err)
+	}
+	want = []string{"legacy allow partner.example.com  0", "hostname deny all partner.example.com 1"}
+	if got := describeRules(req.Items); !reflect.DeepEqual(got, want) {
+		t.Errorf("a legacy rule and a domain that read the same: saved as %q, want %q", got, want)
+	}
+
+	// Two legacy rules of the same text, and no domain, stay two legacy
+	// rules. A third copy was never read: it is a new name.
+	storedTwice := []AccessListItem{
+		{Directive: "allow", Address: "old.example.com"},
+		{Directive: "allow", Address: "old.example.com"},
+	}
+	req = &UpdateAccessListRequest{Items: []CreateAccessListItemRequest{
+		alRule("allow", "old.example.com"), alRule("allow", "old.example.com"),
+	}}
+	if err := ValidateUpdateAccessListRequest(req, storedTwice); err != nil {
+		t.Fatal(err)
+	}
+	want = []string{"legacy allow old.example.com  0", "legacy allow old.example.com  1"}
+	if got := describeRules(req.Items); !reflect.DeepEqual(got, want) {
+		t.Errorf("two legacy rules of the same text: saved as %q, want %q", got, want)
+	}
+	req = &UpdateAccessListRequest{Items: []CreateAccessListItemRequest{
+		alRule("allow", "old.example.com"), alRule("allow", "old.example.com"), alRule("allow", "old.example.com"),
+	}}
+	expectItemError(t, ValidateUpdateAccessListRequest(req, storedTwice), "items[2].address", AccessListCodeHostnameNeedsKind)
 }
 
 // kind address takes only an IP address, a CIDR range or all. kind legacy

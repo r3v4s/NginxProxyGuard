@@ -215,9 +215,12 @@ func ValidateUpdateAccessListRequest(req *UpdateAccessListRequest, stored []Acce
 // legacy rule (same directive and address) and stays that rule as it is; a
 // legacy rule the list does not hold is refused. A rule without kind is an
 // address, or one of two rules an older client sends back as it read them:
-// one equal to a stored legacy rule stays that legacy rule, and an allow of
-// a domain the list has stays that domain. So no save turns an old name into
-// a working domain unless the client asks for it.
+// one equal to a stored legacy rule stays that legacy rule, as often as the
+// list holds that rule, and an allow of a domain the list has stays that
+// domain. A legacy rule and a domain can both read allow <name>; the legacy
+// rule is read first, so a list sent back as it was read keeps both. So no
+// save turns an old name into a working domain unless the client asks for
+// it.
 //
 // A domain twice, or next to a rule that denies everyone before the domains
 // are checked (deny all, or a legacy deny, which the config writes as deny
@@ -232,12 +235,17 @@ func normalizeAccessListItems(in []CreateAccessListItemRequest, stored []AccessL
 	}
 	storedNames := map[string]bool{}
 	storedLegacy := map[string]bool{}
+	// legacyLeft counts the stored legacy rules that rules without kind have
+	// not matched yet.
+	legacyLeft := map[string]int{}
 	for _, it := range stored {
 		switch AccessListItemKind(it) {
 		case AccessListKindHostname:
 			storedNames[it.Hostname] = true
 		case AccessListKindLegacy:
-			storedLegacy[it.Directive+" "+strings.TrimSpace(it.Address)] = true
+			key := it.Directive + " " + strings.TrimSpace(it.Address)
+			storedLegacy[key] = true
+			legacyLeft[key]++
 		}
 	}
 
@@ -250,7 +258,7 @@ func normalizeAccessListItems(in []CreateAccessListItemRequest, stored []AccessL
 		if !IsAccessListDirective(item.Directive) {
 			return nil, accessListItemError(field+".directive", "", "%s.directive must be allow or deny", field)
 		}
-		kind, err := classifyAccessListItem(&item, field, storedNames, storedLegacy)
+		kind, err := classifyAccessListItem(&item, field, storedNames, storedLegacy, legacyLeft)
 		if err != nil {
 			return nil, err
 		}
@@ -281,7 +289,7 @@ func normalizeAccessListItems(in []CreateAccessListItemRequest, stored []AccessL
 
 // classifyAccessListItem returns the kind of a request rule and puts a domain
 // into its stored form (normalizeAccessListItems).
-func classifyAccessListItem(item *CreateAccessListItemRequest, field string, storedNames, storedLegacy map[string]bool) (string, error) {
+func classifyAccessListItem(item *CreateAccessListItemRequest, field string, storedNames, storedLegacy map[string]bool, legacyLeft map[string]int) (string, error) {
 	switch item.Kind {
 	case AccessListKindHostname:
 		if item.Directive != "allow" {
@@ -304,8 +312,11 @@ func classifyAccessListItem(item *CreateAccessListItemRequest, field string, sto
 	}
 	name := NormalizeDNSName(item.Address)
 	if item.Kind == "" {
-		// An older client sends a rule back without kind.
-		if storedLegacy[item.Directive+" "+item.Address] {
+		// An older client sends a rule back without kind. Each stored
+		// legacy rule is matched once: a legacy rule that reads the same as
+		// a domain of the list leaves the next copy to the domain.
+		if key := item.Directive + " " + item.Address; legacyLeft[key] > 0 {
+			legacyLeft[key]--
 			return AccessListKindLegacy, nil
 		}
 		if item.Directive == "allow" && storedNames[name] {
