@@ -535,9 +535,6 @@ func TestDNSUnconfirmedRetryNeverSpinsTheChecks(t *testing.T) {
 	}
 }
 
-// As a property: whatever DNS answers and however nginx fails,
-// after a check whose writes went through every file holds exactly what the
-// database wants, and a failed apply never puts anything back.
 // An open post-hoc check holds back additions, not a revocation
 // it does not cover: that is signalled at once, with a new snapshot. The
 // older check stays open, and taking the newer reload closes both.
@@ -598,14 +595,32 @@ func TestDNSOpenPostHocCheckHoldsBackOnlyAdditions(t *testing.T) {
 	}
 }
 
+// As a property: whatever DNS answers and however nginx fails,
+// after a check whose writes went through every file holds exactly what the
+// database wants, and a failed apply never puts anything back. An address
+// that left a file while nginx may still run it is always tracked by its
+// row, as a revocation waiting or a generation nginx has not taken, so a
+// failed apply is retried and alerted. steady.example.com answers only
+// within what it first published, at least 203.0.113.30, or fails within the
+// grace: it never enters review, so files hold addresses through the run
+// while it still revokes and adds. Every apply outcome comes up, an
+// unconfirmed reload with and without a snapshot and a skipped one included.
 func TestDNSFilesNeverHoldMoreThanTheDatabaseWants(t *testing.T) {
 	r := newDNSTestRig(t)
 	r.svc.lastGC = r.clock.Now()
-	r.store.setRefs(dnsRef(dnsTestListA, "partner.example.com"), dnsRef(dnsTestListB, "partner.example.com"),
-		dnsRef(dnsTestListA, "shop.example.com"))
+	r.settings.set(`{"max_changes_per_day":48}`, nil) // steady's own changes stay under it
+	const steady = "steady.example.com"
+	names := []string{"partner.example.com", "shop.example.com", steady}
+	all := []model.DNSReference{dnsRef(dnsTestListA, "partner.example.com"), dnsRef(dnsTestListB, "partner.example.com"),
+		dnsRef(dnsTestListA, "shop.example.com"), dnsRef(dnsTestListA, steady), dnsRef(dnsTestListB, steady)}
+	fewer := []model.DNSReference{dnsRef(dnsTestListB, "partner.example.com"), dnsRef(dnsTestListB, steady)}
+	r.store.setRefs(all...)
 	rng := rand.New(rand.NewSource(320))
 	answers := [][]string{{"203.0.113.10"}, {"203.0.113.11"}, {"203.0.113.10", "203.0.113.11"}, {"127.0.0.1"}, {"2001:db8::10"}, nil}
-	results := []string{"accepted", "blocked", "rejected", "failed", "not_up", "signalled"}
+	results := []string{"accepted", "blocked", "rejected", "failed", "not_up", "signalled", "unconfirmed", "unconfirmed+snapshot", "skipped"}
+	snap := &nginx.ReloadSnapshot{}
+	outcomes := make(map[string]int) // outcome of each apply that ran
+	checked, holding, revoking := 0, 0, 0
 	for i := 0; i < 300; i++ {
 		for _, name := range []string{"partner.example.com", "shop.example.com"} {
 			switch k := rng.Intn(len(answers) + 1); k {
@@ -615,8 +630,22 @@ func TestDNSFilesNeverHoldMoreThanTheDatabaseWants(t *testing.T) {
 				r.lookup.set(name, answers[k]...)
 			}
 		}
+		switch k := rng.Intn(20); {
+		case k < 3:
+			r.lookup.fail(steady, &net.DNSError{Err: "server misbehaving", Name: steady + ".", IsTemporary: true})
+		case k == 3:
+			r.lookup.set(steady, "203.0.113.30") // revokes 203.0.113.31
+		default:
+			r.lookup.set(steady, "203.0.113.30", "203.0.113.31")
+		}
+		outcome := results[rng.Intn(len(results))]
+		res := nginx.DNSApplyResult{Outcome: outcome}
+		if outcome == "unconfirmed+snapshot" {
+			res = nginx.DNSApplyResult{Outcome: "unconfirmed", Snapshot: snap}
+		}
 		r.nginx.mu.Lock()
-		r.nginx.results = []nginx.DNSApplyResult{{Outcome: results[rng.Intn(len(results))]}}
+		r.nginx.results = []nginx.DNSApplyResult{res}
+		r.nginx.taken = rng.Intn(3) == 0 // whether nginx is seen taking an unconfirmed reload
 		writeFails := rng.Intn(10) == 0
 		if writeFails {
 			r.nginx.writeErr = errors.New("no space left on device")
@@ -625,25 +654,47 @@ func TestDNSFilesNeverHoldMoreThanTheDatabaseWants(t *testing.T) {
 		}
 		r.nginx.mu.Unlock()
 		if rng.Intn(20) == 0 {
-			r.store.setRefs(dnsRef(dnsTestListB, "partner.example.com"))
+			r.store.setRefs(fewer...)
 		} else if rng.Intn(20) == 0 {
-			r.store.setRefs(dnsRef(dnsTestListA, "partner.example.com"), dnsRef(dnsTestListB, "partner.example.com"),
-				dnsRef(dnsTestListA, "shop.example.com"))
+			r.store.setRefs(all...)
 		}
 
+		applies := r.nginx.applyCount()
 		r.svc.Tick(context.Background())
 		r.settle()
+		if r.nginx.applyCount() > applies {
+			outcomes[outcome]++
+		}
 		r.clock.Advance(time.Duration(30+rng.Intn(600)) * time.Second)
+		if st, _ := r.store.row(steady); st.Status == model.DNSStatusNeedsReview {
+			t.Fatalf("step %d: %s entered review (%s); it must stay out of it", i, steady, st.ReviewReason)
+		}
+		r.svc.diskMu.Lock()
+		pending := make([]dnsRevokeEntry, 0, len(r.svc.pendingRevoke))
+		for _, pr := range r.svc.pendingRevoke {
+			pending = append(pending, pr)
+		}
+		r.svc.diskMu.Unlock()
+		if len(pending) > 0 {
+			revoking++
+		}
+		for _, pr := range pending {
+			if row, has := r.store.row(pr.Name); !has || (row.RevokePendingSince == nil && row.AppliedGeneration >= row.Generation) {
+				t.Fatalf("step %d: %v left a file of %s that nginx may still run, and its row tracks no revocation (row %+v)", i, pr.Addrs, pr.Name, row)
+			}
+		}
 		if writeFails {
 			continue
 		}
+		checked++
 		refs, _ := r.store.ListReferences(context.Background())
 		referenced := make(map[string]bool)
 		for _, ref := range refs {
 			referenced[dnsSegKey(ref.Scope, ref.Name)] = true
 		}
+		holds := false
 		for _, list := range []string{dnsTestListA, dnsTestListB} {
-			for _, name := range []string{"partner.example.com", "shop.example.com"} {
+			for _, name := range names {
 				got, ok := r.nginx.file(dnsACL(list), name)
 				if !ok {
 					continue
@@ -656,9 +707,26 @@ func TestDNSFilesNeverHoldMoreThanTheDatabaseWants(t *testing.T) {
 				if !dnsEqual(got, want) {
 					t.Fatalf("step %d: file (%s, %s) = %v, want %v (row %+v)", i, list[:4], name, got, want, row)
 				}
+				holds = holds || len(want) > 0
 			}
 		}
+		if holds {
+			holding++
+		}
 	}
+	for _, outcome := range append(results, "unconfirmed+snapshot") {
+		if outcomes[outcome] == 0 {
+			t.Errorf("no apply came back %q in 300 steps", outcome)
+		}
+	}
+	if holding*2 < checked {
+		t.Errorf("%d of %d checked steps want a file to hold an address; want at least half", holding, checked)
+	}
+	if revoking == 0 {
+		t.Error("no step left an address nginx may still run: the revocations went untested")
+	}
+	t.Logf("%d checked steps, %d of them wanting an address in a file; %d steps with an address nginx may still run; apply outcomes %v",
+		checked, holding, revoking, outcomes)
 }
 
 func TestDNSTickDelay(t *testing.T) {
