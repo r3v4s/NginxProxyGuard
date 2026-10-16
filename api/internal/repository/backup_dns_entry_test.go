@@ -6,11 +6,15 @@ package repository
 // publishes.
 
 import (
+	"bytes"
 	"context"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"log"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,6 +93,50 @@ func TestImportAccessListRestoresDomainRowsClosed(t *testing.T) {
 	}
 	if want := []string{"partner.example.com", "office.example.com"}; !reflect.DeepEqual(names, want) {
 		t.Errorf("names = %q, want %q", names, want)
+	}
+}
+
+// A list whose every rule is a name an older version saved as an allow (nginx
+// never used them) rendered live as "deny all". Restored without a rule it
+// would render no access block and open its hosts to everyone, so it comes
+// back as one "deny all", with a log line saying so. An empty list stays
+// empty.
+func TestImportAccessListOfOnlyLegacyNamesRestoresClosed(t *testing.T) {
+	var logged bytes.Buffer
+	flags := log.Flags()
+	log.SetOutput(&logged)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(os.Stderr)
+		log.SetFlags(flags)
+	})
+	repo, tx, mock := beginMockTx(t)
+	const legacyID, emptyID = "00000000-0000-0000-0000-0000000000a3", "00000000-0000-0000-0000-0000000000a4"
+	mock.ExpectQuery(`INSERT INTO access_lists`).
+		WithArgs("partners", "", false, false).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(legacyID))
+	mock.ExpectExec(`INSERT INTO access_list_items \(access_list_id, directive, address, description, sort_order, hostname\)`).
+		WithArgs(legacyID, "deny", "all", "", 0, nil).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`INSERT INTO access_lists`).
+		WithArgs("empty", "", false, false).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(emptyID))
+
+	_, names, err := repo.importAccessList(context.Background(), tx, &model.AccessListExport{AccessList: model.AccessListData{
+		Name: "partners",
+		Items: []model.AccessListItemData{
+			{Directive: "allow", Address: "partner.example.com", Description: "partner", SortOrder: 0},
+			{Directive: "allow", Address: "office.example.com", SortOrder: 1},
+		},
+	}})
+	if err != nil || names != nil {
+		t.Fatalf("import: names %q, err %v; want no domain rows and no error", names, err)
+	}
+	if want := `[Backup] Restored access list "partners" as "deny all"`; !strings.Contains(logged.String(), want) {
+		t.Errorf("log = %q, want a line starting %q", logged.String(), want)
+	}
+	if _, _, err := repo.importAccessList(context.Background(), tx, &model.AccessListExport{AccessList: model.AccessListData{Name: "empty"}}); err != nil {
+		t.Fatalf("import of an empty list: %v", err)
 	}
 }
 

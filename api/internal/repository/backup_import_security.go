@@ -97,10 +97,13 @@ type restoredAccessListRule struct {
 // around the name, before the address check (which would drop it as an
 // allow of a non-address). A name this version refuses keeps its place as a
 // plain "deny all": the list stays closed and never shrinks — a list left
-// without rules opens its hosts. A name twice keeps its first row. Address
-// rules come first, then domain rows, each in the file's sort_order (file
-// order on a tie), so an older version that renders the rows in that order
-// never sees a domain placeholder ahead of an address rule.
+// without rules opens its hosts. For the same reason a list none of whose
+// rules can be restored comes back as one "deny all", as it rendered live
+// (only allows of a name are skipped, and nginx never used them). A name
+// twice keeps its first row. Address rules come first, then domain rows,
+// each in the file's sort_order (file order on a tie), so an older version
+// that renders the rows in that order never sees a domain placeholder ahead
+// of an address rule.
 func restorableAccessListRules(listName string, items []model.AccessListItemData) ([]restoredAccessListRule, []string) {
 	type candidate struct {
 		rule   restoredAccessListRule
@@ -151,6 +154,12 @@ func restorableAccessListRules(listName string, items []model.AccessListItemData
 			names = append(names, name)
 		}
 		rules = append(rules, c.rule)
+	}
+	if len(rules) == 0 && len(items) > 0 {
+		// Every rule was skipped (names an older version saved as allows,
+		// which nginx never used): live, the list rendered as "deny all".
+		log.Printf("[Backup] Restored access list %.80q as \"deny all\": none of its rules could be restored. Correct it if it is still needed.", listName)
+		rules = append(rules, restoredAccessListRule{directive: "deny", address: "all"})
 	}
 	return rules, names
 }
