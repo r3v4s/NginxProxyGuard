@@ -342,15 +342,16 @@ func TestDNSEntryWithTx(t *testing.T) {
 }
 
 // MarkApplied sends one statement per name, in name order, outside a
-// transaction. The statement never lowers applied_generation and clears the
-// pending revocation only once the applied generation reaches the row's.
+// transaction. The statement never lowers applied_generation, never raises
+// it past the row's generation, and clears the pending revocation only once
+// the applied generation reaches the row's.
 func TestDNSEntryMarkApplied(t *testing.T) {
 	repo, mock := newDNSEntryMock(t)
 	stmt := "^" + regexp.QuoteMeta(`UPDATE dns_entry_states SET
-		applied_generation = GREATEST(applied_generation, $2),
-		revoke_pending_since = CASE WHEN GREATEST(applied_generation, $2) >= generation THEN NULL ELSE revoke_pending_since END,
+		applied_generation = LEAST(GREATEST(applied_generation, $2), generation),
+		revoke_pending_since = CASE WHEN LEAST(GREATEST(applied_generation, $2), generation) >= generation THEN NULL ELSE revoke_pending_since END,
 		updated_at = now()
-		WHERE hostname = $1 AND (applied_generation < $2 OR revoke_pending_since IS NOT NULL)`) + "$"
+		WHERE hostname = $1 AND (applied_generation < LEAST($2, generation) OR revoke_pending_since IS NOT NULL)`) + "$"
 	mock.ExpectExec(stmt).WithArgs("office.example.com", int64(3)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(stmt).WithArgs("partner.example.com", int64(7)).WillReturnResult(sqlmock.NewResult(0, 0))
 	if err := repo.MarkApplied(context.Background(), map[string]int64{"partner.example.com": 7, "office.example.com": 3}); err != nil {

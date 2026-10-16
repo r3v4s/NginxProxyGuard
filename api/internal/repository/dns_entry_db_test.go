@@ -194,13 +194,26 @@ func TestDNSEntryRepositoryAgainstTheDatabase(t *testing.T) {
 		mark        int64
 		wantGen     int64
 		wantPending bool
-	}{{6, 6, true}, {4, 6, true}, {7, 7, false}, {3, 7, false}} {
+	}{{6, 6, true}, {4, 6, true}, {7, 7, false}, {3, 7, false}, {9, 7, false}} {
 		if err := repo.MarkApplied(ctx, map[string]int64{revoking.Hostname: step.mark, "missing.example.com": step.mark}); err != nil {
 			t.Fatalf("MarkApplied(%d): %v", step.mark, err)
 		}
 		if gen, pending := applied(); gen != step.wantGen || pending != step.wantPending {
 			t.Errorf("after MarkApplied(%d): applied %d, revoke pending %v; want %d, %v", step.mark, gen, pending, step.wantGen, step.wantPending)
 		}
+	}
+	// A mark above the row's generation (a reload that read files an earlier
+	// row of the name left) is capped at the generation, and the capped value
+	// is what clears the revocation.
+	revoking.Generation, revoking.AppliedGeneration, revoking.RevokePendingSince = 8, 7, dnsTime("2026-10-01T08:00:00Z")
+	if err := repo.WithTx(ctx, func(tx DNSEntryTx) error { return tx.UpsertState(ctx, revoking) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.MarkApplied(ctx, map[string]int64{revoking.Hostname: 12}); err != nil {
+		t.Fatalf("MarkApplied(12): %v", err)
+	}
+	if gen, pending := applied(); gen != 8 || pending {
+		t.Errorf("after MarkApplied(12) on generation 8: applied %d, revoke pending %v; want 8, false", gen, pending)
 	}
 
 	// A failed transaction leaves nothing behind; a delete removes the row.

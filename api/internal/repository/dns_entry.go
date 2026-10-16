@@ -90,15 +90,15 @@ const dnsEntryStateUpsert = `
 		last_checked_at = EXCLUDED.last_checked_at, last_changed_at = EXCLUDED.last_changed_at,
 		updated_at = now()`
 
-// dnsEntryMarkApplied raises one name's applied generation and, once it
-// reaches the row's generation, clears the pending revocation. A row it
-// would not change is left alone.
+// dnsEntryMarkApplied raises one name's applied generation, never past the
+// row's generation, and once it reaches the row's generation clears the
+// pending revocation. A row it would not change is left alone.
 const dnsEntryMarkApplied = `
 	UPDATE dns_entry_states SET
-		applied_generation = GREATEST(applied_generation, $2),
-		revoke_pending_since = CASE WHEN GREATEST(applied_generation, $2) >= generation THEN NULL ELSE revoke_pending_since END,
+		applied_generation = LEAST(GREATEST(applied_generation, $2), generation),
+		revoke_pending_since = CASE WHEN LEAST(GREATEST(applied_generation, $2), generation) >= generation THEN NULL ELSE revoke_pending_since END,
 		updated_at = now()
-	WHERE hostname = $1 AND (applied_generation < $2 OR revoke_pending_since IS NOT NULL)`
+	WHERE hostname = $1 AND (applied_generation < LEAST($2, generation) OR revoke_pending_since IS NOT NULL)`
 
 // dnsSmallintMax is the largest value of the smallint counters
 // (candidate_seen, v4_notfound, v6_notfound).
@@ -134,10 +134,12 @@ func (r *DNSEntryRepository) WithTx(ctx context.Context, fn func(tx DNSEntryTx) 
 }
 
 // MarkApplied records, per name, the generation a reload nginx accepted has
-// read. It never lowers applied_generation, and it clears
-// revoke_pending_since once the applied generation reaches the row's
-// generation: nginx no longer allows any revoked address of that name. Names
-// without a row are skipped. Each name is one statement outside a
+// read. It never lowers applied_generation and never raises it past the
+// row's generation: files an earlier row of the same name left can carry
+// higher generations, and a reload that read them says nothing about this
+// row. It clears revoke_pending_since once the applied generation reaches
+// the row's generation: nginx no longer allows any revoked address of that
+// name. Names without a row are skipped. Each name is one statement outside a
 // transaction, so it holds one row lock at a time and cannot deadlock with a
 // state transaction holding rows FOR UPDATE: it waits for that transaction
 // and then applies GREATEST to what it committed.
