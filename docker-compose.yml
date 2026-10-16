@@ -115,6 +115,8 @@ services:
       # emergency switch: every domain entry stays closed, whatever the
       # settings say. NPG_DNS_ENTRIES_INTERVAL (a duration such as 60s, kept
       # within 5s-1h) overrides the check interval. Unset = the settings decide.
+      # Values under 30s are for tests: every check sends about 8 DNS queries
+      # per domain (more with a CNAME).
       NPG_DNS_ENTRIES_DISABLED: ${NPG_DNS_ENTRIES_DISABLED:-}
       NPG_DNS_ENTRIES_INTERVAL: ${NPG_DNS_ENTRIES_INTERVAL:-}
       NGINX_CONTAINER: npg-proxy
