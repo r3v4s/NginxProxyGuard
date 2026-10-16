@@ -354,6 +354,7 @@ func TestDNSConfirm(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		r.settle()
 		// The audit records what was confirmed; addresses is empty while off.
 		if len(status.Addresses) != 0 || !dnsEqual(status.ObservedAddresses, []string{"203.0.113.21"}) {
 			t.Fatalf("status = %+v, want no addresses and the confirmed ones as observed", status)
@@ -361,6 +362,29 @@ func TestDNSConfirm(t *testing.T) {
 		st, _ := r.store.row("partner.example.com")
 		if st.Status != model.DNSStatusOK || !st.Disabled || len(st.Published) != 0 || !dnsEqual(st.LastApplied, []string{"203.0.113.21"}) {
 			t.Fatalf("row = %+v, want the review closed but nothing published while the feature is off", st)
+		}
+		if r.nginx.applyCount() != 0 {
+			t.Fatalf("%d applies; a confirm that publishes nothing has nothing for nginx to read", r.nginx.applyCount())
+		}
+	})
+	t.Run("switched off during the lookup", func(t *testing.T) {
+		r := setup(t)
+		// A settings save stores "off" while the confirm looks the name up;
+		// it switches every name off only after the confirm took dnsMu.
+		r.svc.lookuper = &dnsSwitchingLookuper{dnsTestLookuper: r.lookup, flip: func() {
+			r.settings.set(`{"enabled":false}`, nil)
+		}}
+		status, res, err := r.svc.Confirm(ctx, "partner.example.com", []string{"203.0.113.21"}, "b.cdn.example.com")
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.settle()
+		st, _ := r.store.row("partner.example.com")
+		if !st.Disabled || len(st.Published) != 0 || len(status.Addresses) != 0 {
+			t.Fatalf("row = %+v, status = %+v; want the review closed and nothing published once off is stored", st, status)
+		}
+		if got := r.partnerFile(t); len(got) != 0 || r.nginx.applyCount() != 0 || res.Outcome != "" {
+			t.Fatalf("file = %v after %d applies (outcome %q); want it still empty and no apply", got, r.nginx.applyCount(), res.Outcome)
 		}
 	})
 }
