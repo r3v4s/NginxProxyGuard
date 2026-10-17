@@ -610,6 +610,11 @@
     },
     "global": {
       "description": "Rules disabled in global policies automatically apply to all proxy hosts."
+    },
+    "tester": {
+      "selectHost": "Choosing a proxy host fills in the Host header with its first domain.",
+      "targetUrl": "Where the test requests go. By default, NPG's own proxy container.",
+      "hostHeader": "The Host header to send. Use the host's domain so the request is checked with that host's WAF settings."
     }
   },
   "pagination": {

@@ -569,7 +569,8 @@
       "forceHttps": "Redirects all HTTP traffic to HTTPS. Highly recommended for security.",
       "http2": "Modern protocol for faster page loads. Recommended for most sites.",
       "http3": "Next-gen protocol using QUIC/UDP. Faster on mobile/unstable networks. Requires UDP port 443.",
-      "hsts": "Tells browsers to ONLY use HTTPS for this site. Be careful, as this is cached by browsers."
+      "hsts": "Tells browsers to ONLY use HTTPS for this site. Be careful, as this is cached by browsers.",
+      "certificate": "The certificate this host serves. Pick an issued or uploaded certificate that covers the host's domains."
     },
     "security": {
       "priorityAllowIPs": "Trusted IPs that bypass all blocks (GeoIP, Bot Filter, etc.). Use for internal monitoring or partners.",
@@ -580,7 +581,10 @@
       "geoip": "Restrict access to specific countries.",
       "cloudProvider": "Block IP ranges from cloud providers like AWS, Azure, and GCP. Useful against spam/scraping bots running on cloud servers. Note: May affect legitimate VPN users.",
       "cloudProviderChallenge": "Enable challenge mode to show CAPTCHA verification instead of blocking traffic from cloud IPs. Legitimate users can pass the challenge, while bots are blocked.",
-      "cloudProviderAllowSearchBots": "Allow search engine bots (Google, Bing, Yandex, etc.) to bypass cloud provider blocking. This ensures your site can be indexed even when cloud IPs are blocked."
+      "cloudProviderAllowSearchBots": "Allow search engine bots (Google, Bing, Yandex, etc.) to bypass cloud provider blocking. This ensures your site can be indexed even when cloud IPs are blocked.",
+      "accessList": "Limits who can reach this host to the IPs, ranges and domains in the list. It does not exempt anyone from URI path blocking, the WAF or automatic bans.",
+      "fail2ban": "Bans an IP for a while when it gets too many of the chosen error responses within the time window.",
+      "uriBlock": "Blocks requests to the paths you list (/wp-admin or /.env, for example). Requests from the exception IPs are not blocked."
     },
     "protection": {
       "rateLimit": "Prevents abuse by limiting how many requests an IP can make. 'Burst' is the temporary allowance.",
