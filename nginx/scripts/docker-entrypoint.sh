@@ -339,6 +339,25 @@ update_managed_includes() {
 }
 update_managed_includes
 
+# conf.d/forwarded-port.conf defines $npg_forwarded_port, which the
+# proxy_params.conf installed above uses. conf.d is copied only into a new
+# volume, so an install from an older image lacks the file, and nginx refuses
+# to start with an unknown variable: install it on every start as well. If it
+# cannot be installed, keep sending the listen port rather than fail to start.
+update_forwarded_port_map() {
+    src="$NGINX_DEFAULT/conf.d/forwarded-port.conf"
+    dst="$NGINX_DIR/conf.d/forwarded-port.conf"
+    [ -f "$src" ] || return 0
+    cp -f "$src" "$dst" 2>/dev/null || true
+    chown nginx:nginx "$dst" 2>/dev/null || true
+    chmod 644 "$dst" 2>/dev/null || true
+    if ! cmp -s "$src" "$dst"; then
+        echo "[Entrypoint] WARN: could not install conf.d/forwarded-port.conf; X-Forwarded-Port stays the port nginx listens on"
+        sed -i 's/\$npg_forwarded_port/$server_port/' "$NGINX_DIR/includes/proxy_params.conf" 2>/dev/null || true
+    fi
+}
+update_forwarded_port_map
+
 # Refresh the vendored OWASP CRS ruleset when the image ships a different
 # version than the volume copy. The volume masks /etc/nginx/owasp-crs, so
 # without this the WAF rules stay frozen at whatever CRS version the install

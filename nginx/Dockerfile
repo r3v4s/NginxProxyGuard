@@ -281,6 +281,7 @@ COPY --from=builder /etc/nginx/owasp-crs /etc/nginx/owasp-crs
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY conf.d/default.conf /etc/nginx/conf.d/default.conf
 COPY conf.d/logging.conf /etc/nginx/conf.d/logging.conf
+COPY conf.d/forwarded-port.conf /etc/nginx/conf.d/forwarded-port.conf
 
 # Copy GeoIP config files to geoip directory (not conf.d to avoid auto-include)
 COPY conf.d/geoip.conf /etc/nginx/geoip/geoip-enabled.conf
