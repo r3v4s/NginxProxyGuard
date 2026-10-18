@@ -465,3 +465,87 @@ func TestDNSEntrySchemaAgainstTheDatabase(t *testing.T) {
 		t.Errorf("a new system_settings row has dns_entry_settings %s, want {}", settings)
 	}
 }
+
+// exceptionListHostnameColumns are the domain name columns of the exception
+// lists (#320): URI block exceptions, priority allow and rate limit
+// exceptions, each per host and global, and the global trusted list.
+var exceptionListHostnameColumns = []struct{ table, column string }{
+	{"uri_blocks", "exception_hostnames"},
+	{"global_uri_blocks", "exception_hostnames"},
+	{"geo_restrictions", "allowed_hostnames"},
+	{"global_geo_restrictions", "allowed_hostnames"},
+	{"rate_limits", "whitelist_hostnames"},
+	{"global_rate_limits", "whitelist_hostnames"},
+	{"system_settings", "global_trusted_hostnames"},
+}
+
+// exceptionListHostnameType is how every one of them is declared.
+const exceptionListHostnameType = "text[] DEFAULT '{}'::text[] NOT NULL"
+
+// TestMigrationStructuralSync sees that each column exists on both paths,
+// not how it is declared. Each is written three times: in its CREATE TABLE
+// and as an executable ADD COLUMN at the end of 001_init.sql (fresh
+// installs), and in `upgrades` (existing installs). ADD COLUMN IF NOT EXISTS
+// leaves an existing column as it is, so a copy that drifted would leave
+// fresh and upgraded installs with different columns.
+func TestExceptionListHostnameColumnsAreDeclaredIdenticallyOnBothPaths(t *testing.T) {
+	beforeBanner, upgradeSection := initSQLSections(t)
+	upgradeSection = normalizeSQL(stripLineComments(upgradeSection))
+	for _, c := range exceptionListHostnameColumns {
+		def := c.column + " " + exceptionListHostnameType
+		table := createTableStatement(beforeBanner, c.table)
+		if !strings.Contains(table, " "+def+",") && !strings.Contains(table, " "+def+" );") {
+			t.Errorf("the CREATE TABLE of %s does not declare %s", c.table, def)
+		}
+		alter := "ALTER TABLE public." + c.table + " ADD COLUMN IF NOT EXISTS " + def
+		if n := strings.Count(upgradeSection, alter+";"); n != 1 {
+			t.Errorf("the UPGRADE SECTION runs %q %d times, want once", alter, n)
+		}
+		entries := upgradeEntriesContaining(t, "public."+c.table+" ADD COLUMN IF NOT EXISTS "+c.column+" ")
+		if len(entries) != 1 || normalizeSQL(entries[0]) != alter {
+			t.Errorf("upgrades entries adding %s.%s: %q, want exactly one: %q", c.table, c.column, entries, alter)
+		}
+	}
+}
+
+// Both migration paths on PostgreSQL, as TestDNSEntrySchemaAgainstTheDatabase
+// runs them: whichever path the database NPG_TEST_DATABASE_URL names takes,
+// two boots record no failed upgrade, and then every exception list name
+// column is a text[] that defaults to '{}' and refuses NULL.
+func TestExceptionListHostnameColumnsAgainstTheDatabase(t *testing.T) {
+	dsn := migrationTestDSN(t)
+
+	probe, err := New(dsn)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	path := "fresh install"
+	if readDNSSchemaObjects(t, probe.DB).Initialized {
+		path = "upgrade"
+	}
+	probe.Close()
+	t.Log(path)
+
+	bootMigrations(t, dsn).Close()
+	db := bootMigrations(t, dsn) // the next start runs every upgrade again
+	t.Cleanup(func() { db.Close() })
+
+	for _, c := range exceptionListHostnameColumns {
+		var typ, def string
+		var notNull bool
+		err := db.QueryRow(`SELECT format_type(a.atttypid, a.atttypmod), COALESCE(pg_get_expr(d.adbin, d.adrelid), ''), a.attnotnull
+			FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+			WHERE a.attrelid = $1::regclass AND a.attname = $2 AND NOT a.attisdropped`,
+			"public."+c.table, c.column).Scan(&typ, &def, &notNull)
+		if errors.Is(err, sql.ErrNoRows) {
+			t.Errorf("%s: public.%s has no column %s", path, c.table, c.column)
+			continue
+		}
+		if err != nil {
+			t.Fatalf("read public.%s.%s: %v", c.table, c.column, err)
+		}
+		if typ != "text[]" || def != "'{}'::text[]" || !notNull {
+			t.Errorf("%s: public.%s.%s is %s DEFAULT %s (NOT NULL %v), want %s", path, c.table, c.column, typ, def, notNull, exceptionListHostnameType)
+		}
+	}
+}

@@ -82,17 +82,20 @@ func (r *RateLimitRepository) invalidateBansForHosts(ctx context.Context, hostID
 func (r *RateLimitRepository) GetByProxyHostID(ctx context.Context, proxyHostID string) (*model.RateLimit, error) {
 	query := `
 		SELECT id, proxy_host_id, enabled, requests_per_second, burst_size,
-		       zone_size, limit_by, limit_response, whitelist_ips, COALESCE(disable_global, false), created_at, updated_at
+		       zone_size, limit_by, limit_response, whitelist_ips, COALESCE(disable_global, false), created_at, updated_at,
+		       whitelist_hostnames
 		FROM rate_limits
 		WHERE proxy_host_id = $1
 	`
 
 	var rl model.RateLimit
 	var whitelistIPs sql.NullString
+	var whitelistHostnames pq.StringArray
 
 	err := r.db.QueryRowContext(ctx, query, proxyHostID).Scan(
 		&rl.ID, &rl.ProxyHostID, &rl.Enabled, &rl.RequestsPerSecond, &rl.BurstSize,
 		&rl.ZoneSize, &rl.LimitBy, &rl.LimitResponse, &whitelistIPs, &rl.DisableGlobal, &rl.CreatedAt, &rl.UpdatedAt,
+		&whitelistHostnames,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -102,6 +105,7 @@ func (r *RateLimitRepository) GetByProxyHostID(ctx context.Context, proxyHostID 
 	}
 
 	rl.WhitelistIPs = whitelistIPs.String
+	rl.WhitelistHostnames = model.DNSNamesOrEmpty(whitelistHostnames)
 	return &rl, nil
 }
 
@@ -117,11 +121,23 @@ func whitelistParam(v *string) interface{} {
 }
 
 func (r *RateLimitRepository) Upsert(ctx context.Context, proxyHostID string, req *model.CreateRateLimitRequest) (*model.RateLimit, error) {
+	args := []interface{}{
+		proxyHostID, req.Enabled, req.RequestsPerSecond, req.BurstSize,
+		req.ZoneSize, req.LimitBy, req.LimitResponse, whitelistParam(req.WhitelistIPs),
+		req.DisableGlobal,
+	}
+	// The names are written only when the request has the field: nil keeps
+	// the stored ones (a new row takes the column default, '{}').
+	namesColumn, namesValue, namesSet := "", "", ""
+	if req.WhitelistHostnames != nil {
+		args = append(args, dnsTextArray(*req.WhitelistHostnames))
+		namesColumn, namesValue, namesSet = ", whitelist_hostnames", ", $10", "whitelist_hostnames = EXCLUDED.whitelist_hostnames,"
+	}
 	query := `
 		INSERT INTO rate_limits (proxy_host_id, enabled, requests_per_second, burst_size,
-		                         zone_size, limit_by, limit_response, whitelist_ips, disable_global)
+		                         zone_size, limit_by, limit_response, whitelist_ips, disable_global` + namesColumn + `)
 		VALUES ($1, COALESCE($2, TRUE), COALESCE(NULLIF($3, 0), 50), COALESCE(NULLIF($4, 0), 100),
-		        COALESCE(NULLIF($5, ''), '10m'), COALESCE(NULLIF($6, ''), 'ip'), COALESCE(NULLIF($7, 0), 429), $8, COALESCE($9, FALSE))
+		        COALESCE(NULLIF($5, ''), '10m'), COALESCE(NULLIF($6, ''), 'ip'), COALESCE(NULLIF($7, 0), 429), $8, COALESCE($9, FALSE)` + namesValue + `)
 		ON CONFLICT (proxy_host_id) DO UPDATE SET
 			enabled = COALESCE($2, rate_limits.enabled),
 			requests_per_second = CASE WHEN $3 > 0 THEN $3 ELSE rate_limits.requests_per_second END,
@@ -131,27 +147,28 @@ func (r *RateLimitRepository) Upsert(ctx context.Context, proxyHostID string, re
 			limit_response = CASE WHEN $7 > 0 THEN $7 ELSE rate_limits.limit_response END,
 			whitelist_ips = COALESCE($8, rate_limits.whitelist_ips),
 			disable_global = COALESCE($9, rate_limits.disable_global),
+			` + namesSet + `
 			updated_at = NOW()
 		RETURNING id, proxy_host_id, enabled, requests_per_second, burst_size,
-		          zone_size, limit_by, limit_response, whitelist_ips, disable_global, created_at, updated_at
+		          zone_size, limit_by, limit_response, whitelist_ips, disable_global, created_at, updated_at,
+		          whitelist_hostnames
 	`
 
 	var rl model.RateLimit
 	var whitelistIPs sql.NullString
+	var whitelistHostnames pq.StringArray
 
-	err := r.db.QueryRowContext(ctx, query,
-		proxyHostID, req.Enabled, req.RequestsPerSecond, req.BurstSize,
-		req.ZoneSize, req.LimitBy, req.LimitResponse, whitelistParam(req.WhitelistIPs),
-		req.DisableGlobal,
-	).Scan(
+	err := r.db.QueryRowContext(ctx, query, args...).Scan(
 		&rl.ID, &rl.ProxyHostID, &rl.Enabled, &rl.RequestsPerSecond, &rl.BurstSize,
 		&rl.ZoneSize, &rl.LimitBy, &rl.LimitResponse, &whitelistIPs, &rl.DisableGlobal, &rl.CreatedAt, &rl.UpdatedAt,
+		&whitelistHostnames,
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	rl.WhitelistIPs = whitelistIPs.String
+	rl.WhitelistHostnames = model.DNSNamesOrEmpty(whitelistHostnames)
 	return &rl, nil
 }
 

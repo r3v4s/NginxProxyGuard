@@ -91,6 +91,7 @@ func (r *SystemSettingsRepository) getFromDB(ctx context.Context) (*model.System
 		       COALESCE(waf_auto_ban_duration, 3600) as waf_auto_ban_duration,
 		       COALESCE(global_trusted_ips, '') as global_trusted_ips,
 		       COALESCE(global_trusted_ips_bypass_waf, false) as global_trusted_ips_bypass_waf,
+		       COALESCE(global_trusted_hostnames, '{}') as global_trusted_hostnames,
 		       COALESCE(trusted_proxy_cidrs, '') as trusted_proxy_cidrs,
 		       COALESCE(trusted_proxy_preset, 'none') as trusted_proxy_preset,
 		       COALESCE(NULLIF(real_ip_header, ''), 'X-Forwarded-For') as real_ip_header,
@@ -173,6 +174,7 @@ func (r *SystemSettingsRepository) getFromDB(ctx context.Context) (*model.System
 		&settings.WAFAutoBanDuration,
 		&settings.GlobalTrustedIPs,
 		&settings.GlobalTrustedIPsBypassWAF,
+		pq.Array(&settings.GlobalTrustedHostnames),
 		&settings.TrustedProxyCIDRs,
 		&settings.TrustedProxyPreset,
 		&settings.RealIPHeader,
@@ -231,6 +233,7 @@ func (r *SystemSettingsRepository) getFromDB(ctx context.Context) (*model.System
 	} else {
 		settings.ACMEDNSCredentials = json.RawMessage("{}")
 	}
+	settings.GlobalTrustedHostnames = model.DNSNamesOrEmpty(settings.GlobalTrustedHostnames)
 
 	// Cache the result
 	if r.cache != nil {
@@ -280,6 +283,8 @@ func (r *SystemSettingsRepository) createDefault(ctx context.Context) (*model.Sy
 		// nginx.conf down on first boot. Mirror the DB defaults explicitly.
 		TrustedProxyPreset: model.TrustedProxyPresetNone,
 		RealIPHeader:       model.RealIPHeaderDefault,
+
+		GlobalTrustedHostnames: []string{},
 	}
 
 	err := r.db.QueryRowContext(ctx, query,
@@ -602,6 +607,12 @@ func (r *SystemSettingsRepository) Update(ctx context.Context, req *model.Update
 	if req.GlobalTrustedIPsBypassWAF != nil {
 		setClauses = append(setClauses, fmt.Sprintf("global_trusted_ips_bypass_waf = $%d", argIndex))
 		args = append(args, *req.GlobalTrustedIPsBypassWAF)
+		argIndex++
+	}
+	// Global trusted domain names (#320): nil keeps them, [] clears them.
+	if req.GlobalTrustedHostnames != nil {
+		setClauses = append(setClauses, fmt.Sprintf("global_trusted_hostnames = $%d", argIndex))
+		args = append(args, dnsTextArray(*req.GlobalTrustedHostnames))
 		argIndex++
 	}
 

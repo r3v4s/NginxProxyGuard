@@ -34,6 +34,10 @@ type URIBlock struct {
 	AllowPrivateIPs bool           `json:"allow_private_ips"`
 	CreatedAt       time.Time      `json:"created_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`
+
+	// ExceptionHostnames are domain names (#320) whose addresses are
+	// excepted like ExceptionIPs. Never null.
+	ExceptionHostnames []string `json:"exception_hostnames"`
 }
 
 // CreateURIBlockRequest is the request to create/update URI block settings
@@ -42,6 +46,12 @@ type CreateURIBlockRequest struct {
 	Rules           []URIBlockRule `json:"rules,omitempty"`
 	ExceptionIPs    []string       `json:"exception_ips,omitempty"`
 	AllowPrivateIPs *bool          `json:"allow_private_ips,omitempty"`
+
+	// ExceptionHostnames replaces the stored names. Unlike the other
+	// fields, which a save always writes, nil (the field left out) keeps
+	// them, so a client that does not know the field cannot clear them;
+	// [] clears them.
+	ExceptionHostnames *[]string `json:"exception_hostnames,omitempty"`
 }
 
 // AddURIBlockRuleRequest is the request to add a single rule (from log viewer)
@@ -61,6 +71,10 @@ type GlobalURIBlock struct {
 	AllowPrivateIPs bool           `json:"allow_private_ips"`
 	CreatedAt       time.Time      `json:"created_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`
+
+	// ExceptionHostnames are domain names (#320) whose addresses are
+	// excepted like ExceptionIPs. Never null.
+	ExceptionHostnames []string `json:"exception_hostnames"`
 }
 
 // CreateGlobalURIBlockRequest is the request to create/update global URI block settings
@@ -69,6 +83,10 @@ type CreateGlobalURIBlockRequest struct {
 	Rules           []URIBlockRule `json:"rules,omitempty"`
 	ExceptionIPs    []string       `json:"exception_ips,omitempty"`
 	AllowPrivateIPs *bool          `json:"allow_private_ips,omitempty"`
+
+	// ExceptionHostnames: nil keeps the stored names, [] clears them (see
+	// CreateURIBlockRequest).
+	ExceptionHostnames *[]string `json:"exception_hostnames,omitempty"`
 }
 
 // Common URI patterns for quick blocking

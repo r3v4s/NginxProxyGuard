@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"regexp"
 	"strings"
@@ -265,6 +266,63 @@ func dnsLettersOnly(s string) bool {
 	return s != ""
 }
 
+// DNSNameFieldError is a refused name of a list of domain names. Field is
+// its path by its position in the request ("exception_hostnames[1]"), Code
+// the DNSNameError code and Name the name as it was checked (normalized).
+type DNSNameFieldError struct {
+	Field string
+	Code  string
+	Name  string
+}
+
+// Error returns "invalid input: <field>: <sentence of the code>". Like
+// DNSNameError it leaves the name out.
+func (e *DNSNameFieldError) Error() string {
+	return ErrInvalidInput.Error() + ": " + e.Field + ": " + (&DNSNameError{Code: e.Code}).Error()
+}
+
+// Unwrap makes errors.Is(err, ErrInvalidInput) match.
+func (e *DNSNameFieldError) Unwrap() error { return ErrInvalidInput }
+
+// ValidateDNSNameList puts the domain names of one list field into the form
+// they are stored in: each normalized (NormalizeDNSName), a repeat dropped,
+// in the order given. It returns the names ValidateDNSName accepts, never
+// nil, and for the first name it refuses a *DNSNameFieldError naming it
+// field[i], i its position in names. A save refuses the field on the error;
+// a restore keeps the names returned and logs the error.
+func ValidateDNSNameList(field string, names []string) ([]string, error) {
+	out := make([]string, 0, len(names))
+	seen := make(map[string]bool, len(names))
+	var first error
+	for i, raw := range names {
+		name := NormalizeDNSName(raw)
+		if err := ValidateDNSName(name); err != nil {
+			if first == nil {
+				code := ""
+				if ne, ok := IsDNSNameError(err); ok {
+					code = ne.Code
+				}
+				first = &DNSNameFieldError{Field: fmt.Sprintf("%s[%d]", field, i), Code: code, Name: name}
+			}
+			continue
+		}
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	return out, first
+}
+
+// DNSNamesOrEmpty returns names, or an empty list for nil: a list field of
+// domain names is [] in JSON, never null.
+func DNSNamesOrEmpty(names []string) []string {
+	if names == nil {
+		return []string{}
+	}
+	return names
+}
+
 // Name status (dns_entry_states.status).
 const (
 	DNSStatusPending     = "pending"      // new name, nothing published yet
@@ -347,6 +405,14 @@ type DNSReference struct {
 	Name      string
 	OwnerID   string
 	OwnerName string
+}
+
+// DNSRef is a domain name of an exception list as a config renders it: the
+// name and the scope whose include file holds the name's addresses. A host
+// that inherits a global list carries the global scope.
+type DNSRef struct {
+	Scope string
+	Name  string
 }
 
 // DNSEntryStatus is a name's state as the API shows it. The service builds

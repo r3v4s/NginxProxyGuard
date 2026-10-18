@@ -55,9 +55,9 @@ func TestGeoAllowSearchBotsWorksWithoutBotFilter(t *testing.T) {
 		}
 		now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
 		mock.ExpectQuery(`FROM geo_restrictions WHERE proxy_host_id`).WithArgs(hostID).
-			WillReturnRows(sqlmock.NewRows(positionalColumns(12)).AddRow(
+			WillReturnRows(sqlmock.NewRows(positionalColumns(13)).AddRow(
 				"00000000-0000-4000-8000-0000000000ea", hostID, "whitelist", "{KR}", "{}", true,
-				challenge, false, true, false, now, now)) // challenge_mode, private IPs, search bots, disable_global
+				challenge, false, true, false, now, now, "{}")) // challenge_mode, private IPs, search bots, disable_global; allowed_hostnames last
 		s := &ProxyHostService{geoRepo: repository.NewGeoRepository(&database.DB{DB: db})}
 		host := &model.ProxyHost{ID: hostID, DomainNames: []string{"bots.example.com"}, ForwardScheme: "http",
 			ForwardHost: "192.0.2.10", ForwardPort: 8080, Enabled: true}

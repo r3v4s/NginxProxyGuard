@@ -248,8 +248,8 @@ func TestURIBlockWrites_AcceptValidRules(t *testing.T) {
 	stored, _ := json.Marshal([]map[string]any{{"id": "r1", "pattern": "wp-login", "match_type": "prefix", "enabled": true}})
 	now := time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)
 	storedRow := func() *sqlmock.Rows {
-		return sqlmock.NewRows([]string{"id", "proxy_host_id", "enabled", "rules", "exception_ips", "allow_private_ips", "created_at", "updated_at"}).
-			AddRow("00000000-0000-0000-0000-0000000000b1", hostID, true, stored, "{}", true, now, now)
+		return sqlmock.NewRows([]string{"id", "proxy_host_id", "enabled", "rules", "exception_ips", "allow_private_ips", "created_at", "updated_at", "exception_hostnames"}).
+			AddRow("00000000-0000-0000-0000-0000000000b1", hostID, true, stored, "{}", true, now, now, "{}")
 	}
 	list := `{"enabled":true,"rules":[{"id":"r1","pattern":"wp-login","match_type":"prefix","enabled":true},{"pattern":"/xmlrpc.php","match_type":"exact","enabled":true}]}`
 	mock.ExpectQuery(`FROM uri_blocks WHERE proxy_host_id`).WillReturnRows(storedRow())

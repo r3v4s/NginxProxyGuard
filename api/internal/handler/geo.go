@@ -111,6 +111,8 @@ func (h *GeoHandler) GetByProxyHost(c echo.Context) error {
 			"mode":          "blacklist",
 			"countries":     []string{},
 			"enabled":       false,
+
+			"allowed_hostnames": []string{},
 		})
 	}
 

@@ -26,6 +26,8 @@ func (s *SecurityService) GetURIBlock(ctx context.Context, proxyHostID string) (
 			Rules:           []model.URIBlockRule{},
 			ExceptionIPs:    []string{},
 			AllowPrivateIPs: true,
+
+			ExceptionHostnames: []string{},
 		}
 	}
 	return uriBlock, nil
@@ -220,6 +222,8 @@ func (s *SecurityService) GetGlobalURIBlock(ctx context.Context) (*model.GlobalU
 			Rules:           []model.URIBlockRule{},
 			ExceptionIPs:    []string{},
 			AllowPrivateIPs: true,
+
+			ExceptionHostnames: []string{},
 		}, nil
 	}
 	return block, nil

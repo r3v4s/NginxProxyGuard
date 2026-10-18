@@ -92,6 +92,11 @@ type SystemSettings struct {
 	// the WAF, so a compromised trusted host cannot proxy attacks to the backend.
 	GlobalTrustedIPsBypassWAF bool `json:"global_trusted_ips_bypass_waf" db:"global_trusted_ips_bypass_waf"`
 
+	// GlobalTrustedHostnames are domain names (#320) whose addresses are
+	// trusted like GlobalTrustedIPs, except that they never bypass the WAF,
+	// bans or the IP blocks of filter subscriptions.
+	GlobalTrustedHostnames []string `json:"global_trusted_hostnames" db:"global_trusted_hostnames"`
+
 	// Trusted proxies decide whose forwarded-client-address header nginx
 	// believes (#278). Without them a CDN or reverse proxy in front of NPG
 	// leaves $remote_addr pointing at the proxy, so GeoIP, access lists,
@@ -211,6 +216,9 @@ type SystemSettingsResponse struct {
 	GlobalTrustedIPs          string `json:"global_trusted_ips"`
 	GlobalTrustedIPsBypassWAF bool   `json:"global_trusted_ips_bypass_waf"`
 
+	// Global trusted domain names (#320). Never null.
+	GlobalTrustedHostnames []string `json:"global_trusted_hostnames"`
+
 	// Trusted proxies (#278)
 	TrustedProxyCIDRs        string   `json:"trusted_proxy_cidrs"`
 	TrustedProxyPreset       string   `json:"trusted_proxy_preset"`
@@ -312,6 +320,7 @@ func (s *SystemSettings) ToResponse() *SystemSettingsResponse {
 		WAFAutoBanDuration:                     s.WAFAutoBanDuration,
 		GlobalTrustedIPs:                       s.GlobalTrustedIPs,
 		GlobalTrustedIPsBypassWAF:              s.GlobalTrustedIPsBypassWAF,
+		GlobalTrustedHostnames:                 DNSNamesOrEmpty(s.GlobalTrustedHostnames),
 		TrustedProxyCIDRs:                      s.TrustedProxyCIDRs,
 		TrustedProxyPreset:                     resolvedPreset,
 		RealIPHeader:                           resolvedHeader,
@@ -438,6 +447,10 @@ type UpdateSystemSettingsRequest struct {
 	// Global Trusted IPs
 	GlobalTrustedIPs          *string `json:"global_trusted_ips,omitempty"`
 	GlobalTrustedIPsBypassWAF *bool   `json:"global_trusted_ips_bypass_waf,omitempty"`
+
+	// Global trusted domain names (#320): nil (the field left out) keeps
+	// the stored names, [] clears them.
+	GlobalTrustedHostnames *[]string `json:"global_trusted_hostnames,omitempty"`
 
 	// Trusted proxies (#278)
 	TrustedProxyCIDRs  *string `json:"trusted_proxy_cidrs,omitempty"`

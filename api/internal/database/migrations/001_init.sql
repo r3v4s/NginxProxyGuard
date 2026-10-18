@@ -595,6 +595,7 @@ CREATE TABLE IF NOT EXISTS public.geo_restrictions (
     allow_search_bots boolean DEFAULT false,
     disable_global boolean DEFAULT false NOT NULL,
     cloud_disable_global boolean DEFAULT false NOT NULL,
+    allowed_hostnames text[] DEFAULT '{}'::text[] NOT NULL,
     CONSTRAINT geo_restrictions_mode_check CHECK (((mode)::text = ANY ((ARRAY['whitelist'::character varying, 'blacklist'::character varying])::text[])))
 );
 COMMENT ON COLUMN public.geo_restrictions.allowed_ips IS 'IP addresses or CIDR ranges that bypass geo restrictions (priority override)';
@@ -621,6 +622,7 @@ CREATE TABLE IF NOT EXISTS public.global_geo_restrictions (
     challenge_mode boolean DEFAULT false,
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
+    allowed_hostnames text[] DEFAULT '{}'::text[] NOT NULL,
     CONSTRAINT global_geo_restrictions_mode_check CHECK (((mode)::text = ANY ((ARRAY['whitelist'::character varying, 'blacklist'::character varying])::text[])))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_global_geo_restrictions_singleton ON public.global_geo_restrictions USING btree ((true));
@@ -742,7 +744,8 @@ CREATE TABLE IF NOT EXISTS public.global_uri_blocks (
     exception_ips text[] DEFAULT '{}'::text[],
     allow_private_ips boolean DEFAULT true,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    exception_hostnames text[] DEFAULT '{}'::text[] NOT NULL
 );
 CREATE TABLE IF NOT EXISTS public.global_waf_policy_history (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -2049,7 +2052,8 @@ CREATE TABLE IF NOT EXISTS public.rate_limits (
     whitelist_ips text,
     disable_global boolean DEFAULT false NOT NULL,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    whitelist_hostnames text[] DEFAULT '{}'::text[] NOT NULL
 );
 CREATE TABLE IF NOT EXISTS public.global_rate_limits (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -2061,7 +2065,8 @@ CREATE TABLE IF NOT EXISTS public.global_rate_limits (
     limit_response integer DEFAULT 429,
     whitelist_ips text,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    whitelist_hostnames text[] DEFAULT '{}'::text[] NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_global_rate_limits_singleton ON public.global_rate_limits USING btree ((true));
 -- Global fail2ban jail (#275): counts failures on requests that matched NO
@@ -2498,7 +2503,8 @@ geckodriver'::text,
     trusted_proxy_cidrs text DEFAULT ''::text NOT NULL,
     trusted_proxy_preset text DEFAULT 'none'::text NOT NULL,
     real_ip_header text DEFAULT 'X-Forwarded-For'::text NOT NULL,
-    dns_entry_settings jsonb DEFAULT '{}'::jsonb NOT NULL
+    dns_entry_settings jsonb DEFAULT '{}'::jsonb NOT NULL,
+    global_trusted_hostnames text[] DEFAULT '{}'::text[] NOT NULL
 );
 COMMENT ON COLUMN public.system_settings.access_log_retention_days IS 'Retention period for access logs in days (default: 3 years)';
 COMMENT ON COLUMN public.system_settings.waf_log_retention_days IS 'Retention period for WAF/ModSecurity logs in days (default: 3 months)';
@@ -2555,7 +2561,8 @@ CREATE TABLE IF NOT EXISTS public.uri_blocks (
     exception_ips text[] DEFAULT '{}'::text[],
     allow_private_ips boolean DEFAULT true,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    exception_hostnames text[] DEFAULT '{}'::text[] NOT NULL
 );
 CREATE TABLE IF NOT EXISTS public.users (
     id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
@@ -4803,3 +4810,17 @@ CREATE TABLE IF NOT EXISTS public.dns_entry_states (
 -- limits. One JSON object read as model.DNSEntrySettings: a missing key takes its default
 -- and a value out of range is clamped when read, so '{}' means every default.
 ALTER TABLE public.system_settings ADD COLUMN IF NOT EXISTS dns_entry_settings jsonb DEFAULT '{}'::jsonb NOT NULL;
+
+-- Domain names in the exception lists (#320): URI block exceptions, priority allow and
+-- rate limit exceptions (each per host and global) and the global trusted list. A text[]
+-- on each list row, '{}' when the list has none, so the names go with their row: a host's
+-- go when the host is deleted. A version that does not know the columns names the
+-- columns it reads and writes, so it never sees the names. The CREATE TABLEs above have
+-- them; this adds them to tables created before they existed.
+ALTER TABLE public.uri_blocks ADD COLUMN IF NOT EXISTS exception_hostnames text[] DEFAULT '{}'::text[] NOT NULL;
+ALTER TABLE public.global_uri_blocks ADD COLUMN IF NOT EXISTS exception_hostnames text[] DEFAULT '{}'::text[] NOT NULL;
+ALTER TABLE public.geo_restrictions ADD COLUMN IF NOT EXISTS allowed_hostnames text[] DEFAULT '{}'::text[] NOT NULL;
+ALTER TABLE public.global_geo_restrictions ADD COLUMN IF NOT EXISTS allowed_hostnames text[] DEFAULT '{}'::text[] NOT NULL;
+ALTER TABLE public.rate_limits ADD COLUMN IF NOT EXISTS whitelist_hostnames text[] DEFAULT '{}'::text[] NOT NULL;
+ALTER TABLE public.global_rate_limits ADD COLUMN IF NOT EXISTS whitelist_hostnames text[] DEFAULT '{}'::text[] NOT NULL;
+ALTER TABLE public.system_settings ADD COLUMN IF NOT EXISTS global_trusted_hostnames text[] DEFAULT '{}'::text[] NOT NULL;

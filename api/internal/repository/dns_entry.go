@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/lib/pq"
@@ -45,12 +47,48 @@ type dnsEntryQuerier interface {
 }
 
 // dnsReferenceSources selects one row per use of a domain name: scope, name,
-// owner id, owner name. Only access lists have domain rows so far; other
-// lists join as UNION ALL branches here.
+// owner id, owner name. A name in a row is in use whether or not the list,
+// its host or the feature is enabled. The owner of an access list is the
+// list; of a host's exception list the host, named by its first domain; of
+// a global exception list "global"; the trusted list has none. The
+// exception lists keep their names in text[] columns without a CHECK, so
+// those branches take only elements in the characters of a stored name,
+// and listDNSReferences checks the rest.
 const dnsReferenceSources = `
 	SELECT 'acl:' || i.access_list_id::text, i.hostname, l.id::text, l.name
 	FROM access_list_items i JOIN access_lists l ON l.id = i.access_list_id
-	WHERE i.hostname IS NOT NULL`
+	WHERE i.hostname IS NOT NULL
+	UNION ALL
+	SELECT 'uri:' || u.proxy_host_id::text, n.name, u.proxy_host_id::text, COALESCE(h.domain_names[1], '')
+	FROM uri_blocks u LEFT JOIN proxy_hosts h ON h.id = u.proxy_host_id
+	CROSS JOIN LATERAL unnest(u.exception_hostnames) AS n(name)
+	WHERE n.name ~ '^[a-z0-9.-]{1,253}$'
+	UNION ALL
+	SELECT 'uri:global', n.name, 'global', ''
+	FROM global_uri_blocks g CROSS JOIN LATERAL unnest(g.exception_hostnames) AS n(name)
+	WHERE n.name ~ '^[a-z0-9.-]{1,253}$'
+	UNION ALL
+	SELECT 'prio:' || r.proxy_host_id::text, n.name, r.proxy_host_id::text, COALESCE(h.domain_names[1], '')
+	FROM geo_restrictions r LEFT JOIN proxy_hosts h ON h.id = r.proxy_host_id
+	CROSS JOIN LATERAL unnest(r.allowed_hostnames) AS n(name)
+	WHERE n.name ~ '^[a-z0-9.-]{1,253}$'
+	UNION ALL
+	SELECT 'prio:global', n.name, 'global', ''
+	FROM global_geo_restrictions g CROSS JOIN LATERAL unnest(g.allowed_hostnames) AS n(name)
+	WHERE n.name ~ '^[a-z0-9.-]{1,253}$'
+	UNION ALL
+	SELECT 'rl:' || r.proxy_host_id::text, n.name, r.proxy_host_id::text, COALESCE(h.domain_names[1], '')
+	FROM rate_limits r LEFT JOIN proxy_hosts h ON h.id = r.proxy_host_id
+	CROSS JOIN LATERAL unnest(r.whitelist_hostnames) AS n(name)
+	WHERE n.name ~ '^[a-z0-9.-]{1,253}$'
+	UNION ALL
+	SELECT 'rl:global', n.name, 'global', ''
+	FROM global_rate_limits g CROSS JOIN LATERAL unnest(g.whitelist_hostnames) AS n(name)
+	WHERE n.name ~ '^[a-z0-9.-]{1,253}$'
+	UNION ALL
+	SELECT 'trusted', n.name, '', ''
+	FROM system_settings s CROSS JOIN LATERAL unnest(s.global_trusted_hostnames) AS n(name)
+	WHERE n.name ~ '^[a-z0-9.-]{1,253}$'`
 
 const dnsReferencesQuery = dnsReferenceSources + `
 	ORDER BY 1, 2`
@@ -207,12 +245,38 @@ func listDNSReferences(ctx context.Context, q dnsEntryQuerier) ([]model.DNSRefer
 		if err := rows.Scan(&ref.Scope, &ref.Name, &ref.OwnerID, &ref.OwnerName); err != nil {
 			return nil, fmt.Errorf("failed to read a domain entry reference: %w", err)
 		}
-		refs = append(refs, ref)
+		if usableDNSReference(ref) {
+			refs = append(refs, ref)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("failed to iterate domain entry references: %w", err)
 	}
 	return refs, nil
+}
+
+// dnsReferencesSkipped holds the references usableDNSReference has logged,
+// so each is logged once per process, not at every check.
+var dnsReferencesSkipped sync.Map
+
+// usableDNSReference reports whether a reference has a scope ParseDNSScope
+// reads and a name ValidateDNSName accepts, and logs one it leaves out. The
+// saves refuse other names, but a row can come from elsewhere (an older
+// version, a hand-edited backup, SQL), and a name outside the CHECK on
+// dns_entry_states.hostname would fail the transaction of every check.
+func usableDNSReference(ref model.DNSReference) bool {
+	reason := "its list is not one domain entries know"
+	if _, _, ok := model.ParseDNSScope(ref.Scope); ok {
+		err := model.ValidateDNSName(ref.Name)
+		if err == nil {
+			return true
+		}
+		reason = err.Error()
+	}
+	if _, seen := dnsReferencesSkipped.LoadOrStore(ref.Scope+"\x00"+ref.Name, struct{}{}); !seen {
+		log.Printf("[DNSEntries] WARN: %.80q in %.80q is left out of the domain entries: %s", ref.Name, ref.Scope, reason)
+	}
+	return false
 }
 
 // getDNSEntryStates reads the rows of names, or every row when names is nil;

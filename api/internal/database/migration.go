@@ -1808,6 +1808,41 @@ END $$;`,
 			desc: "system_settings.dns_entry_settings (#320)",
 			sql:  `ALTER TABLE public.system_settings ADD COLUMN IF NOT EXISTS dns_entry_settings jsonb DEFAULT '{}'::jsonb NOT NULL`,
 		},
+		// Domain names in the exception lists (#320): URI block exceptions,
+		// priority allow and rate limit exceptions (each per host and
+		// global) and the global trusted list. A text[] on each list row,
+		// '{}' when the list has none. They come after the CREATE TABLE
+		// entries of the global tables above. 001_init.sql declares the same
+		// columns in its CREATE TABLEs and at its executable end
+		// (migration_dns_entries_test.go holds the copies equal).
+		{
+			desc: "uri_blocks.exception_hostnames (#320)",
+			sql:  `ALTER TABLE public.uri_blocks ADD COLUMN IF NOT EXISTS exception_hostnames text[] DEFAULT '{}'::text[] NOT NULL`,
+		},
+		{
+			desc: "global_uri_blocks.exception_hostnames (#320)",
+			sql:  `ALTER TABLE public.global_uri_blocks ADD COLUMN IF NOT EXISTS exception_hostnames text[] DEFAULT '{}'::text[] NOT NULL`,
+		},
+		{
+			desc: "geo_restrictions.allowed_hostnames (#320)",
+			sql:  `ALTER TABLE public.geo_restrictions ADD COLUMN IF NOT EXISTS allowed_hostnames text[] DEFAULT '{}'::text[] NOT NULL`,
+		},
+		{
+			desc: "global_geo_restrictions.allowed_hostnames (#320)",
+			sql:  `ALTER TABLE public.global_geo_restrictions ADD COLUMN IF NOT EXISTS allowed_hostnames text[] DEFAULT '{}'::text[] NOT NULL`,
+		},
+		{
+			desc: "rate_limits.whitelist_hostnames (#320)",
+			sql:  `ALTER TABLE public.rate_limits ADD COLUMN IF NOT EXISTS whitelist_hostnames text[] DEFAULT '{}'::text[] NOT NULL`,
+		},
+		{
+			desc: "global_rate_limits.whitelist_hostnames (#320)",
+			sql:  `ALTER TABLE public.global_rate_limits ADD COLUMN IF NOT EXISTS whitelist_hostnames text[] DEFAULT '{}'::text[] NOT NULL`,
+		},
+		{
+			desc: "system_settings.global_trusted_hostnames (#320)",
+			sql:  `ALTER TABLE public.system_settings ADD COLUMN IF NOT EXISTS global_trusted_hostnames text[] DEFAULT '{}'::text[] NOT NULL`,
+		},
 	}
 	for _, a := range upgrades {
 		if _, err := db.Exec(a.sql); err != nil {

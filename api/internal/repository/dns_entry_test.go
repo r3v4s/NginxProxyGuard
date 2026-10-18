@@ -1,9 +1,12 @@
 package repository
 
 import (
+	"bytes"
 	"context"
 	"database/sql/driver"
 	"errors"
+	"log"
+	"os"
 	"reflect"
 	"regexp"
 	"strings"
@@ -229,31 +232,75 @@ func TestDNSEntryUpsertReplacesEveryColumn(t *testing.T) {
 	}
 }
 
-// The references are the hostname rows of every access list, as (scope,
-// name, list id, list name), ordered by scope and name.
+// The references are every use of a domain name, as (scope, name, owner id,
+// owner name), ordered by scope and name: the hostname rows of the access
+// lists, then the names of the exception lists. A row whose scope does not
+// parse or whose name the rules refuse is left out, and logged once.
 func TestDNSEntryListReferences(t *testing.T) {
+	var logged bytes.Buffer
+	flags := log.Flags()
+	log.SetOutput(&logged)
+	log.SetFlags(0)
+	// What an earlier test (or run, with -count) logged is not logged again.
+	dnsReferencesSkipped.Clear()
+	t.Cleanup(func() {
+		log.SetOutput(os.Stderr)
+		log.SetFlags(flags)
+		dnsReferencesSkipped.Clear()
+	})
 	repo, mock := newDNSEntryMock(t)
 	const listA = "0b5e0c3a-8f2d-4c1e-9a7b-6d5e4f3a2b1c"
 	const listB = "7f1d2c3b-4a5e-4f60-8b9a-0c1d2e3f4a5b"
-	mock.ExpectQuery("^" + regexp.QuoteMeta(`SELECT 'acl:' || i.access_list_id::text, i.hostname, l.id::text, l.name
-		FROM access_list_items i JOIN access_lists l ON l.id = i.access_list_id
-		WHERE i.hostname IS NOT NULL ORDER BY 1, 2`) + "$").
-		WillReturnRows(sqlmock.NewRows([]string{"scope", "hostname", "id", "name"}).
+	const host = "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f"
+	rows := func() *sqlmock.Rows {
+		return sqlmock.NewRows([]string{"scope", "hostname", "id", "name"}).
 			AddRow("acl:"+listA, "office.example.com", listA, "partners").
 			AddRow("acl:"+listA, "partner.example.com", listA, "partners").
-			AddRow("acl:"+listB, "partner.example.com", listB, "branch office"))
-
-	refs, err := repo.ListReferences(context.Background())
-	if err != nil {
-		t.Fatal(err)
+			AddRow("acl:"+listB, "partner.example.com", listB, "branch office").
+			AddRow("prio:"+host, "192.0.2.1", host, "app.example.com").
+			AddRow("prio:"+host, "prio.example.com", host, "app.example.com").
+			AddRow("rl:global", "printer.local", "global", "").
+			AddRow("trusted", "trusted.example.com", "", "").
+			AddRow("uri:"+strings.ToUpper(host), "uri.example.com", host, "app.example.com").
+			AddRow("uri:global", "guri.example.com", "global", "")
 	}
+	query := "^" + regexp.QuoteMeta(strings.TrimSpace(dnsReferencesQuery)) + "$"
+	mock.ExpectQuery(query).WillReturnRows(rows())
+	mock.ExpectQuery(query).WillReturnRows(rows())
+
 	want := []model.DNSReference{
 		{Scope: "acl:" + listA, Name: "office.example.com", OwnerID: listA, OwnerName: "partners"},
 		{Scope: "acl:" + listA, Name: "partner.example.com", OwnerID: listA, OwnerName: "partners"},
 		{Scope: "acl:" + listB, Name: "partner.example.com", OwnerID: listB, OwnerName: "branch office"},
+		{Scope: "prio:" + host, Name: "prio.example.com", OwnerID: host, OwnerName: "app.example.com"},
+		{Scope: "trusted", Name: "trusted.example.com"},
+		{Scope: "uri:global", Name: "guri.example.com", OwnerID: "global"},
 	}
-	if !reflect.DeepEqual(refs, want) {
-		t.Fatalf("references = %+v\nwant %+v", refs, want)
+	for read := 1; read <= 2; read++ {
+		refs, err := repo.ListReferences(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(refs, want) {
+			t.Fatalf("read %d: references = %+v\nwant %+v", read, refs, want)
+		}
+		if read == 1 {
+			// The three rows left out, each named once; the second read
+			// logs nothing.
+			lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
+			if len(lines) != 3 {
+				t.Fatalf("logged %q, want three lines", lines)
+			}
+			for i, part := range []string{`"192.0.2.1" in "prio:` + host, `"printer.local" in "rl:global"`, `"uri.example.com" in "uri:` + strings.ToUpper(host)} {
+				if !strings.HasPrefix(lines[i], "[DNSEntries] WARN: ") || !strings.Contains(lines[i], part) {
+					t.Errorf("log line %d = %q, want a [DNSEntries] WARN naming %s", i, lines[i], part)
+				}
+			}
+			logged.Reset()
+		}
+	}
+	if logged.Len() != 0 {
+		t.Errorf("the second read logged %q, want nothing", logged.String())
 	}
 }
 

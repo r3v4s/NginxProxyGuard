@@ -59,7 +59,8 @@ func dnsStateUTC(st model.DNSEntryState) model.DNSEntryState {
 // delete.
 func TestDNSEntryRepositoryAgainstTheDatabase(t *testing.T) {
 	db, schema := openSchemaTestDB(t)
-	createTablesFrom001(t, db, schema, "access_lists", "access_list_items", "dns_entry_states")
+	createDNSReferenceTables(t, db, schema)
+	createTablesFrom001(t, db, schema, "dns_entry_states")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	repo := NewDNSEntryRepository(db)

@@ -24,6 +24,10 @@ type RateLimit struct {
 	DisableGlobal     bool      `json:"disable_global"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
+
+	// WhitelistHostnames are domain names (#320) whose addresses are
+	// exempt like WhitelistIPs. Never null.
+	WhitelistHostnames []string `json:"whitelist_hostnames"`
 }
 
 // CreateRateLimitRequest is the request to create/update rate limit config
@@ -40,6 +44,10 @@ type CreateRateLimitRequest struct {
 	// list could never be emptied once set (#263).
 	WhitelistIPs  *string `json:"whitelist_ips,omitempty"`
 	DisableGlobal *bool   `json:"disable_global,omitempty"`
+
+	// WhitelistHostnames replaces the stored names; nil (the field left
+	// out) keeps them and [] clears them, for the same reason.
+	WhitelistHostnames *[]string `json:"whitelist_hostnames,omitempty"`
 }
 
 // GlobalRateLimit is the singleton global rate-limit default hosts inherit
@@ -56,6 +64,10 @@ type GlobalRateLimit struct {
 	WhitelistIPs      string    `json:"whitelist_ips,omitempty"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
+
+	// WhitelistHostnames are domain names (#320) whose addresses are
+	// exempt like WhitelistIPs. Never null.
+	WhitelistHostnames []string `json:"whitelist_hostnames"`
 }
 
 // UpdateGlobalRateLimitRequest is the partial-update request for the singleton.
@@ -69,6 +81,9 @@ type UpdateGlobalRateLimitRequest struct {
 	// Pointer for the same reason as the per-host request: absent keeps the
 	// stored list, "" clears it. Previously an absent field silently wiped it.
 	WhitelistIPs *string `json:"whitelist_ips,omitempty"`
+
+	// WhitelistHostnames: nil keeps the stored names, [] clears them.
+	WhitelistHostnames *[]string `json:"whitelist_hostnames,omitempty"`
 }
 
 // ParseIPWhitelist splits a rate-limit exception list into entries an nginx geo

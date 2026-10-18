@@ -25,16 +25,16 @@ func NewURIBlockRepository(db *database.DB) *URIBlockRepository {
 func (r *URIBlockRepository) GetByProxyHostID(ctx context.Context, proxyHostID string) (*model.URIBlock, error) {
 	var ub model.URIBlock
 	var rulesJSON []byte
-	var exceptionIPs pq.StringArray
+	var exceptionIPs, exceptionHostnames pq.StringArray
 	var allowPrivateIPs sql.NullBool
 
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id, proxy_host_id, enabled, rules, COALESCE(exception_ips, '{}'),
-		       COALESCE(allow_private_ips, true), created_at, updated_at
+		       COALESCE(allow_private_ips, true), created_at, updated_at, exception_hostnames
 		FROM uri_blocks WHERE proxy_host_id = $1
 	`, proxyHostID).Scan(
 		&ub.ID, &ub.ProxyHostID, &ub.Enabled, &rulesJSON, &exceptionIPs,
-		&allowPrivateIPs, &ub.CreatedAt, &ub.UpdatedAt,
+		&allowPrivateIPs, &ub.CreatedAt, &ub.UpdatedAt, &exceptionHostnames,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -54,6 +54,7 @@ func (r *URIBlockRepository) GetByProxyHostID(ctx context.Context, proxyHostID s
 	}
 
 	ub.ExceptionIPs = []string(exceptionIPs)
+	ub.ExceptionHostnames = model.DNSNamesOrEmpty(exceptionHostnames)
 	ub.AllowPrivateIPs = allowPrivateIPs.Bool
 	return &ub, nil
 }
@@ -91,18 +92,28 @@ func (r *URIBlockRepository) Upsert(ctx context.Context, proxyHostID string, req
 		exceptionIPs = []string{}
 	}
 
+	// The names are written only when the request has the field: nil keeps
+	// the stored ones (a new row takes the column default, '{}').
+	args := []interface{}{proxyHostID, enabled, rulesJSON, pq.Array(exceptionIPs), allowPrivateIPs}
+	namesColumn, namesValue, namesSet := "", "", ""
+	if req.ExceptionHostnames != nil {
+		args = append(args, dnsTextArray(*req.ExceptionHostnames))
+		namesColumn, namesValue, namesSet = ", exception_hostnames", ", $6", "exception_hostnames = EXCLUDED.exception_hostnames,"
+	}
+
 	var id string
 	err = r.db.QueryRowContext(ctx, `
-		INSERT INTO uri_blocks (proxy_host_id, enabled, rules, exception_ips, allow_private_ips)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO uri_blocks (proxy_host_id, enabled, rules, exception_ips, allow_private_ips`+namesColumn+`)
+		VALUES ($1, $2, $3, $4, $5`+namesValue+`)
 		ON CONFLICT (proxy_host_id) DO UPDATE SET
 			enabled = EXCLUDED.enabled,
 			rules = EXCLUDED.rules,
 			exception_ips = EXCLUDED.exception_ips,
 			allow_private_ips = EXCLUDED.allow_private_ips,
+			`+namesSet+`
 			updated_at = NOW()
 		RETURNING id
-	`, proxyHostID, enabled, rulesJSON, pq.Array(exceptionIPs), allowPrivateIPs).Scan(&id)
+	`, args...).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +226,7 @@ func (r *URIBlockRepository) ListAll(ctx context.Context) ([]URIBlockWithHost, e
 		SELECT ub.id, ub.proxy_host_id, ub.enabled, ub.rules,
 		       COALESCE(ub.exception_ips, '{}'), COALESCE(ub.allow_private_ips, true),
 		       ub.created_at, ub.updated_at,
-		       ph.domain_names, ph.enabled as host_enabled
+		       ph.domain_names, ph.enabled as host_enabled, ub.exception_hostnames
 		FROM uri_blocks ub
 		JOIN proxy_hosts ph ON ub.proxy_host_id = ph.id
 		ORDER BY ph.domain_names[1]
@@ -229,14 +240,14 @@ func (r *URIBlockRepository) ListAll(ctx context.Context) ([]URIBlockWithHost, e
 	for rows.Next() {
 		var ub URIBlockWithHost
 		var rulesJSON []byte
-		var exceptionIPs pq.StringArray
+		var exceptionIPs, exceptionHostnames pq.StringArray
 		var allowPrivateIPs sql.NullBool
 		var domainNames pq.StringArray
 
 		if err := rows.Scan(
 			&ub.ID, &ub.ProxyHostID, &ub.Enabled, &rulesJSON,
 			&exceptionIPs, &allowPrivateIPs, &ub.CreatedAt, &ub.UpdatedAt,
-			&domainNames, &ub.HostEnabled,
+			&domainNames, &ub.HostEnabled, &exceptionHostnames,
 		); err != nil {
 			return nil, err
 		}
@@ -251,6 +262,7 @@ func (r *URIBlockRepository) ListAll(ctx context.Context) ([]URIBlockWithHost, e
 		}
 
 		ub.ExceptionIPs = []string(exceptionIPs)
+		ub.ExceptionHostnames = model.DNSNamesOrEmpty(exceptionHostnames)
 		ub.AllowPrivateIPs = allowPrivateIPs.Bool
 		ub.DomainNames = []string(domainNames)
 		result = append(result, ub)
@@ -270,16 +282,16 @@ func (r *URIBlockRepository) ListAll(ctx context.Context) ([]URIBlockWithHost, e
 func (r *URIBlockRepository) GetGlobalURIBlock(ctx context.Context) (*model.GlobalURIBlock, error) {
 	var ub model.GlobalURIBlock
 	var rulesJSON []byte
-	var exceptionIPs pq.StringArray
+	var exceptionIPs, exceptionHostnames pq.StringArray
 
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id, enabled, rules, COALESCE(exception_ips, '{}'),
-		       COALESCE(allow_private_ips, true), created_at, updated_at
+		       COALESCE(allow_private_ips, true), created_at, updated_at, exception_hostnames
 		FROM global_uri_blocks
 		LIMIT 1
 	`).Scan(
 		&ub.ID, &ub.Enabled, &rulesJSON, &exceptionIPs,
-		&ub.AllowPrivateIPs, &ub.CreatedAt, &ub.UpdatedAt,
+		&ub.AllowPrivateIPs, &ub.CreatedAt, &ub.UpdatedAt, &exceptionHostnames,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -298,6 +310,7 @@ func (r *URIBlockRepository) GetGlobalURIBlock(ctx context.Context) (*model.Glob
 	}
 
 	ub.ExceptionIPs = []string(exceptionIPs)
+	ub.ExceptionHostnames = model.DNSNamesOrEmpty(exceptionHostnames)
 	return &ub, nil
 }
 
@@ -337,23 +350,38 @@ func (r *URIBlockRepository) UpsertGlobalURIBlock(ctx context.Context, req *mode
 
 	// Check if global block exists
 	existing, _ := r.GetGlobalURIBlock(ctx)
+	// The names are written only when the request has the field: nil keeps
+	// the stored ones (a new row takes the column default, '{}').
+	args := []interface{}{enabled, rulesJSON, pq.Array(exceptionIPs), allowPrivateIPs}
 	if existing == nil {
 		// Insert new
+		namesColumn, namesValue := "", ""
+		if req.ExceptionHostnames != nil {
+			args = append(args, dnsTextArray(*req.ExceptionHostnames))
+			namesColumn, namesValue = ", exception_hostnames", ", $5"
+		}
 		_, err = r.db.ExecContext(ctx, `
-			INSERT INTO global_uri_blocks (enabled, rules, exception_ips, allow_private_ips)
-			VALUES ($1, $2, $3, $4)
-		`, enabled, rulesJSON, pq.Array(exceptionIPs), allowPrivateIPs)
+			INSERT INTO global_uri_blocks (enabled, rules, exception_ips, allow_private_ips`+namesColumn+`)
+			VALUES ($1, $2, $3, $4`+namesValue+`)
+		`, args...)
 	} else {
 		// Update existing
+		args = append(args, existing.ID)
+		namesSet := ""
+		if req.ExceptionHostnames != nil {
+			args = append(args, dnsTextArray(*req.ExceptionHostnames))
+			namesSet = "exception_hostnames = $6,"
+		}
 		_, err = r.db.ExecContext(ctx, `
 			UPDATE global_uri_blocks SET
 				enabled = $1,
 				rules = $2,
 				exception_ips = $3,
 				allow_private_ips = $4,
+				`+namesSet+`
 				updated_at = NOW()
 			WHERE id = $5
-		`, enabled, rulesJSON, pq.Array(exceptionIPs), allowPrivateIPs, existing.ID)
+		`, args...)
 	}
 
 	if err != nil {

@@ -187,6 +187,45 @@ func TestIsDNSNameErrorFindsAWrappedError(t *testing.T) {
 	}
 }
 
+// A list of names is kept normalized, each once, in the order given. A name
+// the rules refuse is named by its position in the request, with its rule
+// code: a save refuses the list on the error, a restore keeps the names
+// that pass.
+func TestValidateDNSNameListNormalizesDedupesAndNamesTheField(t *testing.T) {
+	names, err := ValidateDNSNameList("x", []string{"Partner.Example.", "partner.example", "192.0.2.4"})
+	if strings.Join(names, ",") != "partner.example" {
+		t.Errorf("names = %q, want [partner.example]", names)
+	}
+	var fe *DNSNameFieldError
+	if !errors.As(err, &fe) || fe.Field != "x[2]" || fe.Code != "looks_like_ip" || fe.Name != "192.0.2.4" {
+		t.Fatalf("err = %#v, want a *DNSNameFieldError for x[2] with code looks_like_ip", err)
+	}
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("err = %v, want it to match ErrInvalidInput (a 400)", err)
+	}
+	want := "invalid input: x[2]: " + (&DNSNameError{Code: "looks_like_ip"}).Error()
+	if err.Error() != want {
+		t.Errorf("err.Error() = %q, want %q", err.Error(), want)
+	}
+
+	// The first refused name is the one reported; every refused name is
+	// left out of the names.
+	names, err = ValidateDNSNameList("allowed_hostnames", []string{" Office.Example.COM ", "bad_name", "partner.example", "printer.local"})
+	if strings.Join(names, ",") != "office.example.com,partner.example" {
+		t.Errorf("names = %q, want [office.example.com partner.example]", names)
+	}
+	if !errors.As(err, &fe) || fe.Field != "allowed_hostnames[1]" || fe.Code != "underscore" {
+		t.Errorf("err = %#v, want allowed_hostnames[1] with code underscore", err)
+	}
+
+	for _, in := range [][]string{nil, {}} {
+		names, err := ValidateDNSNameList("x", in)
+		if err != nil || names == nil || len(names) != 0 {
+			t.Errorf("ValidateDNSNameList(%#v) = %#v, %v; want an empty, non-nil list", in, names, err)
+		}
+	}
+}
+
 func TestDNSScopes(t *testing.T) {
 	const id = "0b5e0c3a-8f2d-4c1e-9a7b-6d5e4f3a2b1c"
 	if got := AccessListDNSScope(id); got != "acl:"+id {

@@ -31,9 +31,9 @@ func TestHostConfigDataReadsOldRateLimitZoneNames(t *testing.T) {
 		mock.MatchExpectationsInOrder(false) // the lookups run in parallel
 		now := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
 		mock.ExpectQuery(`FROM rate_limits`).WithArgs(hostID).
-			WillReturnRows(sqlmock.NewRows(positionalColumns(12)).AddRow(
+			WillReturnRows(sqlmock.NewRows(positionalColumns(13)).AddRow(
 				"00000000-0000-4000-8000-0000000003a2", hostID, true, int64(10), int64(5),
-				"10m", "ip", int64(429), "", false, now, now))
+				"10m", "ip", int64(429), "", false, now, now, "{}"))
 		mock.ExpectQuery(`FROM banned_ips`).WillReturnRows(sqlmock.NewRows(positionalColumns(10)))
 		mock.ExpectQuery(`FROM banned_ips`).WillReturnRows(sqlmock.NewRows(positionalColumns(10)))
 		return &ProxyHostService{

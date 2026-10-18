@@ -20,6 +20,10 @@ type GeoRestriction struct {
 	DisableGlobal   bool      `json:"disable_global"`    // Host opts out of the global geo default (3-state: inherit/override/disable)
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+
+	// AllowedHostnames are domain names (#320) whose addresses bypass the
+	// restriction like AllowedIPs. Never null.
+	AllowedHostnames []string `json:"allowed_hostnames"`
 }
 
 // GlobalGeoRestriction is the singleton global default inherited by hosts that
@@ -35,6 +39,10 @@ type GlobalGeoRestriction struct {
 	ChallengeMode   bool      `json:"challenge_mode"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+
+	// AllowedHostnames are domain names (#320) whose addresses bypass the
+	// restriction like AllowedIPs. Never null.
+	AllowedHostnames []string `json:"allowed_hostnames"`
 }
 
 // UpdateGlobalGeoRestrictionRequest is a partial update (pointer fields) for the
@@ -47,6 +55,10 @@ type UpdateGlobalGeoRestrictionRequest struct {
 	AllowPrivateIPs *bool    `json:"allow_private_ips,omitempty"`
 	AllowSearchBots *bool    `json:"allow_search_bots,omitempty"`
 	ChallengeMode   *bool    `json:"challenge_mode,omitempty"`
+
+	// AllowedHostnames replaces the stored names; nil (the field left out)
+	// keeps them and [] clears them.
+	AllowedHostnames *[]string `json:"allowed_hostnames,omitempty"`
 }
 
 // CreateGeoRestrictionRequest is the request to create/update geo restriction
@@ -59,6 +71,12 @@ type CreateGeoRestrictionRequest struct {
 	Enabled         *bool    `json:"enabled,omitempty"`
 	ChallengeMode   *bool    `json:"challenge_mode,omitempty"`    // Show CAPTCHA instead of blocking
 	DisableGlobal   *bool    `json:"disable_global,omitempty"`    // Opt out of global geo default
+
+	// AllowedHostnames replaces the stored names. Unlike the other fields,
+	// which a save always writes, nil (the field left out) keeps them, so a
+	// client that does not know the field cannot clear them; [] clears
+	// them.
+	AllowedHostnames *[]string `json:"allowed_hostnames,omitempty"`
 }
 
 // UpdateGeoRestrictionRequest is the request to update geo restriction
@@ -71,6 +89,10 @@ type UpdateGeoRestrictionRequest struct {
 	Enabled         *bool    `json:"enabled,omitempty"`
 	ChallengeMode   *bool    `json:"challenge_mode,omitempty"`    // Show CAPTCHA instead of blocking
 	DisableGlobal   *bool    `json:"disable_global,omitempty"`    // Opt out of global geo default
+
+	// AllowedHostnames replaces the stored names; nil (the field left out)
+	// keeps them and [] clears them.
+	AllowedHostnames *[]string `json:"allowed_hostnames,omitempty"`
 }
 
 // CommonCountryCodes contains all ISO 3166-1 alpha-2 country codes (249 entries)

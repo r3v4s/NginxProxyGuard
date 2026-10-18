@@ -171,6 +171,8 @@ func (s *SecurityService) GetRateLimit(ctx context.Context, proxyHostID string) 
 			ZoneSize:          config.DefaultZoneSize,
 			LimitBy:           "ip",
 			LimitResponse:     config.DefaultLimitResponse,
+
+			WhitelistHostnames: []string{},
 		}
 	}
 	return rateLimit, nil
@@ -906,6 +908,7 @@ func (s *SecurityService) GetGlobalRateLimit(ctx context.Context) (*model.Global
 		return &model.GlobalRateLimit{
 			Enabled: false, RequestsPerSecond: 50, BurstSize: 100,
 			ZoneSize: "10m", LimitBy: "ip", LimitResponse: 429,
+			WhitelistHostnames: []string{},
 		}, nil
 	}
 	return s.globalRateLimitRepo.GetGlobal(ctx)

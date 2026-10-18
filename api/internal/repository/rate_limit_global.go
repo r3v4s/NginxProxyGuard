@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/lib/pq"
+
 	"nginx-proxy-guard/internal/model"
 )
 
@@ -22,6 +24,7 @@ func defaultGlobalRateLimit() *model.GlobalRateLimit {
 	return &model.GlobalRateLimit{
 		Enabled: false, RequestsPerSecond: 50, BurstSize: 100,
 		ZoneSize: "10m", LimitBy: "ip", LimitResponse: 429,
+		WhitelistHostnames: []string{},
 	}
 }
 
@@ -30,10 +33,13 @@ func defaultGlobalRateLimit() *model.GlobalRateLimit {
 func (r *GlobalRateLimitRepository) GetGlobal(ctx context.Context) (*model.GlobalRateLimit, error) {
 	var g model.GlobalRateLimit
 	var whitelist sql.NullString
+	var whitelistHostnames pq.StringArray
 	err := r.db.QueryRowContext(ctx, `
-		SELECT id, enabled, requests_per_second, burst_size, zone_size, limit_by, limit_response, whitelist_ips, created_at, updated_at
+		SELECT id, enabled, requests_per_second, burst_size, zone_size, limit_by, limit_response, whitelist_ips, created_at, updated_at,
+		       whitelist_hostnames
 		FROM global_rate_limits LIMIT 1
-	`).Scan(&g.ID, &g.Enabled, &g.RequestsPerSecond, &g.BurstSize, &g.ZoneSize, &g.LimitBy, &g.LimitResponse, &whitelist, &g.CreatedAt, &g.UpdatedAt)
+	`).Scan(&g.ID, &g.Enabled, &g.RequestsPerSecond, &g.BurstSize, &g.ZoneSize, &g.LimitBy, &g.LimitResponse, &whitelist, &g.CreatedAt, &g.UpdatedAt,
+		&whitelistHostnames)
 	if err == sql.ErrNoRows {
 		return defaultGlobalRateLimit(), nil
 	}
@@ -41,6 +47,7 @@ func (r *GlobalRateLimitRepository) GetGlobal(ctx context.Context) (*model.Globa
 		return nil, err
 	}
 	g.WhitelistIPs = whitelist.String
+	g.WhitelistHostnames = model.DNSNamesOrEmpty(whitelistHostnames)
 	return &g, nil
 }
 
@@ -75,17 +82,31 @@ func (r *GlobalRateLimitRepository) Upsert(ctx context.Context, req *model.Updat
 	}
 
 	whitelist := sql.NullString{String: cur.WhitelistIPs, Valid: cur.WhitelistIPs != ""}
+	// The names are written only when the request has the field: nil keeps
+	// the stored ones (a new row takes the column default, '{}').
+	args := []interface{}{cur.Enabled, cur.RequestsPerSecond, cur.BurstSize, cur.ZoneSize, cur.LimitBy, cur.LimitResponse, whitelist}
 	if cur.ID == "" {
+		namesColumn, namesValue := "", ""
+		if req.WhitelistHostnames != nil {
+			args = append(args, dnsTextArray(*req.WhitelistHostnames))
+			namesColumn, namesValue = ", whitelist_hostnames", ", $8"
+		}
 		_, err = r.db.ExecContext(ctx, `
-			INSERT INTO global_rate_limits (enabled, requests_per_second, burst_size, zone_size, limit_by, limit_response, whitelist_ips)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-		`, cur.Enabled, cur.RequestsPerSecond, cur.BurstSize, cur.ZoneSize, cur.LimitBy, cur.LimitResponse, whitelist)
+			INSERT INTO global_rate_limits (enabled, requests_per_second, burst_size, zone_size, limit_by, limit_response, whitelist_ips`+namesColumn+`)
+			VALUES ($1, $2, $3, $4, $5, $6, $7`+namesValue+`)
+		`, args...)
 	} else {
+		args = append(args, cur.ID)
+		namesSet := ""
+		if req.WhitelistHostnames != nil {
+			args = append(args, dnsTextArray(*req.WhitelistHostnames))
+			namesSet = " whitelist_hostnames=$9,"
+		}
 		_, err = r.db.ExecContext(ctx, `
 			UPDATE global_rate_limits
-			SET enabled=$1, requests_per_second=$2, burst_size=$3, zone_size=$4, limit_by=$5, limit_response=$6, whitelist_ips=$7, updated_at=NOW()
+			SET enabled=$1, requests_per_second=$2, burst_size=$3, zone_size=$4, limit_by=$5, limit_response=$6, whitelist_ips=$7,`+namesSet+` updated_at=NOW()
 			WHERE id=$8
-		`, cur.Enabled, cur.RequestsPerSecond, cur.BurstSize, cur.ZoneSize, cur.LimitBy, cur.LimitResponse, whitelist, cur.ID)
+		`, args...)
 	}
 	if err != nil {
 		return nil, err

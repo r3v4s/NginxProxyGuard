@@ -177,8 +177,8 @@ func TestGlobalURIBlockSaveRefusedByNginxIsAuditedAndAnswered409(t *testing.T) {
 	mock.ExpectQuery(`FROM global_uri_blocks`).WillReturnRows(sqlmock.NewRows([]string{"id"})) // the upsert's
 	mock.ExpectExec(`INSERT INTO global_uri_blocks`).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(`FROM global_uri_blocks`).WillReturnRows(sqlmock.NewRows(
-		[]string{"id", "enabled", "rules", "exception_ips", "allow_private_ips", "created_at", "updated_at"}).
-		AddRow("00000000-0000-4000-8000-0000000004a1", true, []byte(`[]`), "{}", true, saved, saved))
+		[]string{"id", "enabled", "rules", "exception_ips", "allow_private_ips", "created_at", "updated_at", "exception_hostnames"}).
+		AddRow("00000000-0000-4000-8000-0000000004a1", true, []byte(`[]`), "{}", true, saved, saved, "{}"))
 	mock.ExpectQuery(`FROM proxy_hosts\s+WHERE enabled = true`).WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	expectAudit(mock, "global_uri_block_enabled")
 
