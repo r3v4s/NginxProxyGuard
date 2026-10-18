@@ -89,6 +89,7 @@ HSTS, X-Frame-Options, X-Content-Type-Options, X-XSS-Protection, Referrer-Policy
 ### 📋 접근 목록
 화이트리스트 또는 블랙리스트를 위한 IP 기반 접근 제어 목록. CIDR 표기법 지원.
 허용 규칙에 도메인 이름(DDNS 이름 등)도 지원 — 지금 조회되는 주소만 허용.
+URI 차단 예외, 우선 허용, 속도 제한 예외, 전역 신뢰 IP도 도메인 이름을 지원 — 도메인은 IP 차단(밴)과 WAF를 넘지 못함.
 
 ### 💾 백업 & 복원
 인증서, 설정, 데이터베이스를 포함한 전체 구성 백업. 예약된 자동 백업 지원.
