@@ -1,9 +1,12 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getGlobalRateLimit, updateGlobalRateLimit } from '../api/global-rate-limit'
+import { confirmGlobalRateLimitDNS, getGlobalRateLimit, updateGlobalRateLimit } from '../api/global-rate-limit'
 import type { GlobalRateLimit, UpdateGlobalRateLimitRequest } from '../types/security'
+import { usePermissions } from '../hooks/usePermissions'
 import { RateLimitFields } from './proxy-host/tabs/security/RateLimitFields'
+import { dnsNeedsPolling } from './common/dns/dnsName'
+import { DNS_POLL_MS, dnsConfigKey, dnsNamesErrorsOf, type DnsNamesError } from './common/dns/dnsListField'
 
 type Draft = UpdateGlobalRateLimitRequest & { enabled: boolean }
 
@@ -26,28 +29,40 @@ function hydrate(g: GlobalRateLimit): Draft {
     limit_by: g.limit_by,
     limit_response: g.limit_response,
     whitelist_ips: g.whitelist_ips || '',
+    whitelist_hostnames: g.whitelist_hostnames ?? [],
   }
 }
 
 export function GlobalRateLimitManager() {
   const { t } = useTranslation('waf')
   const queryClient = useQueryClient()
+  // The global default's PUT and its confirm route need waf:write (#320).
+  const { can } = usePermissions()
 
   const [data, setData] = useState<Draft>(EMPTY)
   const [dirty, setDirty] = useState(false)
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  const [nameErrors, setNameErrors] = useState<DnsNamesError[]>([])
 
   const { data: global, isLoading } = useQuery({
     queryKey: ['global-rate-limit'],
     queryFn: getGlobalRateLimit,
-    refetchInterval: 60000,
+    // Faster only while an exception domain waits for its answer or for nginx.
+    refetchInterval: (query) =>
+      dnsNeedsPolling(query.state.data?.whitelist_hostname_status ?? []) ? DNS_POLL_MS : 60000,
   })
 
+  // Copy the record into the draft when it loads and when the default itself
+  // changes; a refetch that only moves the domains' state leaves an unsaved
+  // edit alone (#320).
+  const hydratedKey = useRef<string | null>(null)
   useEffect(() => {
-    if (global) {
-      setData(hydrate(global))
-      setDirty(false)
-    }
+    if (!global) return
+    const key = dnsConfigKey(global)
+    if (key === hydratedKey.current) return
+    hydratedKey.current = key
+    setData(hydrate(global))
+    setDirty(false)
   }, [global])
 
   const patch = (p: Partial<Draft>) => {
@@ -56,16 +71,19 @@ export function GlobalRateLimitManager() {
   }
 
   const mutation = useMutation({
-    mutationFn: () => updateGlobalRateLimit(data),
+    mutationFn: (draft: Draft) => updateGlobalRateLimit(draft),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['global-rate-limit'] })
       setDirty(false)
+      setNameErrors([])
       setSaveMessage({ type: 'success', message: t('globalRateLimit.saveSuccess') })
       setTimeout(() => setSaveMessage(null), 5000)
     },
-    onError: (err) => {
+    onError: (err, draft) => {
       // Keep the translated headline; append the server's reason (which names
       // the rejected whitelist entry) so a 400 is actionable, not mute (#263).
+      // A refused domain is also marked on its chip (#320).
+      setNameErrors(dnsNamesErrorsOf(err, 'whitelist_hostnames', draft.whitelist_hostnames))
       const detail = err instanceof Error && err.message ? `: ${err.message}` : ''
       setSaveMessage({ type: 'error', message: t('globalRateLimit.saveFailed') + detail })
       setTimeout(() => setSaveMessage(null), 8000)
@@ -75,6 +93,7 @@ export function GlobalRateLimitManager() {
   const handleDiscard = () => {
     setData(global ? hydrate(global) : EMPTY)
     setDirty(false)
+    setNameErrors([])
   }
 
   if (isLoading) {
@@ -125,7 +144,7 @@ export function GlobalRateLimitManager() {
               {t('common:buttons.discard')}
             </button>
             <button
-              onClick={() => mutation.mutate()}
+              onClick={() => mutation.mutate(data)}
               disabled={mutation.isPending}
               className="px-4 py-1.5 text-sm bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded font-medium transition-colors flex items-center gap-2"
             >
@@ -172,8 +191,16 @@ export function GlobalRateLimitManager() {
                 limit_by: data.limit_by ?? 'ip',
                 limit_response: data.limit_response ?? 429,
                 whitelist_ips: data.whitelist_ips ?? '',
+                whitelist_hostnames: data.whitelist_hostnames ?? [],
               }}
               onChange={patch}
+              domains={{
+                statuses: global?.whitelist_hostname_status,
+                canWrite: can('waf:write'),
+                onConfirm: confirmGlobalRateLimitDNS,
+                onRefetch: () => queryClient.invalidateQueries({ queryKey: ['global-rate-limit'] }),
+                errors: nameErrors,
+              }}
             />
           </div>
         )}

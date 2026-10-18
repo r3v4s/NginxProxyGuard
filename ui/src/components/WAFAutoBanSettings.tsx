@@ -1,18 +1,35 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { getSystemSettings, updateSystemSettings } from '../api/settings';
+import { confirmTrustedDNS, getSystemSettings, updateSystemSettings } from '../api/settings';
 import type { SystemSettings, UpdateSystemSettingsRequest } from '../types/settings';
+import { usePermissions } from '../hooks/usePermissions';
 import { HelpTip } from './common/HelpTip';
+import { DnsHostnamesField } from './common/dns/DnsHostnamesField';
+import { IgnoredEntries } from './common/dns/IgnoredEntries';
+import { dnsNeedsPolling } from './common/dns/dnsName';
+import {
+  DNS_POLL_MS,
+  dnsNamesErrorsOf,
+  domainLikeEntries,
+  ignoredStillIn,
+  withName,
+  withoutLine,
+  type DnsNamesError,
+} from './common/dns/dnsListField';
+import { isIPOrCIDR } from './proxy-host/tabs/security/priorityAllowEntries';
 import { BAN_DURATIONS, CUSTOM_DURATION, isCustomDuration } from './banned-ip/banDurations';
 
 export default function WAFAutoBanSettings() {
   // The duration labels live in the waf namespace beside the ban list they
   // are shared with, so both screens read one set of strings. (#252)
-  const { t } = useTranslation(['settings', 'waf']);
+  const { t } = useTranslation(['settings', 'waf', 'dnsEntries']);
   const queryClient = useQueryClient();
+  // The global trusted list's save and its confirm route need settings:write (#320).
+  const { can } = usePermissions();
   const [editedSettings, setEditedSettings] = useState<UpdateSystemSettingsRequest>({});
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [nameErrors, setNameErrors] = useState<DnsNamesError[]>([]);
   // Opens on the free-text field when the stored value is not one of the
   // offered durations, so an existing custom setting is not silently rounded
   // to whichever option happens to render first. (#252)
@@ -21,6 +38,10 @@ export default function WAFAutoBanSettings() {
   const { data: settings, isLoading } = useQuery({
     queryKey: ['systemSettings'],
     queryFn: getSystemSettings,
+    // Only while a trusted domain waits for its answer or for nginx (#320).
+    // The edits live in editedSettings, so a refetch never touches them.
+    refetchInterval: (query) =>
+      dnsNeedsPolling(query.state.data?.global_trusted_hostname_status ?? []) ? DNS_POLL_MS : false,
   });
 
   const updateMutation = useMutation({
@@ -28,10 +49,13 @@ export default function WAFAutoBanSettings() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['systemSettings'] });
       setEditedSettings({});
+      setNameErrors([]);
       setSaveMessage({ type: 'success', text: t('messages.saveSuccess') });
       setTimeout(() => setSaveMessage(null), 3000);
     },
-    onError: (error: Error) => {
+    onError: (error: Error, sent) => {
+      // A refused trusted domain is marked on its chip as well (#320).
+      setNameErrors(dnsNamesErrorsOf(error, 'global_trusted_hostnames', sent.global_trusted_hostnames));
       setSaveMessage({ type: 'error', text: `${t('messages.saveFailed')}: ${error.message}` });
       setTimeout(() => setSaveMessage(null), 5000);
     },
@@ -55,6 +79,19 @@ export default function WAFAutoBanSettings() {
   };
 
   const isModified = Object.keys(editedSettings).length > 0;
+
+  // The global trusted list (#320): the IP lines, the lines an older version
+  // saved that are not an address (left out of the configs, kept until moved
+  // or removed), new lines that are domains, and the domain names.
+  const trustedText = (getValue('global_trusted_ips') as string) || '';
+  const trustedLines = trustedText.split('\n').map((line) => line.trim());
+  const storedIgnored = new Set(settings?.global_trusted_ips_ignored ?? []);
+  const ignoredLines = ignoredStillIn(settings?.global_trusted_ips_ignored, trustedLines);
+  const typedDomains = domainLikeEntries(
+    trustedLines.filter((line) => line !== '' && !line.startsWith('#') && !isIPOrCIDR(line) && !storedIgnored.has(line)),
+  );
+  const trustedNames = getValue('global_trusted_hostnames') ?? [];
+  const canWriteTrusted = can('settings:write');
 
   const inputClass = "mt-1 w-full px-3 py-2.5 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-lg text-sm text-slate-700 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors";
 
@@ -292,6 +329,39 @@ export default function WAFAutoBanSettings() {
           <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
             {t('system.waf.trustedIps.format')}
           </p>
+          {typedDomains.length > 0 && (
+            <p role="alert" className="mt-1 break-all text-xs text-amber-700 dark:text-amber-300">
+              {t('dnsEntries:ipField.domainHint', { entries: typedDomains.slice(0, 5).join(', ') })}
+            </p>
+          )}
+        </div>
+
+        {ignoredLines.length > 0 && (
+          <div className="mt-3">
+            <IgnoredEntries
+              entries={ignoredLines}
+              disabled={!canWriteTrusted}
+              onMove={(entry, name) => {
+                handleChange('global_trusted_ips', withoutLine(trustedText, entry));
+                handleChange('global_trusted_hostnames', withName(trustedNames, name));
+              }}
+              onRemove={(entry) => handleChange('global_trusted_ips', withoutLine(trustedText, entry))}
+            />
+          </div>
+        )}
+
+        {/* Global trusted domains (#320): never past bans, filter subscription IP blocks or the WAF */}
+        <div className="mt-4 border-t border-slate-200 pt-4 dark:border-slate-700">
+          <DnsHostnamesField
+            names={trustedNames}
+            onChange={(next) => handleChange('global_trusted_hostnames', next)}
+            statuses={settings?.global_trusted_hostname_status}
+            canWrite={canWriteTrusted}
+            onConfirm={confirmTrustedDNS}
+            onRefetch={() => queryClient.invalidateQueries({ queryKey: ['systemSettings'] })}
+            errors={nameErrors}
+            note={t('dnsEntries:notes.trusted')}
+          />
         </div>
 
         {/* Opt-in: also bypass ModSecurity/WAF for trusted IPs */}

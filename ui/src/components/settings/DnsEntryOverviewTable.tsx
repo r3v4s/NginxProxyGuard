@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import type { DNSEntryOverviewEntry } from '../../types/dnsEntries';
+import type { DNSEntryOverviewEntry, DNSEntryUse } from '../../types/dnsEntries';
 import { DnsStatusBadge } from '../common/dns/DnsStatusBadge';
 import { formatDnsTime } from '../common/dns/dnsName';
 import { confirmListOf, splitUses } from './dnsEntryOverview';
@@ -27,6 +27,14 @@ const chip = 'rounded px-1.5 py-0.5 text-xs';
 export default function DnsEntryOverviewTable({ entries, canConfirm, onConfirm }: DnsEntryOverviewTableProps) {
   const { t, i18n } = useTranslation('dnsEntries');
   const time = (iso: string | null) => formatDnsTime(iso, i18n.language);
+  // "Access list: A", "Priority allow: host.example.com". A global list's use
+  // has no name (owner "global") and the global trusted list's no owner, so
+  // their chips carry the kind alone (#320).
+  const labelOfUse = (use: DNSEntryUse) => {
+    const kind = t(`overview.useKinds.${use.kind}`, { defaultValue: use.kind });
+    if (use.owner_name) return t('overview.use', { kind, name: use.owner_name });
+    return use.owner_id === 'global' ? t('overview.useGlobal', { kind }) : kind;
+  };
 
   // The table scrolls sideways inside its card. "relative" keeps the header's
   // sr-only label (absolutely positioned) in that scroll box: without it the
@@ -79,16 +87,13 @@ export default function DnsEntryOverviewTable({ entries, canConfirm, onConfirm }
                         key={use.scope}
                         className={`${chip} bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300`}
                       >
-                        {t('overview.use', {
-                          kind: t(`overview.useKinds.${use.kind}`, { defaultValue: use.kind }),
-                          name: use.owner_name,
-                        })}
+                        {labelOfUse(use)}
                       </span>
                     ))}
                     {rest.length > 0 && (
                       <span
                         className="text-xs text-slate-500 dark:text-slate-400"
-                        title={rest.map((use) => use.owner_name).join(', ')}
+                        title={rest.map(labelOfUse).join(', ')}
                       >
                         {t('list.more', { count: rest.length })}
                       </span>

@@ -509,7 +509,8 @@
       "dns_entry_review_needed": "Domain Entry Needs Review",
       "dns_entry_revoke_blocked": "Domain Entry Removal Blocked/Unblocked",
       "dns_entries_env_disabled": "Domain Entries Off by Environment",
-      "dns_entry_settings_changed": "Domain Entry Settings Changed"
+      "dns_entry_settings_changed": "Domain Entry Settings Changed",
+      "dns_entries_changed": "Exception List Domains Changed"
     },
     "tabs": {
       "admin": "Admin Activity",

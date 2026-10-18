@@ -63,7 +63,11 @@ export function allowedIPLines(text: string): string[] {
 /**
  * The entries of a saved list as the text area's onChange would pass them on:
  * the list is shown one entry per line, so it goes through the same steps.
+ * kept are entries the server reports it leaves out of the configs (#320,
+ * allowed_ips_ignored): a stored entry goes back as it is, which the API
+ * takes, until the operator moves or removes it.
  */
-export function savableAllowedIPs(saved: string[]): string[] {
-  return splitAllowedIPs(allowedIPLines(saved.join('\n'))).valid
+export function savableAllowedIPs(saved: string[], kept: readonly string[] = []): string[] {
+  const keep = new Set(kept)
+  return allowedIPLines(saved.join('\n')).filter((entry) => isIPOrCIDR(entry) || keep.has(entry))
 }

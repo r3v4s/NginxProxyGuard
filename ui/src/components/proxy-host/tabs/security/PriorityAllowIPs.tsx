@@ -1,13 +1,23 @@
 import type { GeoDataState } from '../../types'
 import { useTranslation } from 'react-i18next'
 import { HelpTip } from '../../../common/HelpTip'
-import { allowedIPLines, splitAllowedIPs } from './priorityAllowEntries'
+import { DnsHostnamesField, type DnsListDomains } from '../../../common/dns/DnsHostnamesField'
+import { IgnoredEntries } from '../../../common/dns/IgnoredEntries'
+import { domainLikeEntries, ignoredStillIn, withName, withoutLine } from '../../../common/dns/dnsListField'
+import { allowedIPLines, isIPOrCIDR, splitAllowedIPs } from './priorityAllowEntries'
+
+/** The priority allow domains of the screen that saves them (#320). */
+export interface PriorityAllowDomains extends DnsListDomains {
+  /** Entries of the stored allowed_ips the configs leave out (the GET's allowed_ips_ignored). */
+  ignored: string[] | null | undefined
+}
 
 interface PriorityAllowIPsProps {
   allowedIPsInput: string
   setAllowedIPsInput: (value: string) => void
   geoData: GeoDataState
   setGeoData: React.Dispatch<React.SetStateAction<GeoDataState>>
+  domains: PriorityAllowDomains
 }
 
 export function PriorityAllowIPs({
@@ -15,11 +25,29 @@ export function PriorityAllowIPs({
   setAllowedIPsInput,
   geoData,
   setGeoData,
+  domains,
 }: PriorityAllowIPsProps) {
-  const { t } = useTranslation('proxyHost')
-  // Lines that are not an IP address or CIDR range are shown here and left
-  // out of geoData, so they are not saved (the API would refuse them).
-  const invalidEntries = splitAllowedIPs(allowedIPLines(allowedIPsInput)).invalid
+  const { t } = useTranslation(['proxyHost', 'dnsEntries'])
+  const { ignored: storedIgnored, ...field } = domains
+  const lines = allowedIPLines(allowedIPsInput)
+  // Entries an older version saved that are not an address (#320). nginx
+  // never used them; they are sent back as they are (the API takes a stored
+  // entry back) and listed below until the operator moves or removes them.
+  const stored = new Set(storedIgnored ?? [])
+  const ignored = ignoredStillIn(storedIgnored, lines)
+  // Other lines that are not an IP address or CIDR range are shown here and
+  // left out of geoData, so they are not saved (the API would refuse them).
+  const invalidEntries = splitAllowedIPs(lines).invalid.filter((entry) => !stored.has(entry))
+  const typedDomains = domainLikeEntries(invalidEntries)
+  const names = geoData.allowed_hostnames ?? []
+  const ipCount = (geoData.allowed_ips ?? []).filter(isIPOrCIDR).length
+
+  const setText = (text: string) => {
+    setAllowedIPsInput(text)
+    const ips = allowedIPLines(text).filter((entry) => isIPOrCIDR(entry) || stored.has(entry))
+    setGeoData((prev) => ({ ...prev, allowed_ips: ips }))
+  }
+
   return (
     <div className="p-4 rounded-lg border-2 border-blue-200 bg-blue-50 dark:bg-blue-900/10 dark:border-blue-800 transition-colors">
       <div className="flex items-start gap-3">
@@ -41,11 +69,7 @@ export function PriorityAllowIPs({
           </p>
           <textarea
             value={allowedIPsInput}
-            onChange={(e) => {
-              setAllowedIPsInput(e.target.value)
-              const ips = splitAllowedIPs(allowedIPLines(e.target.value)).valid
-              setGeoData((prev) => ({ ...prev, allowed_ips: ips }))
-            }}
+            onChange={(e) => setText(e.target.value)}
             placeholder={t('form.security.priorityAllowIPs.placeholder')}
             rows={3}
             className="w-full rounded-lg border border-blue-300 dark:border-blue-700 px-3 py-2 text-sm font-mono focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 transition-colors bg-white dark:bg-slate-700 dark:text-white dark:placeholder-slate-400"
@@ -54,7 +78,25 @@ export function PriorityAllowIPs({
             <p role="alert" className="mt-2 text-xs text-red-600 dark:text-red-400 break-all">
               {t('form.security.priorityAllowIPs.invalidEntries', { entries: invalidEntries.slice(0, 5).join(', ') })}
               {invalidEntries.length > 5 && ` (+${invalidEntries.length - 5})`}
+              {typedDomains.length > 0 && (
+                <span className="block mt-1">
+                  {t('dnsEntries:ipField.domainHint', { entries: typedDomains.slice(0, 5).join(', ') })}
+                </span>
+              )}
             </p>
+          )}
+          {ignored.length > 0 && (
+            <div className="mt-2">
+              <IgnoredEntries
+                entries={ignored}
+                disabled={!field.canWrite}
+                onMove={(entry, name) => {
+                  setText(withoutLine(allowedIPsInput, entry))
+                  setGeoData((prev) => ({ ...prev, allowed_hostnames: withName(prev.allowed_hostnames, name) }))
+                }}
+                onRemove={(entry) => setText(withoutLine(allowedIPsInput, entry))}
+              />
+            </div>
           )}
           <div className="mt-2 flex items-start gap-2">
             <svg className="w-4 h-4 text-blue-500 dark:text-blue-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -62,10 +104,18 @@ export function PriorityAllowIPs({
             </svg>
             <p className="text-xs text-blue-600 dark:text-blue-400">
               {t('form.security.priorityAllowIPs.note')}
-              {geoData.allowed_ips && geoData.allowed_ips.length > 0 && (
-                <span className="ml-1 font-medium">({t('form.security.priorityAllowIPs.registeredCount', { count: geoData.allowed_ips.length })})</span>
+              {ipCount + names.length > 0 && (
+                <span className="ml-1 font-medium">({t('form.security.priorityAllowIPs.registeredCount', { count: ipCount + names.length })})</span>
               )}
             </p>
+          </div>
+          <div className="mt-4 border-t border-blue-200 pt-4 dark:border-blue-800">
+            <DnsHostnamesField
+              {...field}
+              names={names}
+              onChange={(next) => setGeoData((prev) => ({ ...prev, allowed_hostnames: next }))}
+              note={t('dnsEntries:notes.priorityAllow')}
+            />
           </div>
         </div>
       </div>

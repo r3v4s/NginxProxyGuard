@@ -86,6 +86,7 @@ export function useProxyHostExtras() {
     if (
       (geoData.enabled && geoData.countries.length > 0) ||
       (geoData.allowed_ips?.length ?? 0) > 0 ||
+      (geoData.allowed_hostnames?.length ?? 0) > 0 ||
       geoData.disableGlobal === true
     ) {
       promises.push(
@@ -95,6 +96,7 @@ export function useProxyHostExtras() {
             mode: geoData.mode,
             countries: geoData.countries,
             allowed_ips: geoData.allowed_ips,
+            allowed_hostnames: geoData.allowed_hostnames,
             allow_private_ips: geoData.allow_private_ips,
             allow_search_bots: geoData.allow_search_bots,
             enabled: geoData.enabled && geoData.countries.length > 0,
@@ -158,18 +160,23 @@ export function useProxyHostExtras() {
         try {
           const hasGeoBlocking = geoData.enabled && geoData.countries.length > 0
           const hasPriorityAllowIPs = (geoData.allowed_ips?.length ?? 0) > 0
+          // Domains alone keep the record too: deleting it deletes them (#320).
+          const hasPriorityAllowDomains = (geoData.allowed_hostnames?.length ?? 0) > 0
           const isDisableGlobal = geoData.disableGlobal === true
 
-          if (hasGeoBlocking || hasPriorityAllowIPs || isDisableGlobal) {
+          if (hasGeoBlocking || hasPriorityAllowIPs || hasPriorityAllowDomains || isDisableGlobal) {
             // Persist a record for override (hasGeoBlocking), priority-allow
-            // IPs, or an explicit "disable global" opt-out. Deleting instead
-            // would fall back to inherit, so "disable" must be stored.
+            // IPs or domains, or an explicit "disable global" opt-out.
+            // Deleting instead would fall back to inherit, so "disable" must
+            // be stored.
             await setGeoRestriction(
               hostId,
               {
                 mode: geoData.mode,
                 countries: geoData.countries,
                 allowed_ips: geoData.allowed_ips,
+                // Left out until the record is read, which keeps the stored domains.
+                allowed_hostnames: geoData.allowed_hostnames,
                 allow_private_ips: geoData.allow_private_ips,
                 allow_search_bots: geoData.allow_search_bots,
                 enabled: hasGeoBlocking,

@@ -1,7 +1,7 @@
 import { AccessList, CreateAccessListRequest, RedirectHost, CreateRedirectHostRequest, GeoRestriction, CreateGeoRestrictionRequest } from '../types/access';
 import type { DNSConfirmRequest, DNSEntryStatus } from '../types/dnsEntries';
 import { getAuthHeaders } from './auth';
-import { apiDelete, apiGet, apiPost, apiPut } from './client';
+import { apiDelete, apiGet, apiPost, apiPut, responseError } from './client';
 
 const API_BASE = '/api/v1';
 
@@ -101,10 +101,8 @@ export async function setGeoRestriction(proxyHostId: string, data: CreateGeoRest
     headers: getAuthHeaders(),
     body: JSON.stringify(data),
   });
-  if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.error || 'Failed to set geo restriction');
-  }
+  // Keeps the 400's field and code, so the form marks the domain it names (#320).
+  if (!res.ok) throw await responseError(res, 'Failed to set geo restriction');
   return res.json();
 }
 

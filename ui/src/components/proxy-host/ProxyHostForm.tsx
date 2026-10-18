@@ -71,6 +71,7 @@ export function ProxyHostForm({ host, initialTab, onClose }: ProxyHostFormProps)
     dnsProviders,
     geoipStatus,
     countryCodes,
+    existingGeoRestriction,
 
     // Mutations
     mutation,
@@ -315,6 +316,7 @@ export function ProxyHostForm({ host, initialTab, onClose }: ProxyHostFormProps)
                 availableAuthProviders={availableAuthProviders}
                 geoipStatus={geoipStatus}
                 countryCodes={countryCodes}
+                geoRestriction={existingGeoRestriction}
               />
             )}
 

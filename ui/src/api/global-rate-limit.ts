@@ -1,4 +1,5 @@
-import { apiGet, apiPut } from './client'
+import { apiGet, apiPost, apiPut } from './client'
+import type { DNSConfirmRequest, DNSEntryStatus } from '../types/dnsEntries'
 import type { GlobalRateLimit, UpdateGlobalRateLimitRequest } from '../types/security'
 
 /**
@@ -16,4 +17,9 @@ export async function updateGlobalRateLimit(
   req: UpdateGlobalRateLimitRequest,
 ): Promise<GlobalRateLimit> {
   return apiPut<GlobalRateLimit>('/api/v1/settings/global-rate-limit', req)
+}
+
+/** Allows a rate limit exception domain in review again, with the values the operator was shown (#320). */
+export async function confirmGlobalRateLimitDNS(body: DNSConfirmRequest): Promise<DNSEntryStatus> {
+  return apiPost<DNSEntryStatus>('/api/v1/settings/global-rate-limit/dns-confirm', body)
 }

@@ -89,6 +89,12 @@ export interface GeoRestriction {
   disable_global: boolean;
   created_at: string;
   updated_at: string;
+  // Priority allow domains (#320); never null.
+  allowed_hostnames: string[];
+  // GET only: the domains' state, and the entries of allowed_ips the configs
+  // leave out (not an address, saved by an older version).
+  allowed_hostname_status?: DNSEntryStatus[];
+  allowed_ips_ignored?: string[];
 }
 
 export interface CreateGeoRestrictionRequest {
@@ -100,4 +106,6 @@ export interface CreateGeoRestrictionRequest {
   enabled?: boolean;
   challenge_mode?: boolean;
   disable_global?: boolean;
+  // Left out keeps the stored domains, [] clears them (#320).
+  allowed_hostnames?: string[];
 }

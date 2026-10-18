@@ -129,7 +129,7 @@
   },
   "settings": {
     "title": "Domain entries (DDNS)",
-    "description": "An access list can allow a domain name, such as a DDNS name, next to its IP rules. NPG looks each name up on a schedule and lets nginx allow only the addresses it found. These settings decide how often and how carefully that happens.",
+    "description": "Access lists, URI block exceptions, priority allow, rate limit exceptions and the global trusted IPs can take domain names (such as DDNS names) beside IPs. NPG looks the names up on a schedule and lets nginx allow only the addresses it finds. The settings below set how often and how carefully.",
     "loadError": "Could not load the domain entry settings: {{error}}",
     "cardTitle": "Settings",
     "groups": {
@@ -201,7 +201,7 @@
     "title": "Domains in use",
     "description": "Every domain a list uses, the addresses nginx allows for it now, and what is still waiting. Places you may not read show only as a count.",
     "loadError": "Could not load the domain entries: {{error}}",
-    "empty": "No list uses a domain yet. Add a domain such as partner.example.com to an access list rule and it shows here.",
+    "empty": "No list uses a domain yet. Add a domain such as partner.example.com to an access list or an exception list and it shows here.",
     "total": "{{count}} of at most {{max}} domains",
     "needsReview_one": "{{count}} needs review",
     "needsReview_other": "{{count}} need review",
@@ -214,9 +214,14 @@
       "actions": "Actions"
     },
     "useKinds": {
-      "access_list": "Access list"
+      "access_list": "Access list",
+      "uri_block": "URI block exception",
+      "priority_allow": "Priority allow",
+      "rate_limit": "Rate limit exception",
+      "trusted": "Global trusted"
     },
     "use": "{{kind}}: {{name}}",
+    "useGlobal": "{{kind}} (global)",
     "hiddenUses": "{{count}} other place(s)",
     "hiddenUsesHelp": "Used in places your role may not read.",
     "noUses": "No longer used. nginx may still allow it until the change is applied.",
@@ -249,5 +254,44 @@
       "other": "Apply finished: {{outcome}}",
       "error": "Could not apply: {{error}}"
     }
+  },
+  "field": {
+    "title": "Domains",
+    "help": "Add a domain whose address changes, such as a DDNS name: NPG looks it up on a schedule and uses the addresses it finds like the IPs of this list.",
+    "readOnly": "Your role may not change these domains.",
+    "confirmReloadRejected": "Allowed again, but nginx did not accept the new configuration. Check the reason below."
+  },
+  "input": {
+    "placeholder": "partner.example.com",
+    "add": "Add",
+    "remove": "Remove {{name}}",
+    "typed": "Typed: {{raw}}",
+    "savedAs": "Saved as {{name}}",
+    "ipInNameField": "Put an IP address in the IP field, not here.",
+    "duplicate": "This domain is already in the list.",
+    "empty": "No domains."
+  },
+  "listErrors": {
+    "limit": "Too many domains: {{detail}}",
+    "hostname_in_ip_field": "Put a domain in the domain field, not the IP field.",
+    "duplicate_hostname": "This domain is already in the list.",
+    "saveFailed": "Could not save the domains: {{detail}}",
+    "reloadRejected": "Saved, but nginx did not accept the new configuration. Check the reason below."
+  },
+  "ipField": {
+    "domainHint": "Domains go in the domain field below, not here: {{entries}}"
+  },
+  "ignored": {
+    "title": "Entries not applied",
+    "help": "Not an IP address or CIDR range, so nginx does not use them (saved by an older version). A domain can be moved to the domains. They stay as they are until you move or remove them, and a change takes effect when you save.",
+    "move": "Move to domain",
+    "remove": "Remove entry"
+  },
+  "notes": {
+    "uriBlock": "A domain exception only lets requests through the blocked paths. The WAF, bans and the other protections still apply.",
+    "uriBlockSkipped": "This host's Advanced Config asks for a login (auth_basic or auth_request), so its domain exceptions are not applied. Its exception IPs still apply.",
+    "priorityAllow": "A priority allow domain only bypasses the geo, cloud provider and bot blocks. Unlike an IP entry, it does not turn off the WAF.",
+    "rateLimit": "Requests from this domain's addresses are not rate limited. The WAF and bans still apply.",
+    "trusted": "A trusted domain does not bypass bans, the IP blocks of filter subscriptions or the WAF, and fail2ban and WAF auto-ban can still ban it. It does not pass the access list of a host with a login (ForwardAuth and the like), nor an address an access list denies outright. On hosts with the bot filter on, it bypasses the User-Agent blocks of filter subscriptions, as a trusted IP does. A device on your LAN can claim this domain's address (anyone can look it up) in X-Forwarded-For and be trusted on every host."
   }
 }

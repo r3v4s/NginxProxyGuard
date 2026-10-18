@@ -81,9 +81,14 @@ export interface DNSEntrySettings {
 /** One place a name is used, as the overview shows it. */
 export interface DNSEntryUse {
   scope: string;
+  /** access_list, uri_block, priority_allow, rate_limit or trusted. */
   kind: string;
   /** The key of this use's include file (npg_dns/<key>.allow), as nginx's messages name it. */
   key: string;
+  /**
+   * The list or proxy host the use belongs to. A global list's use has
+   * owner_id "global" and no name; the global trusted list's has neither.
+   */
   owner_id: string;
   owner_name: string;
 }

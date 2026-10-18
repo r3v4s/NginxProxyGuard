@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { listCertificates } from '../../../api/certificates'
 import { listDNSProviders } from '../../../api/dns-providers'
@@ -11,6 +11,8 @@ import type { ProxyHost, CreateProxyHostRequest } from '../../../types/proxy-hos
 import type { CreateCertificateRequest } from '../../../types/certificate'
 import type { BotFilterState, FormErrors, GeoDataState } from '../types'
 import { savableAllowedIPs } from '../tabs/security/priorityAllowEntries'
+import { dnsNeedsPolling } from '../../common/dns/dnsName'
+import { DNS_POLL_MS, dnsConfigKey } from '../../common/dns/dnsListField'
 
 /** Public return type is inferred from {@link useProxyHostFormState}. */
 export type ProxyHostFormStateResult = ReturnType<typeof useProxyHostFormState>
@@ -168,6 +170,10 @@ export function useProxyHostFormState(host: ProxyHost | null | undefined) {
     queryKey: ['geoRestriction', host?.id],
     queryFn: () => getGeoRestriction(host!.id).catch(() => null),
     enabled: !!host?.id,
+    // Only while a priority allow domain waits for its answer or for nginx
+    // (#320); the hydration below ignores a refetch that only moves that state.
+    refetchInterval: (query) =>
+      dnsNeedsPolling(query.state.data?.allowed_hostname_status ?? []) ? DNS_POLL_MS : false,
   })
 
   const { data: existingCloudProviderSettings } = useQuery({
@@ -213,22 +219,32 @@ export function useProxyHostFormState(host: ProxyHost | null | undefined) {
     }
   }, [existingBotFilter])
 
+  // Copies the record into the form when it loads and when it changes. A
+  // refetch that only moves the priority allow domains' state (#320) must not
+  // throw away what the operator is editing.
+  const hydratedGeoKey = useRef<string | null>(null)
   useEffect(() => {
-    if (existingGeoRestriction) {
-      setGeoData({
-        enabled: existingGeoRestriction.enabled && existingGeoRestriction.countries?.length > 0,
-        mode: existingGeoRestriction.mode,
-        countries: existingGeoRestriction.countries || [],
-        // An entry saved before the API checked them is shown in the text
-        // area (and flagged there) but not sent back, or the save would fail.
-        allowed_ips: savableAllowedIPs(existingGeoRestriction.allowed_ips || []),
-        allow_private_ips: existingGeoRestriction.allow_private_ips ?? true,
-        allow_search_bots: existingGeoRestriction.allow_search_bots ?? false,
-        challenge_mode: existingGeoRestriction.challenge_mode || false,
-        disableGlobal: existingGeoRestriction.disable_global ?? false,
-      })
-      setAllowedIPsInput((existingGeoRestriction.allowed_ips || []).join('\n'))
-    }
+    if (!existingGeoRestriction) return
+    const key = dnsConfigKey(existingGeoRestriction)
+    if (key === hydratedGeoKey.current) return
+    hydratedGeoKey.current = key
+    setGeoData({
+      enabled: existingGeoRestriction.enabled && existingGeoRestriction.countries?.length > 0,
+      mode: existingGeoRestriction.mode,
+      countries: existingGeoRestriction.countries || [],
+      // An entry saved before the API checked them is shown in the text area.
+      // One the server reports it leaves out (#320, allowed_ips_ignored) goes
+      // back as it is, which the API takes, until moved or removed; any other
+      // is not sent back, or the save would fail.
+      allowed_ips: savableAllowedIPs(existingGeoRestriction.allowed_ips || [], existingGeoRestriction.allowed_ips_ignored ?? []),
+      allow_private_ips: existingGeoRestriction.allow_private_ips ?? true,
+      allow_search_bots: existingGeoRestriction.allow_search_bots ?? false,
+      challenge_mode: existingGeoRestriction.challenge_mode || false,
+      disableGlobal: existingGeoRestriction.disable_global ?? false,
+      // Set only once read, so a save before that keeps the stored domains.
+      allowed_hostnames: existingGeoRestriction.allowed_hostnames ?? [],
+    })
+    setAllowedIPsInput((existingGeoRestriction.allowed_ips || []).join('\n'))
   }, [existingGeoRestriction])
 
   useEffect(() => {

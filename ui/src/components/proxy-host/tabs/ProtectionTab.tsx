@@ -51,12 +51,16 @@ import type {
   CreateSecurityHeadersRequest,
 } from '../../../types/security'
 import {
+  confirmProxyHostDNS,
   getRateLimit,
   updateRateLimit,
   getSecurityHeaders,
   updateSecurityHeaders,
 } from '../../../api/security'
+import { usePermissions } from '../../../hooks/usePermissions'
 import { InheritOverrideControl, type InheritOverrideValue } from '../../common/InheritOverrideControl'
+import { dnsNeedsPolling } from '../../common/dns/dnsName'
+import { DNS_POLL_MS, dnsNamesErrorsOf } from '../../common/dns/dnsListField'
 import { SecurityHeadersFields } from './security/SecurityHeadersFields'
 import { RateLimitFields } from './security/RateLimitFields'
 
@@ -261,10 +265,15 @@ function SecurityHeadersSection({ hostId }: { hostId: string }) {
 function RateLimitSection({ hostId }: { hostId: string }) {
   const { t } = useTranslation(['proxyHost', 'common'])
   const queryClient = useQueryClient()
+  const { can } = usePermissions()
   const { data, isLoading, error } = useQuery({
     queryKey: ['rate-limit', hostId],
     queryFn: () => getRateLimit(hostId),
     retry: false,
+    // Only while an exception domain waits for its answer or for nginx (#320).
+    // The form copies the record once, so a refetch never touches an edit.
+    refetchInterval: (query) =>
+      dnsNeedsPolling(query.state.data?.whitelist_hostname_status ?? []) ? DNS_POLL_MS : false,
   })
 
   const [formData, setFormData] = useState<CreateRateLimitRequest>({
@@ -291,6 +300,8 @@ function RateLimitSection({ hostId }: { hostId: string }) {
         limit_response: data.limit_response,
         whitelist_ips: data.whitelist_ips || '',
         disable_global: data.disable_global ?? false,
+        // Only once read: a save that leaves it out keeps the stored domains.
+        whitelist_hostnames: data.whitelist_hostnames ?? [],
       })
       setInitialized(true)
     } else if (error && !initialized) {
@@ -311,6 +322,12 @@ function RateLimitSection({ hostId }: { hostId: string }) {
   }, [mutation])
 
   useDebouncedSave(formData, handleSave, 1000, initialized)
+
+  // A refused exception domain is marked on its chip; other refusals keep
+  // their line under the fields (#320).
+  const nameErrors = mutation.isError
+    ? dnsNamesErrorsOf(mutation.error, 'whitelist_hostnames', mutation.variables?.whitelist_hostnames)
+    : []
 
   if (isLoading) return <div className="text-center py-4 text-sm text-slate-500">{t('common:status.loading')}</div>
 
@@ -371,8 +388,16 @@ function RateLimitSection({ hostId }: { hostId: string }) {
               limit_by: formData.limit_by ?? 'ip',
               limit_response: formData.limit_response ?? 429,
               whitelist_ips: formData.whitelist_ips ?? '',
+              whitelist_hostnames: formData.whitelist_hostnames ?? [],
             }}
             onChange={(patch) => setFormData((prev) => ({ ...prev, ...patch }))}
+            domains={{
+              statuses: data?.whitelist_hostname_status,
+              canWrite: can('proxy:write'),
+              onConfirm: (req) => confirmProxyHostDNS(hostId, req),
+              onRefetch: () => queryClient.invalidateQueries({ queryKey: ['rate-limit', hostId] }),
+              errors: nameErrors,
+            }}
           />
 
           {mutation.isPending && (
@@ -386,7 +411,7 @@ function RateLimitSection({ hostId }: { hostId: string }) {
           )}
           {/* Rejected saves used to vanish into console.error, so a 400 on the
               exception list read as "the toggle silently doesn't work" (#263). */}
-          {mutation.isError && (
+          {mutation.isError && nameErrors.length === 0 && (
             <p className="text-xs text-red-600 dark:text-red-400">
               {mutation.error instanceof Error ? mutation.error.message : t('common:status.error')}
             </p>

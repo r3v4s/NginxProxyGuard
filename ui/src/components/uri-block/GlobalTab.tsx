@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import type { URIMatchType } from '../../types/security';
 import type { GlobalURIBlock } from '../../api/security';
+import { DnsHostnamesField, type DnsListDomains } from '../common/dns/DnsHostnamesField';
 
 function getMatchTypeColor(matchType: URIMatchType): string {
   switch (matchType) {
@@ -43,6 +44,10 @@ interface GlobalTabProps {
   setPendingGlobalAllowPrivate: (v: boolean) => void;
   setPendingGlobalExceptionIPs: (v: string[]) => void;
   setPendingGlobalRules: (v: GlobalURIBlock['rules']) => void;
+  /** The exception domains as edited (#320), and their state, permission and confirm route. */
+  globalExceptionHostnames: string[];
+  setPendingGlobalExceptionHostnames: (v: string[]) => void;
+  globalDomains: DnsListDomains;
   handleSaveGlobalChanges: () => void;
   handleDiscardGlobalChanges: () => void;
 }
@@ -70,10 +75,13 @@ export function GlobalTab({
   setPendingGlobalAllowPrivate,
   setPendingGlobalExceptionIPs,
   setPendingGlobalRules,
+  globalExceptionHostnames,
+  setPendingGlobalExceptionHostnames,
+  globalDomains,
   handleSaveGlobalChanges,
   handleDiscardGlobalChanges,
 }: GlobalTabProps) {
-  const { t } = useTranslation('waf');
+  const { t } = useTranslation(['waf', 'dnsEntries']);
 
   if (globalLoading) {
     return (
@@ -364,6 +372,16 @@ export function GlobalTab({
               </span>
             )}
           </div>
+        </div>
+
+        {/* Global Exception Domains (#320) */}
+        <div className="border-t border-slate-200 dark:border-slate-700 pt-4 mt-4">
+          <DnsHostnamesField
+            {...globalDomains}
+            names={globalExceptionHostnames}
+            onChange={setPendingGlobalExceptionHostnames}
+            note={t('dnsEntries:notes.uriBlock')}
+          />
         </div>
 
         {/* Allow Private IPs */}

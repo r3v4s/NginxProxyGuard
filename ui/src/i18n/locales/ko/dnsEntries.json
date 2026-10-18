@@ -129,7 +129,7 @@
   },
   "settings": {
     "title": "도메인 항목(DDNS)",
-    "description": "접근 목록은 IP 규칙과 함께 도메인 이름(DDNS 이름 등)을 허용할 수 있습니다. NPG가 이름을 주기적으로 조회해, 찾은 주소만 nginx가 허용하게 합니다. 아래 설정은 얼마나 자주, 얼마나 조심스럽게 할지를 정합니다.",
+    "description": "접근 목록, URI 차단 예외, 우선 허용, 레이트 리밋 예외, 전역 신뢰 IP는 IP와 함께 도메인 이름(DDNS 이름 등)을 받을 수 있습니다. NPG가 이름을 주기적으로 조회해, 찾은 주소만 nginx가 허용하게 합니다. 아래 설정은 얼마나 자주, 얼마나 조심스럽게 할지를 정합니다.",
     "loadError": "도메인 항목 설정을 불러오지 못했습니다: {{error}}",
     "cardTitle": "설정",
     "groups": {
@@ -201,7 +201,7 @@
     "title": "쓰이는 도메인",
     "description": "목록이 쓰는 모든 도메인, 지금 nginx가 허용하는 주소, 아직 기다리는 것입니다. 읽을 권한이 없는 곳은 개수로만 보입니다.",
     "loadError": "도메인 항목을 불러오지 못했습니다: {{error}}",
-    "empty": "아직 도메인을 쓰는 목록이 없습니다. 접근 목록 규칙에 partner.example.com 같은 도메인을 넣으면 여기에 보입니다.",
+    "empty": "아직 도메인을 쓰는 목록이 없습니다. 접근 목록이나 예외 목록에 partner.example.com 같은 도메인을 넣으면 여기에 보입니다.",
     "total": "도메인 {{count}}개 / 최대 {{max}}개",
     "needsReview_other": "검토 필요 {{count}}개",
     "columns": {
@@ -213,9 +213,14 @@
       "actions": "동작"
     },
     "useKinds": {
-      "access_list": "접근 목록"
+      "access_list": "접근 목록",
+      "uri_block": "URI 차단 예외",
+      "priority_allow": "우선 허용",
+      "rate_limit": "레이트 리밋 예외",
+      "trusted": "전역 신뢰"
     },
     "use": "{{kind}}: {{name}}",
+    "useGlobal": "{{kind}} (전역)",
     "hiddenUses": "다른 곳 {{count}}곳",
     "hiddenUsesHelp": "내 역할로 읽을 수 없는 곳에서 쓰입니다.",
     "noUses": "더 이상 쓰이지 않습니다. 변경이 적용될 때까지 nginx가 아직 허용할 수 있습니다.",
@@ -248,5 +253,44 @@
       "other": "적용 결과: {{outcome}}",
       "error": "적용하지 못했습니다: {{error}}"
     }
+  },
+  "field": {
+    "title": "도메인",
+    "help": "DDNS 이름처럼 주소가 바뀌는 도메인을 넣으면, NPG가 주기적으로 조회해 찾은 주소를 이 목록의 IP처럼 씁니다.",
+    "readOnly": "이 도메인을 바꿀 권한이 없습니다.",
+    "confirmReloadRejected": "다시 허용했지만 nginx가 새 설정을 받아들이지 않았습니다. 아래 이유를 확인하세요."
+  },
+  "input": {
+    "placeholder": "partner.example.com",
+    "add": "추가",
+    "remove": "{{name}} 빼기",
+    "typed": "입력한 값: {{raw}}",
+    "savedAs": "{{name}}(으)로 저장됩니다",
+    "ipInNameField": "IP 주소는 이 칸이 아니라 IP 칸에 넣으세요.",
+    "duplicate": "이미 있는 도메인입니다.",
+    "empty": "도메인이 없습니다."
+  },
+  "listErrors": {
+    "limit": "도메인이 너무 많습니다: {{detail}}",
+    "hostname_in_ip_field": "도메인은 IP 칸이 아니라 도메인 칸에 넣으세요.",
+    "duplicate_hostname": "이미 있는 도메인입니다.",
+    "saveFailed": "도메인을 저장하지 못했습니다: {{detail}}",
+    "reloadRejected": "저장했지만 nginx가 새 설정을 받아들이지 않았습니다. 아래 이유를 확인하세요."
+  },
+  "ipField": {
+    "domainHint": "도메인은 이 칸이 아니라 아래 도메인 칸에 넣으세요: {{entries}}"
+  },
+  "ignored": {
+    "title": "적용되지 않는 항목",
+    "help": "IP 주소나 CIDR 범위가 아니라서 nginx가 쓰지 않는 항목입니다(예전 버전에서 저장됨). 도메인이면 도메인으로 옮길 수 있습니다. 옮기거나 지우기 전까지 그대로 남고, 저장해야 반영됩니다.",
+    "move": "도메인으로 옮기기",
+    "remove": "항목 삭제"
+  },
+  "notes": {
+    "uriBlock": "도메인 예외는 차단 경로만 통과시킵니다. WAF와 밴 같은 다른 보호는 그대로 적용됩니다.",
+    "uriBlockSkipped": "이 호스트는 고급 설정에 로그인(auth_basic, auth_request)이 있어 도메인 예외를 적용하지 않습니다. 예외 IP는 그대로 적용됩니다.",
+    "priorityAllow": "도메인 우선 허용은 지역·클라우드·봇 차단만 우회하고 WAF는 끄지 않습니다(IP 항목과 다름).",
+    "rateLimit": "이 도메인의 주소는 레이트 리밋을 받지 않습니다. WAF와 밴은 그대로 적용됩니다.",
+    "trusted": "도메인 신뢰는 밴·필터 구독 IP 차단·WAF를 우회하지 않으며 fail2ban·WAF 자동 차단 대상입니다. 로그인(ForwardAuth 등)이 있는 호스트의 접근 목록은 통과시키지 않고, 접근 목록이 명시로 막은 주소도 통과시키지 않습니다. 봇 필터가 켜진 호스트에서는 필터 구독의 User-Agent 차단을 우회합니다(IP로 넣은 신뢰와 같음). LAN 안의 기기는 X-Forwarded-For로 이 도메인의 주소(누구나 조회할 수 있음)를 사칭해 모든 호스트에서 신뢰를 얻을 수 있습니다."
   }
 }

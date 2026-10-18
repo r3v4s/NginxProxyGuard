@@ -94,6 +94,8 @@ export function useProxyHostForm(host: ProxyHost | null | undefined, onClose: ()
     dnsProviders: state.dnsProviders,
     geoipStatus: state.geoipStatus,
     countryCodes: state.countryCodes,
+    // The stored geo restriction, for its priority allow domains' state (#320)
+    existingGeoRestriction: state.existingGeoRestriction,
 
     // Submit + progress
     mutation: submit.mutation,

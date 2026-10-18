@@ -1,3 +1,5 @@
+import type { DNSEntryStatus } from './dnsEntries';
+
 // Rate Limit types
 export interface RateLimit {
   id: string;
@@ -12,6 +14,10 @@ export interface RateLimit {
   disable_global?: boolean;
   created_at: string;
   updated_at: string;
+  // Domains exempt like whitelist_ips (#320); never null. Their state comes
+  // with GET only.
+  whitelist_hostnames: string[];
+  whitelist_hostname_status?: DNSEntryStatus[];
 }
 
 export interface CreateRateLimitRequest {
@@ -23,6 +29,8 @@ export interface CreateRateLimitRequest {
   limit_response?: number;
   whitelist_ips?: string;
   disable_global?: boolean;
+  // Left out keeps the stored domains, [] clears them (#320).
+  whitelist_hostnames?: string[];
 }
 
 // Global rate-limit default (#198 slice 5) — singleton settings row.
@@ -34,6 +42,10 @@ export interface GlobalRateLimit {
   limit_by: string;
   limit_response: number;
   whitelist_ips?: string;
+  // Domains exempt like whitelist_ips (#320); never null. Their state comes
+  // with GET only.
+  whitelist_hostnames: string[];
+  whitelist_hostname_status?: DNSEntryStatus[];
 }
 
 export interface UpdateGlobalRateLimitRequest {
@@ -44,6 +56,8 @@ export interface UpdateGlobalRateLimitRequest {
   limit_by?: string;
   limit_response?: number;
   whitelist_ips?: string;
+  // Left out keeps the stored domains, [] clears them (#320).
+  whitelist_hostnames?: string[];
 }
 
 // Fail2ban types
@@ -321,6 +335,12 @@ export interface URIBlock {
   allow_private_ips: boolean;
   created_at: string;
   updated_at: string;
+  // Domains excepted like exception_ips (#320); never null.
+  exception_hostnames: string[];
+  // GET only: the domains' state, and whether this host leaves every
+  // exception domain out because its Advanced Config asks for a login.
+  exception_hostname_status?: DNSEntryStatus[];
+  exception_hostnames_skipped?: boolean;
 }
 
 export interface CreateURIBlockRequest {
@@ -328,6 +348,8 @@ export interface CreateURIBlockRequest {
   rules?: URIBlockRule[];
   exception_ips?: string[];
   allow_private_ips?: boolean;
+  // Left out keeps the stored domains, [] clears them (#320).
+  exception_hostnames?: string[];
 }
 
 export interface AddURIBlockRuleRequest {

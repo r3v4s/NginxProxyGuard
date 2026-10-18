@@ -1,13 +1,16 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getGlobalGeo, updateGlobalGeo } from '../api/global-geo'
+import { confirmGlobalGeoDNS, getGlobalGeo, updateGlobalGeo, type GlobalGeoRestriction } from '../api/global-geo'
 import { getCountryCodes } from '../api/access'
 import { getGeoIPStatus } from '../api/settings'
+import { usePermissions } from '../hooks/usePermissions'
 import type { GeoDataState } from './proxy-host/types'
 import { GeoRestrictionFields } from './proxy-host/tabs/security/GeoRestrictionFields'
 import { PriorityAllowIPs } from './proxy-host/tabs/security/PriorityAllowIPs'
 import { savableAllowedIPs } from './proxy-host/tabs/security/priorityAllowEntries'
+import { dnsNeedsPolling } from './common/dns/dnsName'
+import { DNS_POLL_MS, dnsConfigKey, dnsNamesErrorsOf, type DnsNamesError } from './common/dns/dnsListField'
 
 const EMPTY_GEO: GeoDataState = {
   enabled: false,
@@ -22,17 +25,22 @@ const EMPTY_GEO: GeoDataState = {
 export function GlobalGeoManager() {
   const { t } = useTranslation('waf')
   const queryClient = useQueryClient()
+  // The global default's PUT and its confirm route need waf:write (#320).
+  const { can } = usePermissions()
 
   const [geoData, setGeoData] = useState<GeoDataState>(EMPTY_GEO)
   const [allowedIPsInput, setAllowedIPsInput] = useState('')
   const [geoSearchTerm, setGeoSearchTerm] = useState('')
   const [dirty, setDirty] = useState(false)
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  const [nameErrors, setNameErrors] = useState<DnsNamesError[]>([])
 
   const { data: global, isLoading } = useQuery({
     queryKey: ['global-geo'],
     queryFn: getGlobalGeo,
-    refetchInterval: 60000,
+    // Faster only while a priority allow domain waits for its answer or for nginx.
+    refetchInterval: (query) =>
+      dnsNeedsPolling(query.state.data?.allowed_hostname_status ?? []) ? DNS_POLL_MS : 60000,
   })
 
   const { data: geoipStatus } = useQuery({
@@ -49,21 +57,27 @@ export function GlobalGeoManager() {
     enabled: !!isGeoIPAvailable,
   })
 
-  // Hydrate local state whenever the server record loads/refetches.
+  // Hydrate local state whenever the server record loads, and whenever it
+  // changes. A refetch that only moves the domains' state (#320) leaves an
+  // unsaved edit alone.
+  const hydratedKey = useRef<string | null>(null)
   useEffect(() => {
-    if (global) {
-      setGeoData({
-        enabled: global.enabled,
-        mode: global.mode,
-        countries: global.countries || [],
-        allowed_ips: savableAllowedIPs(global.allowed_ips || []),
-        allow_private_ips: global.allow_private_ips ?? true,
-        allow_search_bots: global.allow_search_bots ?? false,
-        challenge_mode: global.challenge_mode ?? false,
-      })
-      setAllowedIPsInput((global.allowed_ips || []).join('\n'))
-      setDirty(false)
-    }
+    if (!global) return
+    const key = dnsConfigKey(global)
+    if (key === hydratedKey.current) return
+    hydratedKey.current = key
+    setGeoData({
+      enabled: global.enabled,
+      mode: global.mode,
+      countries: global.countries || [],
+      allowed_ips: savableAllowedIPs(global.allowed_ips || [], global.allowed_ips_ignored ?? []),
+      allow_private_ips: global.allow_private_ips ?? true,
+      allow_search_bots: global.allow_search_bots ?? false,
+      challenge_mode: global.challenge_mode ?? false,
+      allowed_hostnames: global.allowed_hostnames ?? [],
+    })
+    setAllowedIPsInput((global.allowed_ips || []).join('\n'))
+    setDirty(false)
   }, [global])
 
   // Wrapped setters so any edit flips the dirty flag (reveals the save banner).
@@ -77,27 +91,34 @@ export function GlobalGeoManager() {
   }
 
   const mutation = useMutation({
-    mutationFn: () =>
-      updateGlobalGeo({
-        enabled: geoData.enabled,
-        mode: geoData.mode,
-        countries: geoData.countries,
-        allowed_ips: geoData.allowed_ips,
-        allow_private_ips: geoData.allow_private_ips,
-        allow_search_bots: geoData.allow_search_bots,
-        challenge_mode: geoData.challenge_mode,
-      }),
+    mutationFn: (req: Partial<GlobalGeoRestriction>) => updateGlobalGeo(req),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['global-geo'] })
       setDirty(false)
+      setNameErrors([])
       setSaveMessage({ type: 'success', message: t('globalGeo.saveSuccess') })
       setTimeout(() => setSaveMessage(null), 5000)
     },
-    onError: () => {
+    onError: (err, req) => {
+      // A refused domain is marked on its chip (#320).
+      setNameErrors(dnsNamesErrorsOf(err, 'allowed_hostnames', req.allowed_hostnames))
       setSaveMessage({ type: 'error', message: t('globalGeo.saveFailed') })
       setTimeout(() => setSaveMessage(null), 5000)
     },
   })
+
+  const save = () =>
+    mutation.mutate({
+      enabled: geoData.enabled,
+      mode: geoData.mode,
+      countries: geoData.countries,
+      allowed_ips: geoData.allowed_ips,
+      allow_private_ips: geoData.allow_private_ips,
+      allow_search_bots: geoData.allow_search_bots,
+      challenge_mode: geoData.challenge_mode,
+      // Left out until read, which keeps the stored domains.
+      allowed_hostnames: geoData.allowed_hostnames,
+    })
 
   const handleDiscard = () => {
     if (global) {
@@ -105,10 +126,11 @@ export function GlobalGeoManager() {
         enabled: global.enabled,
         mode: global.mode,
         countries: global.countries || [],
-        allowed_ips: savableAllowedIPs(global.allowed_ips || []),
+        allowed_ips: savableAllowedIPs(global.allowed_ips || [], global.allowed_ips_ignored ?? []),
         allow_private_ips: global.allow_private_ips ?? true,
         allow_search_bots: global.allow_search_bots ?? false,
         challenge_mode: global.challenge_mode ?? false,
+        allowed_hostnames: global.allowed_hostnames ?? [],
       })
       setAllowedIPsInput((global.allowed_ips || []).join('\n'))
     } else {
@@ -116,6 +138,7 @@ export function GlobalGeoManager() {
       setAllowedIPsInput('')
     }
     setDirty(false)
+    setNameErrors([])
   }
 
   if (isLoading) {
@@ -166,7 +189,7 @@ export function GlobalGeoManager() {
               {t('common:buttons.discard')}
             </button>
             <button
-              onClick={() => mutation.mutate()}
+              onClick={save}
               disabled={mutation.isPending}
               className="px-4 py-1.5 text-sm bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded font-medium transition-colors flex items-center gap-2"
             >
@@ -238,6 +261,14 @@ export function GlobalGeoManager() {
               setAllowedIPsInput={setAllowedIPsInputDirty}
               geoData={geoData}
               setGeoData={setGeoDataDirty}
+              domains={{
+                statuses: global?.allowed_hostname_status,
+                ignored: global?.allowed_ips_ignored,
+                canWrite: can('waf:write'),
+                onConfirm: confirmGlobalGeoDNS,
+                onRefetch: () => queryClient.invalidateQueries({ queryKey: ['global-geo'] }),
+                errors: nameErrors,
+              }}
             />
           )}
         </>

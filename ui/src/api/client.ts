@@ -72,6 +72,19 @@ export function isNginxReloadRefusal(err: unknown): err is ApiError {
   return err instanceof ApiError && err.status === 409 && err.code === 'nginx_reload_rejected'
 }
 
+/**
+ * The error of a failed response, for a module that calls fetch itself: the
+ * server's sentence (fallback when it sends none), with its code and the
+ * request field a 400 names (#320), so a form can mark that entry. Unlike
+ * handleResponse it changes nothing else about how the caller fails.
+ */
+export async function responseError(response: Response, fallback: string): Promise<ApiError> {
+  const body = (await response.json().catch(() => null)) as
+    | { error?: string; details?: string; code?: string; field?: string }
+    | null
+  return new ApiError(body?.error || fallback, response.status, body?.details, body?.code, undefined, body?.field)
+}
+
 export async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     if (response.status === 401) {

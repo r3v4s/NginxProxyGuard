@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
+  confirmProxyHostDNS,
   updateURIBlock,
   removeURIBlockRule,
   addURIBlockRule,
@@ -9,8 +10,12 @@ import {
   deleteURIBlock,
   type URIBlockWithHost,
 } from '../../api/security'
+import { isNginxReloadRefusal, type ApiError } from '../../api/client'
 import type { URIBlockRule, URIMatchType, AddURIBlockRuleRequest } from '../../types/security'
+import { usePermissions } from '../../hooks/usePermissions'
 import { ModalShell } from '../common/ModalShell'
+import { DnsHostnamesField } from '../common/dns/DnsHostnamesField'
+import { dnsNamesErrorsOf, type DnsNamesError } from '../common/dns/dnsListField'
 
 function getMatchTypeLabel(matchType: URIMatchType, t: (key: string) => string): string {
   switch (matchType) {
@@ -41,8 +46,10 @@ interface HostDetailModalProps {
 }
 
 export function HostDetailModal({ block: editingBlock, proxyHostsCount, onClose }: HostDetailModalProps) {
-  const { t, i18n } = useTranslation('waf')
+  const { t, i18n } = useTranslation(['waf', 'dnsEntries'])
   const queryClient = useQueryClient()
+  // The host's URI block PUT and its confirm route need proxy:write (#320).
+  const { can } = usePermissions()
   const [showAddRuleForm, setShowAddRuleForm] = useState(false)
   const [newPattern, setNewPattern] = useState('')
   const [newMatchType, setNewMatchType] = useState<URIMatchType>('prefix')
@@ -55,6 +62,38 @@ export function HostDetailModal({ block: editingBlock, proxyHostsCount, onClose 
     mutationFn: async ({ proxyHostId, data }: { proxyHostId: string; data: { enabled: boolean; rules: URIBlockRule[]; exception_ips: string[]; allow_private_ips: boolean } }) => updateURIBlock(proxyHostId, data),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['uri-blocks'] }) },
   })
+
+  // Exception domains (#320). Each change saves at once, like the IPs. The
+  // names shown are the edit until the refetched block carries it, and stay
+  // the edit after a refusal, so the refused chip is marked.
+  const [draftNames, setDraftNames] = useState<string[] | null>(null)
+  const [nameErrors, setNameErrors] = useState<DnsNamesError[]>([])
+  const [namesRefusal, setNamesRefusal] = useState<ApiError | null>(null)
+  const names = draftNames ?? editingBlock.exception_hostnames ?? []
+  const namesMutation = useMutation({
+    mutationFn: async (next: string[]) => updateURIBlock(editingBlock.proxy_host_id, { enabled: editingBlock.enabled, rules: editingBlock.rules, exception_ips: editingBlock.exception_ips, allow_private_ips: editingBlock.allow_private_ips, exception_hostnames: next }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['uri-blocks'] })
+      setDraftNames(null)
+    },
+    onError: async (err, next) => {
+      // Saved, but nginx refused to load it: show the saved state and why.
+      if (isNginxReloadRefusal(err)) {
+        setNamesRefusal(err)
+        await queryClient.invalidateQueries({ queryKey: ['uri-blocks'] })
+        setDraftNames(null)
+        return
+      }
+      const refused = dnsNamesErrorsOf(err, 'exception_hostnames', next)
+      setNameErrors(refused.length > 0 ? refused : [{ message: t('dnsEntries:listErrors.saveFailed', { detail: err instanceof Error ? err.message : '' }) }])
+    },
+  })
+  const changeNames = (next: string[]) => {
+    setDraftNames(next)
+    setNameErrors([])
+    setNamesRefusal(null)
+    namesMutation.mutate(next)
+  }
 
   const removeRuleMutation = useMutation({
     mutationFn: async ({ proxyHostId, ruleId }: { proxyHostId: string; ruleId: string }) => removeURIBlockRule(proxyHostId, ruleId),
@@ -225,6 +264,34 @@ export function HostDetailModal({ block: editingBlock, proxyHostsCount, onClose 
               ))}
               {editingBlock.exception_ips.length === 0 && (<span className="text-sm text-slate-500 dark:text-slate-400 italic">{t('uriBlock.hostModal.noExceptionIPs')}</span>)}
             </div>
+          </div>
+
+          {/* Exception domains (#320) */}
+          <div>
+            <DnsHostnamesField
+              names={names}
+              onChange={changeNames}
+              statuses={editingBlock.exception_hostname_status}
+              canWrite={can('proxy:write')}
+              disabled={namesMutation.isPending}
+              errors={nameErrors}
+              onConfirm={(req) => confirmProxyHostDNS(editingBlock.proxy_host_id, req)}
+              onRefetch={() => queryClient.invalidateQueries({ queryKey: ['uri-blocks'] })}
+              note={
+                <>
+                  <p>{t('dnsEntries:notes.uriBlock')}</p>
+                  {editingBlock.exception_hostnames_skipped && (
+                    <p data-testid="dns-exception-skipped" className="mt-1 font-medium text-amber-700 dark:text-amber-300">{t('dnsEntries:notes.uriBlockSkipped')}</p>
+                  )}
+                </>
+              }
+            />
+            {namesRefusal && (
+              <div role="status" className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800/60 dark:bg-amber-900/20 dark:text-amber-200">
+                <p>{t('dnsEntries:listErrors.reloadRejected')}</p>
+                {namesRefusal.details && <p className="mt-1 break-all font-mono text-xs">{namesRefusal.details}</p>}
+              </div>
+            )}
           </div>
 
           {/* Settings */}

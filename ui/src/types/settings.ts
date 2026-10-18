@@ -1,5 +1,5 @@
 import type { StorageStatus } from './storage';
-import type { DNSEntrySettings } from './dnsEntries';
+import type { DNSEntrySettings, DNSEntryStatus } from './dnsEntries';
 
 // Global Settings Types
 export interface GlobalSettings {
@@ -419,6 +419,12 @@ export interface SystemSettings {
   // Global Trusted IPs
   global_trusted_ips: string;
   global_trusted_ips_bypass_waf: boolean;
+  // Global trusted domains (#320); never null. GET also sends their state and
+  // the lines of global_trusted_ips the configs leave out (not an address,
+  // saved by an older version).
+  global_trusted_hostnames: string[];
+  global_trusted_hostname_status?: DNSEntryStatus[];
+  global_trusted_ips_ignored?: string[];
   // Trusted proxies (#278) — who NPG believes when a header names the client.
   trusted_proxy_cidrs: string;
   trusted_proxy_preset: string;
@@ -521,6 +527,8 @@ export interface UpdateSystemSettingsRequest {
   // Global Trusted IPs
   global_trusted_ips?: string;
   global_trusted_ips_bypass_waf?: boolean;
+  // Left out keeps the stored domains, [] clears them (#320).
+  global_trusted_hostnames?: string[];
   trusted_proxy_cidrs?: string;
   trusted_proxy_preset?: string;
   real_ip_header?: string;

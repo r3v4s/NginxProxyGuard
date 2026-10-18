@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -8,10 +8,14 @@ import {
   type URIBlockWithHost,
   getGlobalURIBlock,
   updateGlobalURIBlock,
+  confirmGlobalURIBlockDNS,
   type GlobalURIBlock
 } from '../api/security'
 import { fetchProxyHosts } from '../api/proxy-hosts'
 import { api } from '../api/client'
+import { usePermissions } from '../hooks/usePermissions'
+import { dnsNeedsPolling } from './common/dns/dnsName'
+import { DNS_POLL_MS, dnsConfigKey, dnsNamesErrorsOf, type DnsNamesError } from './common/dns/dnsListField'
 import type { URIBlockRule, URIMatchType } from '../types/security'
 import type { ProxyHost } from '../types/proxy-host'
 import { HostDetailModal } from './uri-block/HostDetailModal'
@@ -22,6 +26,8 @@ import { HistoryTab, type URIBlockHistoryEntry } from './uri-block/HistoryTab'
 export function URIBlockManager() {
   const { t } = useTranslation('waf')
   const queryClient = useQueryClient()
+  // The global URI block's PUT and its confirm route need waf:write (#320).
+  const { can } = usePermissions()
   const [activeTab, setActiveTab] = useState<'global' | 'rules' | 'history'>('global')
   const [hostFilter, setHostFilter] = useState<string>('all')
 
@@ -44,19 +50,24 @@ export function URIBlockManager() {
   const [pendingGlobalAllowPrivate, setPendingGlobalAllowPrivate] = useState<boolean | null>(null)
   const [pendingGlobalExceptionIPs, setPendingGlobalExceptionIPs] = useState<string[] | null>(null)
   const [pendingGlobalRules, setPendingGlobalRules] = useState<GlobalURIBlock['rules'] | null>(null)
+  const [pendingGlobalExceptionHostnames, setPendingGlobalExceptionHostnames] = useState<string[] | null>(null)
   const [globalSaveMessage, setGlobalSaveMessage] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  const [globalNameErrors, setGlobalNameErrors] = useState<DnsNamesError[]>([])
 
-  // Global URI block query
+  // Global URI block query. Both lists poll faster only while an exception
+  // domain waits for its answer or for nginx (#320).
   const { data: globalBlock, isLoading: globalLoading } = useQuery({
     queryKey: ['global-uri-block'],
     queryFn: getGlobalURIBlock,
-    refetchInterval: 60000,
+    refetchInterval: (query) =>
+      dnsNeedsPolling(query.state.data?.exception_hostname_status ?? []) ? DNS_POLL_MS : 60000,
   })
 
   const { data: blocks = [], isLoading, error } = useQuery({
     queryKey: ['uri-blocks'],
     queryFn: listAllURIBlocks,
-    refetchInterval: 60000,
+    refetchInterval: (query) =>
+      dnsNeedsPolling((query.state.data ?? []).flatMap((b) => b.exception_hostname_status ?? [])) ? DNS_POLL_MS : 60000,
   })
 
   // Fetch all proxy hosts for new host selection
@@ -89,14 +100,19 @@ export function URIBlockManager() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [blocks])
 
-  // Reset pending state when globalBlock data loads
+  // Reset pending state when globalBlock data loads or changes. A refetch that
+  // only moves the exception domains' state (#320) keeps the unsaved edits.
+  const globalBlockKey = useRef<string | null>(null)
   useEffect(() => {
-    if (globalBlock) {
-      setPendingGlobalEnabled(null)
-      setPendingGlobalAllowPrivate(null)
-      setPendingGlobalExceptionIPs(null)
-      setPendingGlobalRules(null)
-    }
+    if (!globalBlock) return
+    const key = dnsConfigKey(globalBlock)
+    if (key === globalBlockKey.current) return
+    globalBlockKey.current = key
+    setPendingGlobalEnabled(null)
+    setPendingGlobalAllowPrivate(null)
+    setPendingGlobalExceptionIPs(null)
+    setPendingGlobalRules(null)
+    setPendingGlobalExceptionHostnames(null)
   }, [globalBlock])
 
   // Computed values for global block (show pending if exists, otherwise original)
@@ -104,12 +120,14 @@ export function URIBlockManager() {
   const effectiveGlobalAllowPrivate = pendingGlobalAllowPrivate !== null ? pendingGlobalAllowPrivate : (globalBlock?.allow_private_ips ?? true)
   const effectiveGlobalExceptionIPs = pendingGlobalExceptionIPs !== null ? pendingGlobalExceptionIPs : (globalBlock?.exception_ips ?? [])
   const effectiveGlobalRules = pendingGlobalRules !== null ? pendingGlobalRules : (globalBlock?.rules ?? [])
+  const effectiveGlobalExceptionHostnames = pendingGlobalExceptionHostnames ?? globalBlock?.exception_hostnames ?? []
 
   // Check if there are pending changes
   const hasGlobalPendingChanges = pendingGlobalEnabled !== null ||
     pendingGlobalAllowPrivate !== null ||
     pendingGlobalExceptionIPs !== null ||
-    pendingGlobalRules !== null
+    pendingGlobalRules !== null ||
+    pendingGlobalExceptionHostnames !== null
 
   // Get unique hosts for filter
   const hosts = [...new Set(blocks.map(b => b.domain_names[0]))].sort()
@@ -216,24 +234,32 @@ export function URIBlockManager() {
 
   // Save global changes
   const handleSaveGlobalChanges = async () => {
+    const req: Partial<GlobalURIBlock> = {
+      enabled: effectiveGlobalEnabled,
+      rules: effectiveGlobalRules,
+      exception_ips: effectiveGlobalExceptionIPs,
+      allow_private_ips: effectiveGlobalAllowPrivate,
+    }
+    // The domains go only when edited: left out, the stored ones stay (#320).
+    const sentNames = pendingGlobalExceptionHostnames
+    if (sentNames !== null) req.exception_hostnames = sentNames
     try {
-      await updateGlobalMutation.mutateAsync({
-        enabled: effectiveGlobalEnabled,
-        rules: effectiveGlobalRules,
-        exception_ips: effectiveGlobalExceptionIPs,
-        allow_private_ips: effectiveGlobalAllowPrivate,
-      })
+      await updateGlobalMutation.mutateAsync(req)
       setPendingGlobalEnabled(null)
       setPendingGlobalAllowPrivate(null)
       setPendingGlobalExceptionIPs(null)
       setPendingGlobalRules(null)
+      setPendingGlobalExceptionHostnames(null)
+      setGlobalNameErrors([])
       const hostCount = proxyHosts.length
       setGlobalSaveMessage({
         type: 'success',
         message: t('uriBlock.global.saveSuccess', { count: hostCount }) || `Settings saved and applied to ${hostCount} hosts`,
       })
       setTimeout(() => setGlobalSaveMessage(null), 5000)
-    } catch {
+    } catch (err) {
+      // A refused domain is marked on its chip (#320).
+      setGlobalNameErrors(dnsNamesErrorsOf(err, 'exception_hostnames', sentNames))
       setGlobalSaveMessage({
         type: 'error',
         message: t('uriBlock.global.saveFailed') || 'Failed to save settings',
@@ -248,6 +274,8 @@ export function URIBlockManager() {
     setPendingGlobalAllowPrivate(null)
     setPendingGlobalExceptionIPs(null)
     setPendingGlobalRules(null)
+    setPendingGlobalExceptionHostnames(null)
+    setGlobalNameErrors([])
   }
 
   if (isLoading) {
@@ -371,6 +399,15 @@ export function URIBlockManager() {
           setPendingGlobalAllowPrivate={setPendingGlobalAllowPrivate}
           setPendingGlobalExceptionIPs={setPendingGlobalExceptionIPs}
           setPendingGlobalRules={setPendingGlobalRules}
+          globalExceptionHostnames={effectiveGlobalExceptionHostnames}
+          setPendingGlobalExceptionHostnames={setPendingGlobalExceptionHostnames}
+          globalDomains={{
+            statuses: globalBlock?.exception_hostname_status,
+            canWrite: can('waf:write'),
+            onConfirm: confirmGlobalURIBlockDNS,
+            onRefetch: () => queryClient.invalidateQueries({ queryKey: ['global-uri-block'] }),
+            errors: globalNameErrors,
+          }}
           handleSaveGlobalChanges={handleSaveGlobalChanges}
           handleDiscardGlobalChanges={handleDiscardGlobalChanges}
         />

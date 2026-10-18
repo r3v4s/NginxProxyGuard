@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next'
+import { DnsHostnamesField, type DnsListDomains } from '../../../common/dns/DnsHostnamesField'
 
 // The value fields shared by the per-host rate limit and the global default.
 // The nginx limit_req zone name is derived per-host server-side, so it is not
@@ -9,20 +10,25 @@ export interface RateLimitFieldValues {
   limit_by: string
   limit_response: number
   whitelist_ips: string
+  // Domains exempt like whitelist_ips (#320).
+  whitelist_hostnames: string[]
 }
 
 interface RateLimitFieldsProps {
   values: RateLimitFieldValues
   onChange: (patch: Partial<RateLimitFieldValues>) => void
+  /** The exception domains' state, permission and confirm route, from the screen that saves them. */
+  domains: DnsListDomains
 }
 
 /**
  * The editable rate-limit fields (requests/s, burst, limit-by, response code,
- * whitelist). Shared between the per-host override (ProtectionTab) and the
- * global default manager so both stay in lock-step (#198 slice 5).
+ * whitelist IPs and domains). Shared between the per-host override
+ * (ProtectionTab) and the global default manager so both stay in lock-step
+ * (#198 slice 5).
  */
-export function RateLimitFields({ values, onChange }: RateLimitFieldsProps) {
-  const { t } = useTranslation(['proxyHost'])
+export function RateLimitFields({ values, onChange, domains }: RateLimitFieldsProps) {
+  const { t } = useTranslation(['proxyHost', 'dnsEntries'])
 
   return (
     <div className="space-y-4">
@@ -80,6 +86,13 @@ export function RateLimitFields({ values, onChange }: RateLimitFieldsProps) {
           className="w-full px-3 py-2 text-sm border border-slate-300 dark:border-slate-600 rounded-lg focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 transition-colors bg-white dark:bg-slate-700 dark:text-white dark:placeholder-slate-400"
         />
       </div>
+
+      <DnsHostnamesField
+        {...domains}
+        names={values.whitelist_hostnames}
+        onChange={(names) => onChange({ whitelist_hostnames: names })}
+        note={t('dnsEntries:notes.rateLimit')}
+      />
     </div>
   )
 }

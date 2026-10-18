@@ -16,7 +16,9 @@ import type {
   LogFileViewResponse,
   LogFileLocation,
 } from '../types/settings';
+import type { DNSConfirmRequest, DNSEntryStatus } from '../types/dnsEntries';
 import { getAuthHeaders } from './auth';
+import { apiPost, responseError } from './client';
 
 const API_BASE = '/api/v1';
 
@@ -299,11 +301,16 @@ export async function updateSystemSettings(data: UpdateSystemSettingsRequest): P
   if (!res.ok) {
     // Keep the server's sentence: the trusted-proxy validation answers 400 with
     // the offending value and why it was refused, and a generic message here
-    // would make every one of those invisible.
-    const error = await res.json().catch(() => ({ error: 'Failed to update system settings' }));
-    throw new Error(error.error || 'Failed to update system settings');
+    // would make every one of those invisible. Its field and code come along,
+    // so the trusted list marks the domain a 400 names (#320).
+    throw await responseError(res, 'Failed to update system settings');
   }
   return res.json();
+}
+
+/** Allows a global trusted domain in review again, with the values the operator was shown (#320). */
+export async function confirmTrustedDNS(body: DNSConfirmRequest): Promise<DNSEntryStatus> {
+  return apiPost<DNSEntryStatus>(`${API_BASE}/system-settings/trusted-dns-confirm`, body);
 }
 
 export async function getGeoIPStatus(): Promise<GeoIPStatus> {

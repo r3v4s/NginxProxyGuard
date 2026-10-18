@@ -13,8 +13,9 @@ import { CollapsibleSection } from './security/CollapsibleSection'
 import { useTranslation } from 'react-i18next'
 import { HelpTip } from '../../common/HelpTip'
 import { Link } from 'react-router-dom'
-import { getFail2ban, updateFail2ban } from '../../../api/security'
-import type { AccessListItem } from '../../../types/access'
+import { confirmProxyHostDNS, getFail2ban, updateFail2ban } from '../../../api/security'
+import type { AccessListItem, GeoRestriction } from '../../../types/access'
+import { usePermissions } from '../../../hooks/usePermissions'
 import { DnsLoginBypassWarning } from '../../common/dns/DnsLoginBypassWarning'
 import { advancedConfigHasAuth } from '../../common/dns/advancedConfigAuth'
 
@@ -52,6 +53,8 @@ interface SecurityTabProps {
   }>
   geoipStatus: { status: string } | undefined
   countryCodes: Record<string, string> | undefined
+  /** The stored geo restriction: its priority allow domains' state (#320). */
+  geoRestriction?: GeoRestriction | null
 }
 
 export function SecurityTabContent({
@@ -78,9 +81,11 @@ export function SecurityTabContent({
   availableAuthProviders,
   geoipStatus,
   countryCodes,
+  geoRestriction,
 }: SecurityTabProps) {
   const { t } = useTranslation('proxyHost')
   const queryClient = useQueryClient()
+  const { can } = usePermissions()
 
   // ForwardAuth and managed challenges (geo/cloud CAPTCHA) both emit an
   // auth_request in `location /`; nginx allows only one. Enforce mutual
@@ -173,6 +178,14 @@ export function SecurityTabContent({
           setAllowedIPsInput={setAllowedIPsInput}
           geoData={geoData}
           setGeoData={setGeoData}
+          domains={{
+            statuses: geoRestriction?.allowed_hostname_status,
+            ignored: geoRestriction?.allowed_ips_ignored,
+            canWrite: can('proxy:write'),
+            // A new host has no saved domain, so nothing to confirm yet.
+            onConfirm: (req) => confirmProxyHostDNS(hostId ?? '', req),
+            onRefetch: () => queryClient.invalidateQueries({ queryKey: ['geoRestriction', hostId] }),
+          }}
         />
       </CollapsibleSection>
 

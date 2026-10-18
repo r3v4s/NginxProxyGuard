@@ -22,7 +22,9 @@ import type {
   CreateURIBlockRequest,
   AddURIBlockRuleRequest,
 } from '../types/security';
+import type { DNSConfirmRequest, DNSEntryStatus } from '../types/dnsEntries';
 import { getAuthHeaders } from './auth';
+import { apiPost, responseError } from './client';
 
 const API_BASE = '/api/v1';
 
@@ -44,9 +46,9 @@ export async function updateRateLimit(proxyHostId: string, data: CreateRateLimit
   if (!res.ok) {
     // A 400 here names the exception-list entry the server rejected (#263) —
     // dropping the body left the operator staring at a generic failure with a
-    // value only the error message had ever mentioned.
-    const body = await res.json().catch(() => ({}) as { error?: string });
-    throw new Error(body.error || 'Failed to update rate limit config');
+    // value only the error message had ever mentioned. It keeps the field it
+    // names too, so the form marks that domain (#320).
+    throw await responseError(res, 'Failed to update rate limit config');
   }
   return res.json();
 }
@@ -57,6 +59,15 @@ export async function deleteRateLimit(proxyHostId: string): Promise<void> {
     headers: getAuthHeaders(),
   });
   if (!res.ok) throw new Error('Failed to delete rate limit config');
+}
+
+/**
+ * Allows a domain in review again, with the values the operator was shown
+ * (#320): one of the host's URI block exceptions, priority allow or rate limit
+ * exceptions.
+ */
+export async function confirmProxyHostDNS(proxyHostId: string, body: DNSConfirmRequest): Promise<DNSEntryStatus> {
+  return apiPost<DNSEntryStatus>(`${API_BASE}/proxy-hosts/${proxyHostId}/dns-confirm`, body);
 }
 
 // Fail2ban API
@@ -313,7 +324,8 @@ export async function updateURIBlock(
     headers: getAuthHeaders(),
     body: JSON.stringify(data),
   });
-  if (!res.ok) throw new Error('Failed to update URI block config');
+  // Keeps the 400's field and code, so the form marks the domain it names (#320).
+  if (!res.ok) throw await responseError(res, 'Failed to update URI block config');
   return res.json();
 }
 
@@ -402,6 +414,10 @@ export interface GlobalURIBlock {
   allow_private_ips: boolean;
   created_at?: string;
   updated_at?: string;
+  // Exception domains (#320): left out of a PUT keeps them, [] clears them.
+  // GET also sends their state.
+  exception_hostnames?: string[];
+  exception_hostname_status?: DNSEntryStatus[];
 }
 
 export async function getGlobalURIBlock(): Promise<GlobalURIBlock> {
@@ -418,8 +434,14 @@ export async function updateGlobalURIBlock(data: Partial<GlobalURIBlock>): Promi
     headers: getAuthHeaders(),
     body: JSON.stringify(data),
   });
-  if (!res.ok) throw new Error('Failed to update global URI block config');
+  // Keeps the 400's field and code, so the screen marks the domain it names (#320).
+  if (!res.ok) throw await responseError(res, 'Failed to update global URI block config');
   return res.json();
+}
+
+/** Allows a global URI block exception domain in review again, with the values the operator was shown (#320). */
+export async function confirmGlobalURIBlockDNS(body: DNSConfirmRequest): Promise<DNSEntryStatus> {
+  return apiPost<DNSEntryStatus>(`${API_BASE}/global-uri-block/dns-confirm`, body);
 }
 
 export async function addGlobalURIBlockRule(rule: AddURIBlockRuleRequest): Promise<GlobalURIBlock> {
