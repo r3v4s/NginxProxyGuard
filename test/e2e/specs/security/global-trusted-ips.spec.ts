@@ -80,13 +80,18 @@ test.describe('Global Trusted IPs', () => {
       expect(syncResult.reload_success).toBe(true);
     });
 
-    test('should handle invalid IP formats gracefully', async () => {
-      const trustedIps = 'not-an-ip\n192.168.1.100\nabc.def.ghi.jkl';
-      await apiHelper.updateSystemSettings({
-        global_trusted_ips: trustedIps,
-      });
+    test('should refuse a new line that is not an IP or CIDR range', async () => {
+      await apiHelper.updateSystemSettings({ global_trusted_ips: '192.0.2.100' });
 
-      // Config generation should still succeed (invalid entries filtered out)
+      // A new line must be an IP or a CIDR range (a domain goes in
+      // global_trusted_hostnames); the refused save changes nothing.
+      await expect(apiHelper.updateSystemSettings({
+        global_trusted_ips: 'not-an-ip\n192.0.2.100\nabc.def.ghi.jkl',
+      })).rejects.toThrow('global_trusted_ips[0]');
+
+      const settings = await apiHelper.getSystemSettings();
+      expect(settings.global_trusted_ips).toBe('192.0.2.100');
+
       const syncResult = await apiHelper.syncAllConfigs();
       expect(syncResult.test_success).toBe(true);
       expect(syncResult.reload_success).toBe(true);
