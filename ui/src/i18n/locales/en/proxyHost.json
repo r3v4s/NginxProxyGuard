@@ -5,6 +5,8 @@
     "showDetails": "Show Details",
     "hideDetails": "Hide Details",
     "reloadRejected": "The host is saved, but nginx did not accept the new configuration. Check the reason below.",
+    "geoNotSaved": "The host is saved, but its GeoIP restriction and priority allow were not: {{detail}}",
+    "geoNotSavedOnCreate": "The host is created, but its GeoIP restriction and priority allow were not saved: {{detail}}. Open the host to set them again.",
     "steps": {
       "server": "Processing on Server",
       "serverDesc": "Saving to DB, generating config, testing, reloading Nginx...",

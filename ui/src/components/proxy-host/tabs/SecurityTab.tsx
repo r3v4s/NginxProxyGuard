@@ -18,6 +18,7 @@ import type { AccessListItem, GeoRestriction } from '../../../types/access'
 import { usePermissions } from '../../../hooks/usePermissions'
 import { DnsLoginBypassWarning } from '../../common/dns/DnsLoginBypassWarning'
 import { advancedConfigHasAuth } from '../../common/dns/advancedConfigAuth'
+import type { DnsNamesError } from '../../common/dns/dnsListField'
 
 interface SecurityTabProps {
   hostId?: string
@@ -55,6 +56,8 @@ interface SecurityTabProps {
   countryCodes: Record<string, string> | undefined
   /** The stored geo restriction: its priority allow domains' state (#320). */
   geoRestriction?: GeoRestriction | null
+  /** What the last save's geo restriction refused in the priority allow domains (#320). */
+  priorityAllowErrors?: readonly DnsNamesError[]
 }
 
 export function SecurityTabContent({
@@ -82,6 +85,7 @@ export function SecurityTabContent({
   geoipStatus,
   countryCodes,
   geoRestriction,
+  priorityAllowErrors,
 }: SecurityTabProps) {
   const { t } = useTranslation('proxyHost')
   const queryClient = useQueryClient()
@@ -185,6 +189,7 @@ export function SecurityTabContent({
             // A new host has no saved domain, so nothing to confirm yet.
             onConfirm: (req) => confirmProxyHostDNS(hostId ?? '', req),
             onRefetch: () => queryClient.invalidateQueries({ queryKey: ['geoRestriction', hostId] }),
+            errors: priorityAllowErrors,
           }}
         />
       </CollapsibleSection>

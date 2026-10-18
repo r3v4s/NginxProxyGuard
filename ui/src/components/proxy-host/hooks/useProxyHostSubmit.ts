@@ -10,6 +10,7 @@ import { ApiError, isNginxReloadRefusal } from '../../../api/client'
 import type { CreateProxyHostRequest, ProxyHost } from '../../../types/proxy-host'
 import { isFormValid, normalizeDomains, validateProxyHostForm } from './proxyHostValidation'
 import { allowedAgentsSaveIssue } from '../tabs/security/allowedAgents'
+import { dnsNamesErrorsOf, type DnsNamesError } from '../../common/dns/dnsListField'
 import type { ProxyHostCertificate } from './useProxyHostCertificate'
 import type { ProxyHostExtras } from './useProxyHostExtras'
 import type { ProxyHostFormStateResult } from './useProxyHostFormState'
@@ -22,8 +23,9 @@ export interface SaveProgressState {
   errorDetails: string | null
   /**
    * Set when the host is saved but nginx refused to load it (409
-   * nginx_reload_rejected): the modal stays open on the warning, and closing
-   * it closes the form, since the host exists.
+   * nginx_reload_rejected), or a create's geo restriction was not saved
+   * (#320): the modal stays open on the warning, and closing it closes the
+   * form, since the host exists.
    */
   warning?: string | null
   warningDetails?: string | null
@@ -69,6 +71,10 @@ export function useProxyHostSubmit({
   const isStreamMode = state.formData.proxy_type === 'stream'
 
   const [saveProgress, setSaveProgress] = useState<SaveProgressState>(INITIAL_PROGRESS)
+  // What the last save's geo restriction refused in the priority allow domains
+  // (#320), worked out against the names that save sent: marked on the chip,
+  // or under the list for a limit.
+  const [geoNameErrors, setGeoNameErrors] = useState<DnsNamesError[]>([])
   // Switching DDNS off used to drop the managed records from NPG only, silently
   // leaving the public DNS entry pointing here. Ask first, exactly like the
   // DDNS record menu does. (#219)
@@ -104,8 +110,8 @@ export function useProxyHostSubmit({
     // Step 1: Additional settings
     setSaveProgress((prev) => ({ ...prev, currentStep: 1 }))
 
-    const savedAny = proxyType === 'stream'
-      ? false
+    const { savedAny, geoError } = proxyType === 'stream'
+      ? { savedAny: false, geoError: undefined }
       : await extras.saveExtrasForCreate({
         hostId,
         botFilterData: state.botFilterData,
@@ -140,6 +146,19 @@ export function useProxyHostSubmit({
     // The form is the only place a brand-new tag is typed, so the group
     // panel's buckets go stale here unless it is invalidated too.
     queryClient.invalidateQueries({ queryKey: ['proxy-host-groups'] })
+    if (geoError) {
+      // The host is live without the geo restriction it was created with, and
+      // Create again would only answer that the domain exists: say what was
+      // not saved. Closing it closes the form, as for the warning below (#320).
+      const reload = warning ? [t('saveProgress.reloadRejected'), warning.message, warning.details] : []
+      setSaveProgress((prev) => ({
+        ...prev,
+        currentStep: 1,
+        warning: t('saveProgress.geoNotSavedOnCreate', { detail: geoError.message }),
+        warningDetails: reload.filter(Boolean).join('\n\n') || null,
+      }))
+      return
+    }
     if (warning) {
       const warningDetails = [warning.message, warning.details].filter(Boolean).join('\n\n')
       setSaveProgress((prev) => ({ ...prev, currentStep: 2, warning: t('saveProgress.reloadRejected'), warningDetails }))
@@ -190,8 +209,9 @@ export function useProxyHostSubmit({
       // Step 1: Additional settings
       setSaveProgress((prev) => ({ ...prev, currentStep: 1 }))
 
+      let geoError: Error | undefined
       if (variables.data.proxy_type !== 'stream') {
-        await extras.saveExtrasForUpdate({
+        const result = await extras.saveExtrasForUpdate({
           hostId: variables.id,
           botFilterData: state.botFilterData,
           geoData: state.geoData,
@@ -201,6 +221,8 @@ export function useProxyHostSubmit({
           cloudDisableGlobal: state.cloudDisableGlobal,
           existingGeoRestriction: state.existingGeoRestriction,
         })
+        geoError = result.geoError
+        if (geoError) setGeoNameErrors(dnsNamesErrorsOf(geoError, 'allowed_hostnames', state.geoData.allowed_hostnames))
       }
 
       // Single nginx config generation + test + reload (all settings applied at once)
@@ -211,6 +233,16 @@ export function useProxyHostSubmit({
           ...prev,
           ...errorToProgress(err, 'Failed to apply nginx config'),
         }))
+        return
+      }
+
+      if (geoError) {
+        // The rest is saved and applied. The form stays open on what the geo
+        // save refused, marked in its priority allow (#320).
+        queryClient.invalidateQueries({ queryKey: ['proxy-hosts'] })
+        queryClient.invalidateQueries({ queryKey: ['proxy-host-groups'] })
+        const shown = { ...errorToProgress(geoError, ''), error: t('saveProgress.geoNotSaved', { detail: geoError.message }) }
+        setSaveProgress((prev) => ({ ...prev, ...shown }))
         return
       }
 
@@ -266,6 +298,7 @@ export function useProxyHostSubmit({
   async function runSubmit(ddnsRemoveProvider: boolean) {
     // Step 0: Validation — open modal first, close on early return
     setSaveProgress({ isOpen: true, currentStep: 0, error: null, errorDetails: null })
+    setGeoNameErrors([])
 
     const newErrors = validateProxyHostForm({
       formData: state.formData,
@@ -381,6 +414,7 @@ export function useProxyHostSubmit({
   return {
     saveProgress,
     closeSaveProgress,
+    geoNameErrors,
     handleSubmit,
     mutation,
     ddnsConfirmOpen,

@@ -5,6 +5,8 @@
     "showDetails": "상세 보기",
     "hideDetails": "상세 숨기기",
     "reloadRejected": "호스트는 저장됐지만 nginx가 새 설정을 받아들이지 않았습니다. 아래 이유를 확인하세요.",
+    "geoNotSaved": "호스트는 저장됐지만 GeoIP 제한과 우선 허용은 저장되지 않았습니다: {{detail}}",
+    "geoNotSavedOnCreate": "호스트는 만들어졌지만 GeoIP 제한과 우선 허용은 저장되지 않았습니다: {{detail}}. 호스트를 열어 다시 설정하세요.",
     "steps": {
       "server": "서버 처리 중",
       "serverDesc": "DB 저장, 설정 생성, 테스트, Nginx 리로드 중...",

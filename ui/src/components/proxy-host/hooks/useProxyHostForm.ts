@@ -101,6 +101,7 @@ export function useProxyHostForm(host: ProxyHost | null | undefined, onClose: ()
     mutation: submit.mutation,
     saveProgress: submit.saveProgress,
     closeSaveProgress: submit.closeSaveProgress,
+    geoNameErrors: submit.geoNameErrors,
     handleSubmit: submit.handleSubmit,
     ddnsConfirmOpen: submit.ddnsConfirmOpen,
     confirmDdnsRemoval: submit.confirmDdnsRemoval,

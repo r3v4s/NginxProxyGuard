@@ -15,6 +15,19 @@ function botFilterPayload(data: BotFilterState): CreateBotFilterRequest {
   return { ...rest, disable_global: disableGlobal === true }
 }
 
+function asError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err))
+}
+
+/**
+ * Why the geo restriction was not saved (#320): the domain limits answer 400,
+ * so the form shows it rather than report success. Undefined when it was saved
+ * or not sent.
+ */
+interface GeoSaveResult {
+  geoError?: Error
+}
+
 /** Arguments required by {@link ProxyHostExtras.saveExtrasForCreate}. */
 interface SaveExtrasCreateArgs {
   hostId: string
@@ -51,12 +64,13 @@ export function useProxyHostExtras() {
   /**
    * For the CREATE flow: a freshly-created host has no prior settings,
    * so we only need to issue API calls for the extras that are actually
-   * set. Errors are logged but do NOT abort the flow — the primary host
-   * is already created, losing a bot filter write is recoverable.
+   * set. Errors do NOT abort the flow — the primary host is already
+   * created, losing a bot filter write is recoverable. They are logged,
+   * except the geo restriction's, which is returned (#320).
    *
    * Runs all applicable calls in parallel.
    *
-   * @returns true when at least one extra was saved (so the caller
+   * @returns savedAny: at least one extra was sent (so the caller
    *          knows it needs to regenerate the nginx config afterwards).
    */
   async function saveExtrasForCreate({
@@ -67,8 +81,9 @@ export function useProxyHostExtras() {
     cloudProviderChallengeMode,
     cloudProviderAllowSearchBots,
     cloudDisableGlobal,
-  }: SaveExtrasCreateArgs): Promise<boolean> {
+  }: SaveExtrasCreateArgs): Promise<GeoSaveResult & { savedAny: boolean }> {
     const promises: Promise<unknown>[] = []
+    let geoError: Error | undefined
 
     if (
       botFilterData.enabled ||
@@ -104,7 +119,9 @@ export function useProxyHostExtras() {
             disable_global: geoData.disableGlobal === true,
           },
           true,
-        ).catch((err) => console.error('Failed to save geo restriction:', err)),
+        ).catch((err) => {
+          geoError = asError(err)
+        }),
       )
     }
 
@@ -126,9 +143,9 @@ export function useProxyHostExtras() {
       )
     }
 
-    if (promises.length === 0) return false
+    if (promises.length === 0) return { savedAny: false }
     await Promise.all(promises)
-    return true
+    return { savedAny: true, geoError }
   }
 
   /**
@@ -136,8 +153,10 @@ export function useProxyHostExtras() {
    * restriction DELETEs when the user has cleared both country blocking
    * and priority-allow IPs (but only if a record previously existed).
    *
-   * Errors per-extra are logged, not thrown — mirrors the original hook
-   * which rejected only on nginx regenerate failure (handled by caller).
+   * Errors per-extra are not thrown — mirrors the original hook which
+   * rejected only on nginx regenerate failure (handled by caller). The
+   * bot filter's and the cloud providers' are logged; the geo
+   * restriction's is returned (#320).
    */
   async function saveExtrasForUpdate({
     hostId,
@@ -148,7 +167,8 @@ export function useProxyHostExtras() {
     cloudProviderAllowSearchBots,
     cloudDisableGlobal,
     existingGeoRestriction,
-  }: SaveExtrasUpdateArgs): Promise<void> {
+  }: SaveExtrasUpdateArgs): Promise<GeoSaveResult> {
+    let geoError: Error | undefined
     const promises = [
       // Bot filter (skip reload)
       updateBotFilter(hostId, botFilterPayload(botFilterData), true)
@@ -192,7 +212,7 @@ export function useProxyHostExtras() {
           }
           queryClient.invalidateQueries({ queryKey: ['geoRestriction', hostId] })
         } catch (err) {
-          console.error('Failed to save geo restriction:', err)
+          geoError = asError(err)
         }
       })(),
 
@@ -211,6 +231,7 @@ export function useProxyHostExtras() {
     ]
 
     await Promise.all(promises)
+    return { geoError }
   }
 
   return {

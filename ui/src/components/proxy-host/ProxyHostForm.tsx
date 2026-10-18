@@ -80,6 +80,7 @@ export function ProxyHostForm({ host, initialTab, onClose }: ProxyHostFormProps)
     // Save progress
     saveProgress,
     closeSaveProgress,
+    geoNameErrors,
     ddnsConfirmOpen,
     confirmDdnsRemoval,
     cancelDdnsConfirm,
@@ -317,6 +318,7 @@ export function ProxyHostForm({ host, initialTab, onClose }: ProxyHostFormProps)
                 geoipStatus={geoipStatus}
                 countryCodes={countryCodes}
                 geoRestriction={existingGeoRestriction}
+                priorityAllowErrors={geoNameErrors}
               />
             )}
 
@@ -486,7 +488,11 @@ export function ProxyHostForm({ host, initialTab, onClose }: ProxyHostFormProps)
         errorDetails={saveProgress.errorDetails}
         warning={saveProgress.warning}
         warningDetails={saveProgress.warningDetails}
-        onClose={closeSaveProgress}
+        onClose={() => {
+          // A domain the geo save refused is marked in the Security tab (#320).
+          if (geoNameErrors.length > 0) setActiveTab('security')
+          closeSaveProgress()
+        }}
       />
 
       {/* Certificate Log Modal */}

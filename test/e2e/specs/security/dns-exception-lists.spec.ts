@@ -15,7 +15,9 @@ import { NGINX_HTTP_PORT, ROUTES } from '../../fixtures/test-data';
  *
  * The API container resolves exempt.e2e.example through extra_hosts in
  * docker-compose.e2e-test.yml, so nothing here is looked up on the internet;
- * a test that saved any other name would send a public DNS query. Its
+ * a test that saved any other name would send a public DNS query
+ * (partner.e2e.example, also listed there, is only sent in saves the domain
+ * limit refuses). Its
  * address and the clients below are in 100.64.32.0/24, CGNAT: the address
  * policy refuses the documentation ranges as reserved and allows CGNAT, so a
  * domain can only resolve to such an address here. scripts/pii-scan.sh lists
@@ -32,8 +34,9 @@ import { NGINX_HTTP_PORT, ROUTES } from '../../fixtures/test-data';
  * mount, so never sed -i. Go reads it again at most 5 s later.
  *
  * The global singletons this file changes are the trusted IPs and domains in
- * system_settings; afterEach puts them back as beforeAll found them (without
- * this file's own leftovers).
+ * system_settings, and the per-list domain limit in its dns_entry_settings;
+ * afterEach puts them back as beforeAll found them (without this file's own
+ * leftovers).
  */
 const API = 'http://127.0.0.1:19080';
 const UI = process.env.BASE_URL || 'https://localhost:18181';
@@ -47,6 +50,13 @@ const PASSED = 404;
 const PREFIX = 'r3-dns-';
 const EXEMPT = 'exempt.e2e.example';
 const EXEMPT_IP = '100.64.32.30';
+// A second name, only ever sent over the domain limit.
+const PARTNER = 'partner.e2e.example';
+// The per-list domain limit (dns_entry_settings.max_per_list) while a test
+// goes over it with two names. beforeAll takes this value for what a run
+// stopped in such a test left, and puts the default back.
+const LOW_MAX_PER_LIST = 1;
+const DEFAULT_MAX_PER_LIST = 16;
 // A static URI block exception and a static priority allow entry.
 const STATIC_IP = '100.64.32.31';
 // A client no list of this file allows.
@@ -207,6 +217,17 @@ function sameTrusted(a: Trusted, b: Trusted): boolean {
   return a.ips === b.ips && a.names.join(',') === b.names.join(',');
 }
 
+async function readMaxPerList(ctx: APIRequestContext, headers: Record<string, string>): Promise<number> {
+  const res = await ctx.get(`${API}/api/v1/system-settings`, { headers });
+  expect(res.status(), 'GET /api/v1/system-settings').toBe(200);
+  return (await res.json()).dns_entry_settings.max_per_list;
+}
+
+async function putMaxPerList(ctx: APIRequestContext, headers: Record<string, string>, limit: number): Promise<void> {
+  const res = await ctx.put(`${API}/api/v1/system-settings`, { headers, data: { dns_entry_settings: { max_per_list: limit } } });
+  expect(res.ok(), `max_per_list ${limit}: ${await res.text()}`).toBeTruthy();
+}
+
 /** Deletes what this file makes, by prefix: what a failed earlier run left, or a test's own at its end. */
 async function sweep(ctx: APIRequestContext, headers: Record<string, string>): Promise<void> {
   const del = (path: string) => ctx.delete(`${API}${path}`, { headers }).catch(() => undefined);
@@ -325,6 +346,8 @@ test.describe('Domains in the four exception lists (#320)', () => {
   let headers: Record<string, string>;
   // The trusted list as beforeAll found it, without this file's leftovers.
   let trustedBefore: Trusted;
+  // The per-list domain limit as beforeAll found it, likewise.
+  let maxPerListBefore: number;
 
   test.beforeAll(async ({ playwright }) => {
     if (!hostsEntry(EXEMPT)) {
@@ -348,6 +371,9 @@ test.describe('Domains in the four exception lists (#320)', () => {
         });
         expect(res.ok(), `put the trusted list back: ${await res.text()}`).toBeTruthy();
       }
+      const limit = await readMaxPerList(ctx, auth);
+      maxPerListBefore = limit === LOW_MAX_PER_LIST ? DEFAULT_MAX_PER_LIST : limit;
+      if (limit !== maxPerListBefore) await putMaxPerList(ctx, auth, maxPerListBefore);
       const overview = await ctx.get(`${API}/api/v1/dns-entries`, { headers: auth });
       expect(overview.status(), 'GET /api/v1/dns-entries').toBe(200);
       const body = await overview.json();
@@ -374,6 +400,7 @@ test.describe('Domains in the four exception lists (#320)', () => {
     if (!sameTrusted(await readTrusted(request, headers), trustedBefore)) {
       await setTrusted(request, { global_trusted_ips: trustedBefore.ips, global_trusted_hostnames: trustedBefore.names });
     }
+    if ((await readMaxPerList(request, headers)) !== maxPerListBefore) await putMaxPerList(request, headers, maxPerListBefore);
   });
 
   test.afterAll(async ({ playwright }) => {
@@ -389,6 +416,7 @@ test.describe('Domains in the four exception lists (#320)', () => {
           data: { global_trusted_ips: trustedBefore.ips, global_trusted_hostnames: trustedBefore.names },
         });
       }
+      if ((await readMaxPerList(ctx, auth)) !== maxPerListBefore) await putMaxPerList(ctx, auth, maxPerListBefore);
     } finally {
       await ctx.dispose();
     }
@@ -848,5 +876,103 @@ test.describe('Domains in the four exception lists (#320)', () => {
     } finally {
       await session.close();
     }
+  });
+
+  /** The proxy-host save progress dialog's Close button. */
+  function closeSaveProgress(page: Page) {
+    return page.locator('.fixed.inset-0 button').filter({ hasText: /^close$/i }).click();
+  }
+
+  test('the host form shows a priority allow save over the domain limit as refused, and saves it within the limit', async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(120_000);
+    const host = await createHost('prio-limit');
+    await putMaxPerList(request, headers, LOW_MAX_PER_LIST);
+    const geoPath = `/api/v1/proxy-hosts/${host.id}/geo`;
+    const geoSaved = () =>
+      page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === geoPath);
+
+    const form = await openHostForm(page, host.id, host.domain);
+    await form.switchTab('security');
+    await addDomain(page, EXEMPT);
+    await addDomain(page, PARTNER);
+    let geoRes = geoSaved();
+    await form.saveButton.click();
+    const refused = await geoRes;
+    expect(refused.status(), 'the geo save').toBe(400);
+    expect((await refused.json()).code).toBe('limit');
+
+    // The save says what it did not save, and reports no success.
+    const notSaved = page.getByRole('heading', { name: /^The host is saved, but its GeoIP restriction and priority allow were not:/ });
+    await expect(notSaved).toBeVisible({ timeout: 30_000 });
+    await expect(notSaved).toContainText('at most 1');
+    await expect(page.getByText('Proxy host saved successfully!')).toHaveCount(0);
+    // The cloud provider save, in the same row, may have made it: no entry is stored.
+    expect(storedPriorityAllow(host.id), 'no priority allow entry is stored').toMatch(/^\|?$/);
+
+    // Closing it leaves the host's form open, with the refusal under its domains.
+    await closeSaveProgress(page);
+    await expect(notSaved).toHaveCount(0);
+    await form.expectForm();
+    await expect(page.getByTestId('dns-name-input').getByRole('alert')).toContainText('Too many domains');
+
+    // Within the limit, the same form saves the domain.
+    await page.getByRole('button', { name: `Remove ${PARTNER}` }).click();
+    await expect(chip(page, PARTNER)).toHaveCount(0);
+    geoRes = geoSaved();
+    await form.save();
+    expect((await geoRes).status(), 'the geo save within the limit').toBe(200);
+    await form.expectClosed();
+    expect(storedPriorityAllow(host.id)).toBe(`|${EXEMPT}`);
+  });
+
+  test('a new host over the domain limit is created once, and the form says its priority allow was not saved', async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(120_000);
+    await putMaxPerList(request, headers, LOW_MAX_PER_LIST);
+    const domain = `${PREFIX}prio-limit-new-${Date.now()}.example.com`;
+    const creates: string[] = [];
+    page.on('request', (r) => {
+      if (r.method() === 'POST' && new URL(r.url()).pathname === '/api/v1/proxy-hosts') creates.push(r.url());
+    });
+
+    const list = new ProxyHostListPage(page);
+    const form = new ProxyHostFormPage(page);
+    await list.goto();
+    await list.clickAddHost();
+    await form.fillDomain(domain);
+    await form.fillForwardHost('127.0.0.1');
+    await form.fillForwardPort(19080);
+    await form.switchTab('security');
+    await addDomain(page, EXEMPT);
+    await addDomain(page, PARTNER);
+    await form.switchTab('advanced');
+    const geoRes = page.waitForResponse(
+      (r) => r.request().method() === 'POST' && /^\/api\/v1\/proxy-hosts\/[0-9a-f-]{36}\/geo$/.test(new URL(r.url()).pathname),
+    );
+    await form.saveButton.click();
+    expect((await geoRes).status(), 'the geo save').toBe(400);
+
+    // The host exists without its priority allow: the form says so, not that it saved.
+    const notSaved = page.getByRole('heading', {
+      name: /^The host is created, but its GeoIP restriction and priority allow were not saved:/,
+    });
+    await expect(notSaved).toBeVisible({ timeout: 60_000 });
+    await expect(notSaved).toContainText('at most 1');
+    await expect(page.getByText('Proxy host saved successfully!')).toHaveCount(0);
+
+    // Closing it closes the form, so there is no second Create to send.
+    await closeSaveProgress(page);
+    await form.expectClosed();
+    const hosts = (
+      await listOf(request, `${API}/api/v1/proxy-hosts?per_page=100&search=${encodeURIComponent(domain)}`, headers)
+    ).filter((h) => h.domain_names?.[0] === domain);
+    expect(hosts, 'hosts with the domain').toHaveLength(1);
+    expect(creates, 'creates sent').toHaveLength(1);
+    expect(storedPriorityAllow(hosts[0].id), 'no priority allow entry is stored').toMatch(/^\|?$/);
   });
 });
