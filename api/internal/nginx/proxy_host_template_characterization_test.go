@@ -1149,6 +1149,69 @@ func goldenCases() []goldenCase {
 		})
 	}
 
+	// 27-31) exception list domains (#320): each name is an include, inside
+	// the list's geo block, of the file the DNS entry service writes for the
+	// name's scope. URI block exceptions merge the host's and the global
+	// names; on a ForwardAuth host the exception path runs the login gate,
+	// and on a host whose Advanced Config asks for a login (auth_basic) the
+	// names are left out. Priority allow names alone define the geo and
+	// every bypass that reads it. Rate limit names leave the zone key alone.
+	{
+		uriRule := []model.URIBlockRule{{ID: "00000000-0000-0000-0000-0000000000c6", Pattern: "/admin",
+			MatchType: model.URIMatchPrefix, Description: "block admin", Enabled: true}}
+		uriBlock := func(hostID string, ips ...string) *model.URIBlock {
+			return &model.URIBlock{ID: "00000000-0000-0000-0000-0000000000c7", ProxyHostID: hostID, Enabled: true, Rules: uriRule,
+				ExceptionIPs: ips, CreatedAt: fixtureNow, UpdatedAt: fixtureNow,
+				ExceptionDNS: []model.DNSRef{{Scope: "uri:" + hostID, Name: "partner.example.com"}, {Scope: "uri:global", Name: "office.example.com"}}}
+		}
+
+		hostURI := goldenBaseHost("00000000-0000-0000-0000-000000000a1b", "uri-domains.example.com")
+		cases = append(cases, goldenCase{
+			name: "uri_block_exception_domains",
+			data: ProxyHostConfigData{Host: hostURI, GlobalSettings: baseGlobalSettings(), URIBlock: uriBlock(hostURI.ID, "192.0.2.20")},
+		})
+
+		hostFA := goldenBaseHost("00000000-0000-0000-0000-000000000a1c", "uri-domains-auth.example.com")
+		apID := "00000000-0000-0000-0000-0000000000c8"
+		hostFA.AuthProviderID = &apID
+		cases = append(cases, goldenCase{
+			name: "uri_block_exception_domains_forwardauth",
+			data: ProxyHostConfigData{Host: hostFA, GlobalSettings: baseGlobalSettings(),
+				AuthProvider: &model.AuthProvider{ID: apID, Name: "authelia", Type: "authelia",
+					ProviderURL: "http://127.0.0.1:9091", TimeoutMs: 5000, Enabled: true, CreatedAt: fixtureNow, UpdatedAt: fixtureNow},
+				URIBlock: uriBlock(hostFA.ID)},
+		})
+
+		hostBasic := goldenBaseHost("00000000-0000-0000-0000-000000000a1d", "uri-domains-basic.example.com")
+		hostBasic.AdvancedConfig = "location /private {\n    auth_basic \"Private\";\n    auth_basic_user_file /etc/nginx/htpasswd;\n}"
+		cases = append(cases, goldenCase{
+			name: "uri_block_exception_domains_advanced_auth",
+			data: ProxyHostConfigData{Host: hostBasic, GlobalSettings: baseGlobalSettings(), URIBlock: uriBlock(hostBasic.ID, "192.0.2.20")},
+		})
+
+		hostPrio := goldenBaseHost("00000000-0000-0000-0000-000000000a1e", "prio-domains.example.com")
+		cases = append(cases, goldenCase{
+			name: "priority_allow_domains_only",
+			data: ProxyHostConfigData{Host: hostPrio, GlobalSettings: baseGlobalSettings(),
+				GeoRestriction: &model.GeoRestriction{ID: "00000000-0000-0000-0000-0000000000c9", ProxyHostID: hostPrio.ID,
+					Mode: "whitelist", Countries: []string{"KR"}, Enabled: true, CreatedAt: fixtureNow, UpdatedAt: fixtureNow,
+					AllowedDNS: []model.DNSRef{{Scope: "prio:" + hostPrio.ID, Name: "partner.example.com"}, {Scope: "prio:global", Name: "office.example.com"}}},
+				BlockedCloudIPRanges: []string{"192.0.2.128/25"},
+				BotFilter: &model.BotFilter{ID: "00000000-0000-0000-0000-0000000000ca", ProxyHostID: hostPrio.ID, Enabled: true,
+					CustomBlockedAgents: "BadBot", CreatedAt: fixtureNow, UpdatedAt: fixtureNow}},
+		})
+
+		hostRL := goldenBaseHost("00000000-0000-0000-0000-000000000a1f", "ratelimit-domains.example.com")
+		cases = append(cases, goldenCase{
+			name: "rate_limit_whitelist_domains",
+			data: ProxyHostConfigData{Host: hostRL, GlobalSettings: baseGlobalSettings(),
+				RateLimit: &model.RateLimit{ID: "00000000-0000-0000-0000-0000000000cb", ProxyHostID: hostRL.ID, Enabled: true,
+					RequestsPerSecond: 10, BurstSize: 20, ZoneSize: "10m", LimitBy: "ip", LimitResponse: 429, WhitelistIPs: "192.0.2.10",
+					CreatedAt: fixtureNow, UpdatedAt: fixtureNow,
+					WhitelistDNS: []model.DNSRef{{Scope: "rl:" + hostRL.ID, Name: "partner.example.com"}}}},
+		})
+	}
+
 	return cases
 }
 

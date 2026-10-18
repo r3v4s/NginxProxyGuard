@@ -34,7 +34,7 @@ geo $blocked_cloud_{{sanitizeID .Host.ID}} {
     default 0;
     include /etc/nginx/conf.d/includes/cloud_ips_{{.Host.ID}}.conf;
 }
-{{end}}{{if .GeoRestriction}}{{if .GeoRestriction.AllowedIPs}}
+{{end}}{{if .PriorityAllowConfigured}}
 # Priority allow IPs/CIDRs (geo restriction, cloud provider and bot filter
 # bypass). A geo block matches each entry as the range it names.
 geo $npg_prio_{{sanitizeID .Host.ID}} {
@@ -42,14 +42,22 @@ geo $npg_prio_{{sanitizeID .Host.ID}} {
 {{- range .GeoRestriction.AllowedIPs}}
     {{.}} 1;
 {{- end}}
+{{- range dnsGeoIncludes .GeoRestriction.AllowedDNS}}
+    # dns: {{commentText .Name}}
+    include {{.Path}};
+{{- end}}
 }
-{{end}}{{end}}{{if .URIBlock}}{{if .URIBlock.Enabled}}{{if .URIBlock.ExceptionIPs}}
+{{end}}{{if .URIExceptionsConfigured}}
 # URI block exception IPs/CIDRs (the host's and the global list)
 geo $npg_uri_exc_{{sanitizeID .Host.ID}} {
     default 0;
 {{- range .URIBlock.ExceptionIPs}}
     {{.}} 1;
 {{- end}}
+{{- range .URIExceptionDNSIncludes}}
+    # dns: {{commentText .Name}}
+    include {{.Path}};
+{{- end}}
 }
-{{end}}{{end}}{{end}}
+{{end}}
 

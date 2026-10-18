@@ -54,14 +54,15 @@ func accessListDNSIncludes(list *model.AccessList) []DNSIncludeLine {
 
 // ensureDNSIncludes creates, empty, each domain include file the host config
 // about to be written includes and that does not exist yet
-// (EnsureDNSIncludeFile keeps an existing file's content). nginx -t fails on
-// a missing include, and SyncAll then removes the host that includes
-// it. The lines come from the function the template renders,
-// so an SSL host, which renders the access list block twice, ensures each
-// file once. No DNS lock is taken: GenerateConfigFull runs both inside and
-// outside the nginx lock.
+// (EnsureDNSIncludeFile keeps an existing file's content): the access list
+// block's .allow files and the exception lists' .geo files
+// (hostDNSIncludeLines). nginx -t fails on a missing include, and SyncAll
+// then removes the host that includes it. The lines come from the functions
+// the template renders, so an SSL host, which renders the access list block
+// twice, ensures each file once. No DNS lock is taken: GenerateConfigFull
+// runs both inside and outside the nginx lock.
 func (m *Manager) ensureDNSIncludes(data ProxyHostConfigData) error {
-	for _, line := range accessListDNSIncludes(data.AccessList) {
+	for _, line := range hostDNSIncludeLines(data) {
 		file := filepath.Base(line.Path)
 		if err := m.EnsureDNSIncludeFile(file[:16], file[16:]); err != nil {
 			return err

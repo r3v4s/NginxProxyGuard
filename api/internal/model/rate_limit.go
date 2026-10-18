@@ -28,6 +28,11 @@ type RateLimit struct {
 	// WhitelistHostnames are domain names (#320) whose addresses are
 	// exempt like WhitelistIPs. Never null.
 	WhitelistHostnames []string `json:"whitelist_hostnames"`
+	// WhitelistDNS is what a host config renders of the names, with the
+	// scope of the list the host uses: its own when it overrides, the
+	// global one when it inherits (resolveRateLimit). Set for the render
+	// only, never stored or sent.
+	WhitelistDNS []DNSRef `json:"-"`
 }
 
 // CreateRateLimitRequest is the request to create/update rate limit config

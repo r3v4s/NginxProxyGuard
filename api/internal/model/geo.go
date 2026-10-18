@@ -24,6 +24,11 @@ type GeoRestriction struct {
 	// AllowedHostnames are domain names (#320) whose addresses bypass the
 	// restriction like AllowedIPs. Never null.
 	AllowedHostnames []string `json:"allowed_hostnames"`
+	// AllowedDNS is what a host config renders of the names: each with the
+	// scope of the list it came from, the host's or the global one
+	// (resolveGeo). Set for the render only, never stored, cached or sent.
+	// The host's WAF file never gets them (only AllowedIPs).
+	AllowedDNS []DNSRef `json:"-"`
 }
 
 // GlobalGeoRestriction is the singleton global default inherited by hosts that

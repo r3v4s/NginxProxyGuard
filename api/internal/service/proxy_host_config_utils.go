@@ -46,6 +46,11 @@ func findHostByDomain(hosts []SyncHostResult, domain string) int {
 
 // mergeURIBlocks merges global and host-specific URI block settings
 // Global rules are applied first (higher priority), then host-specific rules
+//
+// The exception domains (#320) come from the same blocks: ExceptionDNS holds
+// the host's names with the host's scope when the host's block is on, and the
+// global names with the scope uri:global when the global block is on. A name
+// on both lists is rendered once, with the host's scope.
 func mergeURIBlocks(global *model.GlobalURIBlock, host *model.URIBlock) *model.URIBlock {
 	// If both are nil or disabled, return nil
 	globalEnabled := global != nil && global.Enabled
@@ -120,6 +125,15 @@ func mergeURIBlocks(global *model.GlobalURIBlock, host *model.URIBlock) *model.U
 			result.AllowPrivateIPs = host.AllowPrivateIPs || result.AllowPrivateIPs
 		}
 	}
+
+	var hostDNS, globalDNS []model.DNSRef
+	if hostEnabled {
+		hostDNS = dnsRefs(model.DNSScopeKindURIBlock+":"+host.ProxyHostID, host.ExceptionHostnames)
+	}
+	if globalEnabled {
+		globalDNS = dnsRefs(model.DNSScopeKindURIBlock+":global", global.ExceptionHostnames)
+	}
+	result.ExceptionDNS = unionDNSRefs(hostDNS, globalDNS)
 
 	return result
 }

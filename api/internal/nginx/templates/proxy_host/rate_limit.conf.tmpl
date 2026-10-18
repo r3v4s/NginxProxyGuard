@@ -21,6 +21,10 @@ geo $rate_wl_{{$id}} {
 {{- range ipWhitelist .RateLimit.WhitelistIPs}}
     {{.}} 1;
 {{- end}}
+{{- range dnsGeoIncludes .RateLimit.WhitelistDNS}}
+    # dns: {{commentText .Name}}
+    include {{.Path}};
+{{- end}}
 }
 map $rate_wl_{{$id}} $rate_wl_key_{{$id}} {
     1       "";

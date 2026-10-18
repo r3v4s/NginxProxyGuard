@@ -69,9 +69,6 @@ func GetTemplateFuncMap(apiHost string) template.FuncMap {
 				return fmt.Sprintf("location ^~ %s", pattern)
 			}
 		},
-		"hasURIBlockExceptionIPs": func(ub *model.URIBlock) bool {
-			return ub != nil && (len(ub.ExceptionIPs) > 0 || ub.AllowPrivateIPs)
-		},
 		"escapeRegex": func(s string) string {
 			s = strings.TrimSpace(s)
 			if s == "" {
@@ -193,6 +190,8 @@ func GetTemplateFuncMap(apiHost string) template.FuncMap {
 		"uriBlockRules":   uriBlockRules,
 		// An access list's domain entries (#320, access_list_dns.go).
 		"accessListDNSIncludes": accessListDNSIncludes,
+		// The exception lists' domains (#320, exception_list_dns.go).
+		"dnsGeoIncludes": dnsGeoIncludes,
 	}
 }
 

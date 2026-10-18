@@ -17,10 +17,17 @@ import "nginx-proxy-guard/internal/model"
 // unioning would take away an overriding host's ability to narrow the
 // exceptions it grants. Operators wanting a bypass that survives an override
 // have one already: the global trusted-IP list (#263).
+//
+// The exception domains (#320) follow the same rule: WhitelistDNS holds the
+// host's names with the host's scope when it overrides, the global names with
+// the scope rl:global when it inherits. An overriding host gets a copy of its
+// row: the row is the repository's.
 func resolveRateLimit(global *model.GlobalRateLimit, host *model.RateLimit, hostID string) *model.RateLimit {
 	// Override: host runs its own rate limit.
 	if host != nil && host.Enabled {
-		return host
+		rl := *host
+		rl.WhitelistDNS = dnsRefs(model.DNSScopeKindRateLimit+":"+host.ProxyHostID, host.WhitelistHostnames)
+		return &rl
 	}
 	// Disable: host opted out of the global default.
 	if host != nil && host.DisableGlobal {
@@ -37,6 +44,7 @@ func resolveRateLimit(global *model.GlobalRateLimit, host *model.RateLimit, host
 			LimitBy:           global.LimitBy,
 			LimitResponse:     global.LimitResponse,
 			WhitelistIPs:      global.WhitelistIPs,
+			WhitelistDNS:      dnsRefs(model.DNSScopeKindRateLimit+":global", global.WhitelistHostnames),
 		}
 	}
 	return nil

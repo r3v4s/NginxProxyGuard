@@ -1,7 +1,7 @@
 {{define "_security" -}}
 {{if .GeoRestriction}}{{if .GeoRestriction.Enabled}}{{if not .GeoRestriction.ChallengeMode}}
     # Geo Restriction ({{.GeoRestriction.Mode}}) - Direct Block Mode (processed BEFORE WAF for performance){{if .GeoRestriction.AllowPrivateIPs}} - Private IPs Allowed{{end}}{{if .GeoRestriction.AllowSearchBots}} - Search Bots Allowed{{end}}
-{{if len .GeoRestriction.AllowedIPs}}
+{{if .PriorityAllowConfigured}}
     # Priority Allow IPs/CIDRs - bypass geo restriction if matched
     set $geo_allowed_ip $npg_prio_{{sanitizeID .Host.ID}};
     # Apply geo restriction only if not in allowed IPs
@@ -161,7 +161,7 @@
     }
 {{end}}
 {{end}}
-{{if len .GeoRestriction.AllowedIPs}}
+{{if .PriorityAllowConfigured}}
     # Priority Allow IPs/CIDRs - bypass geo restriction if matched
     if ($npg_prio_{{sanitizeID .Host.ID}} = 1) {
         set $geo_blocked 0;
@@ -458,7 +458,7 @@
     # Skip for ACME challenge and challenge page (prevents redirect loops)
     # Priority Allow IPs bypass cloud provider blocking
     set $is_priority_allow_cloud $skip_security_for_acme;
-{{if and .GeoRestriction (len .GeoRestriction.AllowedIPs)}}
+{{if .PriorityAllowConfigured}}
     if ($npg_prio_{{sanitizeID .Host.ID}} = 1) {
         set $is_priority_allow_cloud 1;
     }
@@ -503,7 +503,7 @@
     # Priority Allow IPs bypass all bot filtering
     # Also bypass for ACME challenge
     set $priority_allow $skip_security_for_acme;
-{{if and .GeoRestriction (len .GeoRestriction.AllowedIPs)}}
+{{if .PriorityAllowConfigured}}
     if ($npg_prio_{{sanitizeID .Host.ID}} = 1) {
         set $priority_allow 1;
     }
@@ -620,7 +620,7 @@
 {{range uriBlockRules .URIBlock.Rules}}{{if .Enabled}}
     # Block: {{commentText .Description}}
     {{uriLocationDirective .MatchType .Pattern}} {
-{{if hasURIBlockExceptionIPs $.URIBlock}}
+{{if or $.URIExceptionsConfigured $.URIBlock.AllowPrivateIPs}}
         # Check exception IPs
         set $uri_block_exception 0;
 {{if $.URIBlock.AllowPrivateIPs}}
@@ -629,7 +629,7 @@
             set $uri_block_exception 1;
         }
 {{end}}
-{{if $.URIBlock.ExceptionIPs}}
+{{if $.URIExceptionsConfigured}}
         if ($npg_uri_exc_{{sanitizeID $.Host.ID}} = 1) {
             set $uri_block_exception 1;
         }

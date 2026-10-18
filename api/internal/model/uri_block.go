@@ -38,6 +38,10 @@ type URIBlock struct {
 	// ExceptionHostnames are domain names (#320) whose addresses are
 	// excepted like ExceptionIPs. Never null.
 	ExceptionHostnames []string `json:"exception_hostnames"`
+	// ExceptionDNS is what a host config renders of the names: each with the
+	// scope of the list it came from, the host's or the global one
+	// (mergeURIBlocks). Set for the render only, never stored or sent.
+	ExceptionDNS []DNSRef `json:"-"`
 }
 
 // CreateURIBlockRequest is the request to create/update URI block settings
