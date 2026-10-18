@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -192,6 +193,44 @@ func TestDNSRefreshWarnings(t *testing.T) {
 	}
 }
 
+// A ban wins over every exception list, but a host's ban only on that host.
+// A name in one host's URI block exceptions, priority allow or rate limit
+// exceptions is warned about for that host's bans; a name in a global list
+// or the global trusted list only for the global bans.
+func TestBannedWarningOfAHostScopeUsesThatHostsBans(t *testing.T) {
+	r := newDNSTestRig(t)
+	ctx := context.Background()
+	const hostA, hostB = dnsGateH1, dnsGateH2
+	use := func(scope, name, ownerID, ownerName string, addr string) {
+		r.store.setRefs(append(r.mustRefs(), model.DNSReference{Scope: scope, Name: name, OwnerID: ownerID, OwnerName: ownerName})...)
+		r.store.put(dnsOKRow(name, 1, addr))
+	}
+	use("prio:"+hostA, "prio.example.com", hostA, "app1.example.com", "192.0.2.30")
+	use("uri:"+hostA, "uri.example.com", hostA, "app1.example.com", "192.0.2.31")
+	use("rl:"+hostA, "rl.example.com", hostA, "app1.example.com", "192.0.2.32")
+	use("prio:global", "global.example.com", "global", "", "192.0.2.33")
+	use(model.DNSScopeKindTrusted, "office.example.com", "", "", "192.0.2.34")
+	src := &dnsTestWarnSources{hostBans: map[string][]model.BannedIP{hostB: {{IPAddress: "192.0.2.0/24"}}}}
+	r.svc.bans = src
+	banned := func(when string, want ...string) {
+		t.Helper()
+		r.svc.refreshWarnings(ctx, r.mustRefs(), nil)
+		for _, name := range []string{"prio.example.com", "uri.example.com", "rl.example.com", "global.example.com", "office.example.com"} {
+			st, _ := r.store.row(name)
+			got := slices.Contains(st.Warnings, model.DNSWarnBanned)
+			if got != slices.Contains(want, name) {
+				t.Errorf("%s: %s banned = %v (warnings %v), want %v", when, name, got, st.Warnings, !got)
+			}
+		}
+	}
+
+	banned("host B bans the range")
+	src.hostBans[hostA] = []model.BannedIP{{IPAddress: "192.0.2.0/24"}}
+	banned("host A bans the range", "prio.example.com", "uri.example.com", "rl.example.com")
+	src.globalBans = []model.BannedIP{{IPAddress: "192.0.2.0/24"}}
+	banned("a global ban", "prio.example.com", "uri.example.com", "rl.example.com", "global.example.com", "office.example.com")
+}
+
 // dnsCountingWarnSources records every read made for the warnings.
 type dnsCountingWarnSources struct {
 	dnsTestWarnSources
@@ -309,6 +348,37 @@ func TestDNSOverview(t *testing.T) {
 	}
 	if partner.LoginBypassHosts != 2 {
 		t.Fatalf("partner login bypass hosts = %d, want 2 (through list B)", partner.LoginBypassHosts)
+	}
+}
+
+// The overview lists an exception list's use with the owner the reference
+// carries: a host's list its host and first domain, a global list "global",
+// the trusted list none.
+func TestDNSOverviewShowsTheExceptionListUses(t *testing.T) {
+	r := newDNSTestRig(t)
+	const name = "office.example.com"
+	refs := []model.DNSReference{
+		{Scope: "prio:global", Name: name, OwnerID: "global"},
+		{Scope: "rl:" + dnsGateH1, Name: name, OwnerID: dnsGateH1, OwnerName: "app1.example.com"},
+		{Scope: model.DNSScopeKindTrusted, Name: name},
+		{Scope: "uri:" + dnsGateH1, Name: name, OwnerID: dnsGateH1, OwnerName: "app1.example.com"},
+	}
+	r.store.setRefs(refs...)
+	r.store.put(dnsOKRow(name, 1, "192.0.2.20"))
+	ov, err := r.svc.Overview(context.Background(), func(string) bool { return true }, model.DNSStatusView{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ov.Entries) != 1 || len(ov.Entries[0].Uses) != len(refs) {
+		t.Fatalf("entries = %+v, want the name with its %d uses", ov.Entries, len(refs))
+	}
+	kinds := []string{"priority_allow", "rate_limit", "trusted", "uri_block"}
+	for i, u := range ov.Entries[0].Uses {
+		want := model.DNSEntryUse{Scope: refs[i].Scope, Kind: kinds[i], Key: nginx.DNSIncludeKey(refs[i].Scope, name),
+			OwnerID: refs[i].OwnerID, OwnerName: refs[i].OwnerName}
+		if u != want {
+			t.Errorf("use %d = %+v, want %+v", i, u, want)
+		}
 	}
 }
 

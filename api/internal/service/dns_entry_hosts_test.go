@@ -16,12 +16,32 @@ import (
 // dnsTestHosts serves the hosts of each list and their config data.
 type dnsTestHosts struct {
 	byList map[string][]model.ProxyHost
+	noList []model.ProxyHost // hosts without an access list
 	data   map[string]nginx.ProxyHostConfigData
 	fail   map[string]bool
 }
 
 func (h *dnsTestHosts) GetByAccessListID(ctx context.Context, accessListID string) ([]model.ProxyHost, error) {
 	return append([]model.ProxyHost(nil), h.byList[accessListID]...), nil
+}
+
+// GetAllEnabled serves every enabled host, with a list or without, as the
+// repository does.
+func (h *dnsTestHosts) GetAllEnabled(ctx context.Context) ([]model.ProxyHost, error) {
+	var out []model.ProxyHost
+	for _, listID := range dnsSortedKeys(h.byList) {
+		for _, host := range h.byList[listID] {
+			if host.Enabled {
+				out = append(out, host)
+			}
+		}
+	}
+	for _, host := range h.noList {
+		if host.Enabled {
+			out = append(out, host)
+		}
+	}
+	return out, nil
 }
 
 func (h *dnsTestHosts) BuildConfigData(ctx context.Context, host *model.ProxyHost) (nginx.ProxyHostConfigData, error) {
@@ -33,6 +53,8 @@ func (h *dnsTestHosts) BuildConfigData(ctx context.Context, host *model.ProxyHos
 
 // add registers a host using list with the given config data.
 func (h *dnsTestHosts) add(host model.ProxyHost, list *model.AccessList, data nginx.ProxyHostConfigData) {
+	listID := list.ID
+	host.AccessListID = &listID
 	cp := host
 	data.Host, data.AccessList = &cp, list
 	h.byList[list.ID] = append(h.byList[list.ID], host)
@@ -642,5 +664,176 @@ func TestDNSHostIndexKeptFromAFailedReadStaysStaleUntilTheCheckRebuildsIt(t *tes
 	}
 	if !r.svc.ExemptAccessDenial(ctx, dnsGateH4, "203.0.113.99", r.clock.Now()) {
 		t.Error("app4 still uses its list: once the check rebuilt the index, its list's own 403 must be left out")
+	}
+}
+
+const (
+	dnsTestListC = "33333333-3333-4333-8333-333333333333" // satisfy all, no domain rows
+	dnsTestListD = "44444444-4444-4444-8444-444444444444" // satisfy any, no domain rows
+	dnsTestListE = "55555555-5555-4555-8555-555555555555" // no entries
+
+	dnsTrustH1 = "00000000-0000-4000-8000-000000000021" // list C: the trusted domains are in its block
+	dnsTrustH2 = "00000000-0000-4000-8000-000000000022" // list D + ForwardAuth: the login decides
+	dnsTrustH3 = "00000000-0000-4000-8000-000000000023" // list D + ForwardAuth + geo challenge
+	dnsTrustH4 = "00000000-0000-4000-8000-000000000024" // list C + Advanced Config allow/deny of its own
+	dnsTrustH5 = "00000000-0000-4000-8000-000000000025" // list E: no access list block
+	dnsTrustH6 = "00000000-0000-4000-8000-000000000026" // no access list
+)
+
+// dnsTrustedGateRig: the global trusted list holds office.example.com,
+// published as 192.0.2.20 and 192.0.2.140; nginx may still allow
+// 192.0.2.19, removed a moment ago. No access list has a domain row. The
+// static trusted IP is 192.0.2.5; lists C and D allow 192.0.2.7 and deny
+// 192.0.2.128/25 before the trusted domains.
+func dnsTrustedGateRig(t *testing.T) (*dnsTestRig, *dnsTestHosts) {
+	t.Helper()
+	r := newDNSTestRig(t)
+	const name = "office.example.com"
+	r.store.setRefs(model.DNSReference{Scope: model.DNSScopeKindTrusted, Name: name})
+	r.store.put(dnsOKRow(name, 1, "192.0.2.20", "192.0.2.140"))
+	if err := r.svc.ReconcileFiles(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	r.svc.pendingRevoke[dnsSegKey(model.DNSScopeKindTrusted, name)] = dnsRevokeEntry{
+		Scope: model.DNSScopeKindTrusted, Name: name, Gen: 2, Addrs: []string{"192.0.2.19"}}
+
+	items := []model.AccessListItem{
+		{Directive: "allow", Address: "192.0.2.7"},
+		{Directive: "deny", Address: "192.0.2.128/25"},
+	}
+	listC := &model.AccessList{ID: dnsTestListC, Items: items}
+	listD := &model.AccessList{ID: dnsTestListD, SatisfyAny: true, Items: items}
+	listE := &model.AccessList{ID: dnsTestListE}
+	forwardAuth := &model.AuthProvider{ID: "p1", Enabled: true}
+	trusted := func(d nginx.ProxyHostConfigData) nginx.ProxyHostConfigData {
+		d.GlobalTrustedIPs, d.TrustedHostnames = []string{"192.0.2.5"}, []string{name}
+		return d
+	}
+	host := func(id, domain string) model.ProxyHost {
+		return model.ProxyHost{ID: id, DomainNames: []string{domain}, Enabled: true}
+	}
+	h := &dnsTestHosts{byList: map[string][]model.ProxyHost{}, data: map[string]nginx.ProxyHostConfigData{}, fail: map[string]bool{}}
+	h.add(host(dnsTrustH1, "trust1.example.com"), listC, trusted(nginx.ProxyHostConfigData{}))
+	h.add(host(dnsTrustH2, "trust2.example.com"), listD, trusted(nginx.ProxyHostConfigData{AuthProvider: forwardAuth}))
+	h.add(host(dnsTrustH3, "trust3.example.com"), listD, trusted(nginx.ProxyHostConfigData{AuthProvider: forwardAuth,
+		GeoRestriction: &model.GeoRestriction{Enabled: true, ChallengeMode: true}}))
+	h4 := host(dnsTrustH4, "trust4.example.com")
+	h4.AdvancedConfig = "location /status { allow all; }"
+	h.add(h4, listC, trusted(nginx.ProxyHostConfigData{}))
+	h.add(host(dnsTrustH5, "trust5.example.com"), listE, trusted(nginx.ProxyHostConfigData{}))
+	h6 := host(dnsTrustH6, "trust6.example.com")
+	h.noList = append(h.noList, h6)
+	h.data[dnsTrustH6] = trusted(nginx.ProxyHostConfigData{Host: &h6})
+	r.svc.hosts, r.svc.builder = h, h
+	r.svc.rebuildHostIndex(context.Background(), r.mustRefs(), "")
+	return r, h
+}
+
+// On a host whose access list has no domain row but includes the global
+// trusted domains, nginx walks the static trusted IPs, the list's rules
+// (first match), then the trusted domains' file, and denies the rest. The
+// gate walks the same: the list's 403 for a client outside both is left out;
+// one for an address a trusted domain had, or may still have in nginx,
+// counts; an address the list denies stays denied, a trusted domain's
+// included.
+func TestExemptAccessDenialWalksTrustedDomainsAfterListRules(t *testing.T) {
+	r, _ := dnsTrustedGateRig(t)
+	ctx := context.Background()
+	cases := []struct {
+		client string
+		exempt bool
+		why    string
+	}{
+		{"192.0.2.99", true, "outside the list and every trusted entry: the list's own 403"},
+		{"::ffff:192.0.2.99", true, "an IPv4-mapped client is the IPv4 client"},
+		{"192.0.2.20", false, "a trusted domain's address: nginx allowed it, so its 403 was not the list's"},
+		{"192.0.2.19", false, "a trusted domain's address nginx may not have dropped yet"},
+		{"192.0.2.140", true, "the list's deny comes first: a trusted domain's address stays denied"},
+		{"192.0.2.200", true, "the list's deny"},
+		{"192.0.2.7", false, "the list allows it"},
+		{"192.0.2.5", false, "a static global trusted IP"},
+	}
+	for _, c := range cases {
+		if got := r.svc.ExemptAccessDenial(ctx, dnsTrustH1, c.client, r.clock.Now()); got != c.exempt {
+			t.Errorf("%s (%s): exempt = %v, want %v", c.why, c.client, got, c.exempt)
+		}
+	}
+}
+
+// With a trusted domain the host index holds every enabled HTTP host with an
+// access list, and the gate covers the ones whose list block includes the
+// trusted domains. A satisfy-any list on a host with a login lets its
+// addresses skip the login, so the trusted domains are left out of its
+// block and the login decides its 403s: that host is left out, as is a host
+// whose Advanced Config has access rules, a list without entries and a host
+// without a list. Without a trusted domain, a list without domain rows is
+// not indexed at all.
+func TestHostIndexLeavesOutHostsWhereTrustedDomainsAreNotInjected(t *testing.T) {
+	r, _ := dnsTrustedGateRig(t)
+	ctx := context.Background()
+	cases := []struct {
+		host   string
+		exempt bool
+		why    string
+	}{
+		{dnsTrustH1, true, "satisfy all: the trusted domains are in the list block"},
+		{dnsTrustH2, false, "satisfy any + ForwardAuth: the login decides, no trusted domain is in the block"},
+		{dnsTrustH3, true, "next to the challenge gate satisfy any is not rendered: the trusted domains are in the block"},
+		{dnsTrustH4, false, "Advanced Config with allow/deny of its own"},
+		{dnsTrustH5, false, "a list without entries renders no block"},
+		{dnsTrustH6, false, "no access list"},
+	}
+	for _, c := range cases {
+		if got := r.svc.ExemptAccessDenial(ctx, c.host, "192.0.2.99", r.clock.Now()); got != c.exempt {
+			t.Errorf("%s (%s): exempt = %v, want %v", c.why, c.host[len(c.host)-2:], got, c.exempt)
+		}
+	}
+
+	r.store.setRefs() // the trusted domain is removed
+	r.svc.rebuildHostIndex(ctx, r.mustRefs(), "")
+	if r.svc.ExemptAccessDenial(ctx, dnsTrustH1, "192.0.2.99", r.clock.Now()) {
+		t.Error("without a trusted domain a list without domain rows is not indexed: its 403s count")
+	}
+}
+
+// dnsFailingAllHosts cannot read the enabled hosts while failing is set.
+type dnsFailingAllHosts struct {
+	*dnsTestHosts
+	failing atomic.Bool
+}
+
+func (f *dnsFailingAllHosts) GetAllEnabled(ctx context.Context) ([]model.ProxyHost, error) {
+	if f.failing.Load() {
+		return nil, errors.New("connection refused")
+	}
+	return f.dnsTestHosts.GetAllEnabled(ctx)
+}
+
+// While the trusted list has a domain, a whole build reads every host in one
+// query. When that read fails the build keeps the last answer, so the index
+// stays stale and the gate counts every 403 until a build reads the hosts
+// again.
+func TestHostIndexOfEveryListHostStaysStaleWhenTheHostsCannotBeRead(t *testing.T) {
+	r, h := dnsTrustedGateRig(t)
+	ctx := context.Background()
+	logs := captureLog(t)
+	hosts := &dnsFailingAllHosts{dnsTestHosts: h}
+	hosts.failing.Store(true)
+	r.svc.hosts = hosts
+
+	r.svc.markHostIndexDirty() // e.g. a trusted list save
+	r.settle()
+	if r.svc.ExemptAccessDenial(ctx, dnsTrustH1, "192.0.2.99", r.clock.Now()) {
+		t.Fatal("the rebuild kept the last answer: the index must stay stale and the 403 be counted")
+	}
+	if n := strings.Count(logs.String(), "[DNSEntries] WARN: could not read the hosts with an access list"); n != 1 {
+		t.Fatalf("log = %q, want one WARN line for the failed read", logs.String())
+	}
+
+	hosts.failing.Store(false)
+	r.svc.markHostIndexDirty()
+	r.settle()
+	if !r.svc.ExemptAccessDenial(ctx, dnsTrustH1, "192.0.2.99", r.clock.Now()) {
+		t.Fatal("once the hosts are read again, the list's own 403 must be left out again")
 	}
 }

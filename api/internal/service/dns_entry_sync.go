@@ -221,9 +221,14 @@ func (s *DNSEntryService) SyncScope(ctx context.Context, scope string, names []s
 		s.closeReview(ctx, name, false)
 	}
 	s.announceReviews(ctx, rows, dnsUseCounts(refs))
-	if kind, owner, ok := model.ParseDNSScope(scope); ok && kind == model.DNSScopeKindAccessList {
+	switch kind, owner, _ := model.ParseDNSScope(scope); kind {
+	case model.DNSScopeKindAccessList:
 		s.rebuildHostIndex(ctx, refs, owner)
 		s.markHostIndexDirty() // and every list again, in the background
+	case model.DNSScopeKindTrusted:
+		// The trusted domains reach every host's list block: every host is
+		// indexed again, in the background.
+		s.markHostIndexDirty()
 	}
 	return nil
 }

@@ -22,11 +22,14 @@ const dnsHostIndexBuildTimeout = 30 * time.Second
 // dnsHostIndex answers, from memory, the two questions about hosts that use
 // an access list with domain entries: which hosts skip their login
 // for such a list (LoginBypassHosts), and whether a host's 403 came from its
-// list (ExemptAccessDenial). A mark (markHostIndexDirty) rebuilds it at once
-// in the background, and the fail2ban gate trusts it only once a build that
-// began after the latest mark is in place. A check builds it when there is
-// none or it is dnsHostIndexMaxAge old; SyncScope rebuilds one list's hosts
-// at once. Readers load it lock-free.
+// list (ExemptAccessDenial). While the global trusted list has a domain, it
+// holds every enabled HTTP host with an access list: a list block includes
+// the trusted domains whatever its own rows (DNSTrustInAccessList). A mark
+// (markHostIndexDirty) rebuilds it at once in the background, and the
+// fail2ban gate trusts it only once a build that began after the latest mark
+// is in place. A check builds it when there is none or it is
+// dnsHostIndexMaxAge old; SyncScope rebuilds one list's hosts at once.
+// Readers load it lock-free.
 type dnsHostIndex struct {
 	byHost  map[string]*dnsHostEntry
 	byList  map[string][]*dnsHostEntry
@@ -34,12 +37,13 @@ type dnsHostIndex struct {
 	marks   int64 // hostIdxMarks when the build began; lower when entries were kept from an older index
 }
 
-// dnsHostEntry is one enabled HTTP host using a list with domain entries,
-// as its config renders.
+// dnsHostEntry is one enabled HTTP host using a list with domain entries, or
+// any list while the trusted list has a domain, as its config renders.
 type dnsHostEntry struct {
 	hostID, domain, listID string
 	scope                  string // acl:<listID>
 	skipsLogin             bool   // satisfy any + a login: listed addresses skip the login
+	trustedDNS             bool   // the list block includes the global trusted domains (DNSTrustInAccessList)
 	covered                bool   // a client outside the list gets the list's 403
 	usable                 bool   // every rule parsed; when false nothing is exempt
 	trusted                []netip.Prefix
@@ -126,9 +130,11 @@ func (s *DNSEntryService) refreshHostIndex(ctx context.Context, refs []model.DNS
 }
 
 // rebuildHostIndex builds the index for every list with domain entries, or
-// only for onlyList (keeping the other lists' entries). A host whose config
-// data cannot be built is left out: its 403s are counted, as today. Entries
-// kept from the index in place make the new one as stale as that one.
+// only for onlyList (keeping the other lists' entries). While the trusted
+// list has a domain every list's hosts are indexed, and a whole build reads
+// them in one query (indexEveryListHost). A host whose config data cannot be
+// built is left out: its 403s are counted, as today. Entries kept from the
+// index in place make the new one as stale as that one.
 func (s *DNSEntryService) rebuildHostIndex(ctx context.Context, refs []model.DNSReference, onlyList string) {
 	if s.hosts == nil || s.builder == nil {
 		return
@@ -137,17 +143,28 @@ func (s *DNSEntryService) rebuildHostIndex(ctx context.Context, refs []model.DNS
 	// read leaves the new index stale.
 	marks := s.hostIdxMarks.Load()
 	lists := make(map[string]bool)
+	trusted := false
 	for _, r := range refs {
-		if kind, owner, ok := model.ParseDNSScope(r.Scope); ok && kind == model.DNSScopeKindAccessList {
+		kind, owner, ok := model.ParseDNSScope(r.Scope)
+		if ok && kind == model.DNSScopeKindAccessList {
 			lists[owner] = true
 		}
+		trusted = trusted || (ok && kind == model.DNSScopeKindTrusted)
 	}
 	old := s.hostIdx.Load()
 	idx := &dnsHostIndex{byHost: make(map[string]*dnsHostEntry), byList: make(map[string][]*dnsHostEntry), builtAt: s.now(), marks: marks}
+	if trusted && onlyList == "" {
+		s.indexEveryListHost(ctx, idx, old)
+		s.storeHostIndex(idx)
+		return
+	}
+	if trusted {
+		lists[onlyList] = true // the trusted domains reach its hosts, domain rows or not
+	}
 	if onlyList != "" && old != nil {
 		idx.marks = min(idx.marks, old.marks)
 		for listID, entries := range old.byList {
-			if listID == onlyList || !lists[listID] {
+			if listID == onlyList || !(trusted || lists[listID]) {
 				continue
 			}
 			for _, e := range entries {
@@ -172,18 +189,50 @@ func (s *DNSEntryService) rebuildHostIndex(ctx context.Context, refs []model.DNS
 		}
 		s.logs.ok("hosts")
 		for i := range hosts {
-			h := &hosts[i]
-			if !h.Enabled || h.IsStream() {
-				continue
-			}
-			data, err := s.builder.BuildConfigData(ctx, h)
-			if err != nil {
-				continue
-			}
-			idx.add(dnsHostEntryFrom(h, listID, data))
+			s.indexHost(ctx, idx, &hosts[i], listID)
 		}
 	}
 	s.storeHostIndex(idx)
+}
+
+// indexEveryListHost fills idx with every enabled HTTP host that has an
+// access list, the hosts whose list block the trusted domains may be in
+// (dnsHostEntryFrom says which). When the hosts cannot be read, idx keeps the
+// entries of the index in place and is as stale as it is.
+func (s *DNSEntryService) indexEveryListHost(ctx context.Context, idx, old *dnsHostIndex) {
+	hosts, err := s.hosts.GetAllEnabled(ctx)
+	if err != nil {
+		s.logs.fail("hosts", "[DNSEntries] WARN: could not read the hosts with an access list, which the global trusted domains reach; keeping the last answer: %v", err)
+		if old != nil {
+			idx.marks = min(idx.marks, old.marks)
+			for _, entries := range old.byList {
+				for _, e := range entries {
+					idx.add(e)
+				}
+			}
+		}
+		return
+	}
+	s.logs.ok("hosts")
+	for i := range hosts {
+		if h := &hosts[i]; h.AccessListID != nil && *h.AccessListID != "" {
+			s.indexHost(ctx, idx, h, *h.AccessListID)
+		}
+	}
+}
+
+// indexHost adds h, a host using listID, as its config renders. A disabled
+// or stream host is left out, and so is one whose config data cannot be
+// built.
+func (s *DNSEntryService) indexHost(ctx context.Context, idx *dnsHostIndex, h *model.ProxyHost, listID string) {
+	if !h.Enabled || h.IsStream() {
+		return
+	}
+	data, err := s.builder.BuildConfigData(ctx, h)
+	if err != nil {
+		return
+	}
+	idx.add(dnsHostEntryFrom(h, listID, data))
 }
 
 // storeHostIndex puts idx in place unless the index there began after a
@@ -207,10 +256,12 @@ func (idx *dnsHostIndex) add(e *dnsHostEntry) {
 }
 
 // dnsHostEntryFrom reads one host's rendered access phase: the global trusted
-// IPs, the list's rules exactly as the template writes them (hostname rows are
-// include lines, not rules), and whether the list decides the host's 403s:
-// not when satisfy any lets a login pass instead, and not when its Advanced
-// Config has access rules of its own.
+// IPs, the list's rules exactly as the template writes them (hostname rows and
+// the trusted domains are include lines, not rules), whether the block
+// includes the trusted domains, and whether the gate judges the host's 403s
+// by the list: when the list has a domain row or the block the trusted
+// domains, but not when satisfy any lets a login pass instead, and not when
+// its Advanced Config has access rules of its own.
 func dnsHostEntryFrom(h *model.ProxyHost, listID string, data nginx.ProxyHostConfigData) *dnsHostEntry {
 	e := &dnsHostEntry{hostID: h.ID, listID: listID, scope: model.AccessListDNSScope(listID), usable: true}
 	if len(h.DomainNames) > 0 {
@@ -221,11 +272,13 @@ func dnsHostEntryFrom(h *model.ProxyHost, listID string, data nginx.ProxyHostCon
 		return e
 	}
 	e.skipsLogin = data.ListSkipsLogin()
+	e.trustedDNS = data.DNSTrustInAccessList()
 	advanced := h.AdvancedConfig
 	if data.Host != nil {
 		advanced = data.Host.AdvancedConfig
 	}
-	e.covered = len(list.Items) > 0 && dnsListHasHostname(list) && !e.skipsLogin && !nginx.AdvancedConfigHasAccessRules(advanced)
+	e.covered = len(list.Items) > 0 && (dnsListHasHostname(list) || e.trustedDNS) &&
+		!e.skipsLogin && !nginx.AdvancedConfigHasAccessRules(advanced)
 	for _, v := range data.GlobalTrustedIPs {
 		p, ok := dnsParseRuleAddress(v)
 		if !ok {
@@ -280,15 +333,18 @@ func dnsParseRuleAddress(v string) (netip.Prefix, bool) {
 // host-attributed 403 that nginx answered in the access phase is left out of
 // the host's fail2ban count when the host's list decides its 403s and the
 // list denies the client. The client is walked through the rules in render
-// order — global trusted IPs, the list's rules (first match), the list's
-// domain files — and is exempt only when the walk ends in deny. The domain
-// files allow what nginx allowed through them at at, when the request came
-// in (dnsAllowedAt): the line is read seconds later, and a reload in between
-// must not change the answer. Anything the evaluator cannot read is counted,
-// as today. So is every 403 while the host index is stale: a list save, a
-// settings change or a reload came after its build began, and what the host
-// renders may have changed (the rebuild the mark started takes seconds). It
-// runs on the log tail goroutine: memory only.
+// order — global trusted IPs, the list's rules (first match), the global
+// trusted domains' file (when the block includes it), the list's domain
+// files — and is exempt only when the walk ends in deny: a trusted domain's
+// address counts as any client nginx let through does, and one the list's
+// rules deny stays denied. The domain files allow what nginx allowed through
+// them at at, when the request came in (dnsAllowedAt): the line is read
+// seconds later, and a reload in between must not change the answer.
+// Anything the evaluator cannot read is counted, as today. So is every 403
+// while the host index is stale: a list save, a settings change or a reload
+// came after its build began, and what the host renders may have changed
+// (the rebuild the mark started takes seconds). It runs on the log tail
+// goroutine: memory only.
 func (s *DNSEntryService) ExemptAccessDenial(ctx context.Context, hostID, clientIP string, at time.Time) bool {
 	idx := s.hostIdx.Load()
 	if idx == nil || idx.marks != s.hostIdxMarks.Load() {
@@ -313,7 +369,11 @@ func (s *DNSEntryService) ExemptAccessDenial(ctx context.Context, hostID, client
 			return r.deny
 		}
 	}
-	return !s.dnsAllowedAt(e.scope, client.String(), at)
+	addr := client.String()
+	if e.trustedDNS && s.dnsAllowedAt(model.DNSScopeKindTrusted, addr, at) {
+		return false
+	}
+	return !s.dnsAllowedAt(e.scope, addr, at)
 }
 
 // LoginBypassHosts lists the enabled hosts where list, a satisfy-any list

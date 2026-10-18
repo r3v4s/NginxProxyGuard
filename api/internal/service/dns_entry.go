@@ -158,6 +158,7 @@ type dnsGlobalReader interface {
 
 type dnsHostReader interface {
 	GetByAccessListID(ctx context.Context, accessListID string) ([]model.ProxyHost, error)
+	GetAllEnabled(ctx context.Context) ([]model.ProxyHost, error) // the host index while the trusted list has a domain
 }
 
 type dnsConfigBuilder interface {

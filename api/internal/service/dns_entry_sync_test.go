@@ -392,3 +392,73 @@ func (r *dnsTestRig) mustRefs() []model.DNSReference {
 	refs, _ := r.store.ListReferences(context.Background())
 	return refs
 }
+
+// fileExt returns the addresses of a segment's file with the extension ext;
+// ok is false when the file does not exist.
+func (n *dnsTestNginx) fileExt(scope, name, ext string) ([]string, bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	f, ok := n.files[nginx.DNSIncludeKey(scope, name)+ext]
+	return append([]string(nil), f.addrs...), ok
+}
+
+// One name in a host's priority allow and in the global trusted list has a
+// file set for each. A save that drops it from one empties that one's files
+// at once and waits for nginx to take the revocation; the other's stay. The
+// trusted domains reach every host's access list block, so a save of the
+// trusted list also marks the host index.
+func TestSyncScopeRevokesOnlyTheScopeANameLeft(t *testing.T) {
+	const name = "office.example.com"
+	prio := "prio:" + dnsGateH1
+	prioRef := model.DNSReference{Scope: prio, Name: name, OwnerID: dnsGateH1, OwnerName: "app1.example.com"}
+	trustedRef := model.DNSReference{Scope: model.DNSScopeKindTrusted, Name: name}
+	type file struct {
+		scope, ext string
+	}
+	for _, c := range []struct {
+		saved     string             // the scope saved without the name
+		kept      model.DNSReference // the use left
+		emptied   []file             // the saved scope's files
+		untouched []file             // the other scope's files
+		markIndex bool               // the save marks the host index
+	}{
+		{prio, trustedRef, []file{{prio, ".geo"}}, []file{{model.DNSScopeKindTrusted, ".allow"}, {model.DNSScopeKindTrusted, ".geo"}}, false},
+		{model.DNSScopeKindTrusted, prioRef, []file{{model.DNSScopeKindTrusted, ".allow"}, {model.DNSScopeKindTrusted, ".geo"}}, []file{{prio, ".geo"}}, true},
+	} {
+		t.Run(c.saved, func(t *testing.T) {
+			r := newDNSTestRig(t)
+			ctx := context.Background()
+			r.svc.lastGC = r.clock.Now()
+			r.store.setRefs(prioRef, trustedRef)
+			r.store.put(dnsOKRow(name, 1, "192.0.2.20"))
+			r.lookup.set(name, "192.0.2.20")
+			if err := r.svc.ReconcileFiles(ctx, false); err != nil {
+				t.Fatal(err)
+			}
+			marks := r.svc.hostIdxMarks.Load()
+			r.store.setRefs(c.kept)
+
+			if err := r.svc.SyncScope(ctx, c.saved, nil); err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range c.emptied {
+				if got, ok := r.nginx.fileExt(f.scope, name, f.ext); !ok || len(got) != 0 {
+					t.Errorf("%s %s file = %v (exists %v), want it there and empty at once", f.scope, f.ext, got, ok)
+				}
+			}
+			for _, f := range c.untouched {
+				if got, _ := r.nginx.fileExt(f.scope, name, f.ext); !dnsEqual(got, []string{"192.0.2.20"}) {
+					t.Errorf("%s %s file = %v, want it untouched", f.scope, f.ext, got)
+				}
+			}
+			st, _ := r.store.row(name)
+			if st.Generation != 2 || st.RevokePendingSince == nil || st.UnusedSince != nil {
+				t.Errorf("row = %+v, want a new generation with a revocation waiting, still used", st)
+			}
+			r.settle()
+			if marked := r.svc.hostIdxMarks.Load() != marks; marked != c.markIndex {
+				t.Errorf("host index marked = %v, want %v", marked, c.markIndex)
+			}
+		})
+	}
+}

@@ -320,7 +320,7 @@ func dnsApplyStateOf(rows map[string]model.DNSEntryState, apply dnsApplyView, la
 type dnsWarnInputs struct {
 	selfIPs    map[netip.Addr]bool       // NPG's own public IPs: DDNS records last updated with status ok
 	globalBans []netip.Prefix            // active global bans
-	hostBans   map[string][]netip.Prefix // active bans per host
+	hostBans   map[string][]netip.Prefix // active bans of each host a name is used on
 	ipv6Listen bool                      // global enable_ipv6
 }
 
@@ -481,7 +481,11 @@ func dnsDuplicates(refs []model.DNSReference, rows map[string]model.DNSEntryStat
 
 // refreshWarnings recomputes every name's warnings at the end of a
 // check and stores the ones that changed. Without a row there is nothing to
-// warn about, and nothing is read for it.
+// warn about, and nothing is read for it. banned looks at the bans that block
+// a name where it is used: the global bans everywhere, and a host's bans when
+// the name is in an access list the host uses or in the host's own URI block
+// exceptions, priority allow or rate limit exceptions. A global exception
+// list and the trusted list see the global bans alone.
 func (s *DNSEntryService) refreshWarnings(ctx context.Context, refs []model.DNSReference, notes map[string]dnsentry.ObserveNotes) {
 	rows, err := s.states.GetStates(ctx, nil)
 	if err != nil || len(rows) == 0 {
@@ -493,12 +497,25 @@ func (s *DNSEntryService) refreshWarnings(ctx context.Context, refs []model.DNSR
 	hostSet := make(map[string]bool)
 	for _, r := range refs {
 		kind, owner, ok := model.ParseDNSScope(r.Scope)
-		if !ok || kind != model.DNSScopeKindAccessList || idx == nil {
+		if !ok {
 			continue
 		}
-		for _, h := range idx.byList[owner] {
-			hostsOf[r.Name] = append(hostsOf[r.Name], h.hostID)
-			hostSet[h.hostID] = true
+		var hosts []string
+		switch kind {
+		case model.DNSScopeKindAccessList:
+			if idx != nil {
+				for _, h := range idx.byList[owner] {
+					hosts = append(hosts, h.hostID)
+				}
+			}
+		case model.DNSScopeKindURIBlock, model.DNSScopeKindPriority, model.DNSScopeKindRateLimit:
+			if owner != "global" {
+				hosts = []string{owner}
+			}
+		}
+		for _, h := range hosts {
+			hostsOf[r.Name] = append(hostsOf[r.Name], h)
+			hostSet[h] = true
 		}
 	}
 	in := s.loadWarnInputs(ctx, dnsSortedKeys(hostSet))

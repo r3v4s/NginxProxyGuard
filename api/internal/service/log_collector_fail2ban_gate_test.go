@@ -2,11 +2,14 @@ package service
 
 import (
 	"context"
+	"database/sql/driver"
 	"fmt"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/DATA-DOG/go-sqlmock"
 
 	"nginx-proxy-guard/internal/model"
 	"nginx-proxy-guard/internal/repository"
@@ -240,6 +243,99 @@ func TestFail2banGateWithTheDNSEntryService(t *testing.T) {
 		c.handleAccessLine(ctx, tc.line)
 		if got := f2bGateCount(f2b, tc.hostID, tc.ip); got != tc.want {
 			t.Errorf("%s: count = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// f2bGateSettingsRow is a system_settings row as SystemSettingsRepository.Get
+// reads it, with the global trusted IPs and domains given (the domains as a
+// text[] literal). It follows the repository's column list: a column added
+// there is added here.
+func f2bGateSettingsRow(trustedIPs, trustedNames string) []driver.Value {
+	at := time.Date(2026, 10, 15, 3, 0, 0, 0, time.UTC)
+	return []driver.Value{
+		"00000000-0000-4000-8000-0000000014b1", // id
+		false, nil, nil, false, "", nil, nil,   // geoip: enabled, license key, account id, auto update, interval, last updated, version
+		false, nil, false, false, int64(30), nil, nil, // acme: enabled, email, staging, auto renew, renew days, DNS provider, DNS credentials
+		nil, false, int64(30), false, false, // notification email, cert expiry, its days, security events, backup complete
+		int64(30), int64(90), int64(10), false, nil, // log and stats retention, backups kept, auto backup, its schedule
+		int64(5), int64(1095), int64(90), int64(30), int64(30), int64(1095), // DDNS interval; access, WAF, error, system and audit log retention
+		false, int64(7), int64(100), int64(5), true, false, int64(365), // raw log: enabled, retention, max size, rotations, compress, archive, archive retention
+		false, true, false, true, false, false, "", // bot filter defaults
+		"", "", "", "", // bot lists
+		false, int64(10), int64(300), int64(3600), // WAF auto-ban
+		trustedIPs, false, trustedNames, // global trusted IPs, their WAF bypass, global trusted domains
+		"", "none", "X-Forwarded-For", "", "allow", "system", "auto", // trusted proxies, preset, real IP header, exploit exceptions, direct IP access, font, error page language
+		true, []byte(`{}`), "{}", "{}", []byte(`{}`), // system logs: enabled, levels, exclude patterns, stdout excluded; DNS entry settings
+		at, at, // created_at, updated_at
+	}
+}
+
+// f2bGateSettingsRepo returns a SystemSettingsRepository over a mocked
+// database that answers f2bGateSettingsRow twice: once to this helper, which
+// reads it back so a fixture out of line with the repository fails here and
+// not as a trusted IP gone missing, and once to the collector (it keeps the
+// list for a minute).
+func f2bGateSettingsRepo(t *testing.T, trustedIPs, trustedNames string) *repository.SystemSettingsRepository {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	row := f2bGateSettingsRow(trustedIPs, trustedNames)
+	for i := 0; i < 2; i++ {
+		mock.ExpectQuery(`FROM system_settings`).WillReturnRows(sqlmock.NewRows(positionalColumns(len(row))).AddRow(row...))
+	}
+	repo := repository.NewSystemSettingsRepository(db)
+	if got, err := repo.Get(context.Background()); err != nil || got.GlobalTrustedIPs != trustedIPs || len(got.GlobalTrustedHostnames) == 0 {
+		t.Fatalf("the settings fixture no longer reads back; add the repository's new columns to it: %+v, %v", got, err)
+	}
+	return repo
+}
+
+// The global trusted domains let their addresses through the perimeter, never
+// past fail2ban or the WAF auto-ban: the collector trusts the static IPs
+// alone. A trusted domain's address is counted as any client is, a 403 it
+// got past a list block that includes the trusted domains too, while the
+// list's own 403 for a client outside it is still left out. A static trusted
+// IP is counted by neither.
+func TestLogCollectorTrustedIPsIgnoreTrustedDomains(t *testing.T) {
+	ctx := context.Background()
+	r, _ := dnsTrustedGateRig(t) // office.example.com publishes 192.0.2.20; trust1's list block includes it
+	c, f2b := f2bGateCollector(t, map[string]string{"trust1.example.com": dnsTrustH1, "app.example.com": f2bGateHost})
+	c.SetFail2banExemption(r.svc)
+	c.SetSystemSettingsRepo(f2bGateSettingsRepo(t, "192.0.2.5", "{office.example.com}"))
+	waf := NewWAFAutoBanService(nil, nil, nil, nil, nil, nil)
+	waf.enabled, waf.threshold = true, 1000 // counts in memory, never bans
+	c.SetWAFAutoBanService(waf)
+
+	for _, tc := range []struct {
+		name, hostID, ip, line string
+		want                   int
+	}{
+		{"a trusted domain's 404", f2bGateHost, "192.0.2.20", f2bGateLine("192.0.2.20", "app.example.com", "/x", 404, "-", "-"), 1},
+		{"a trusted domain's 403 past the list block", dnsTrustH1, "192.0.2.20", f2bGateLine("192.0.2.20", "trust1.example.com", "/x", 403, "-", "access_denied"), 1},
+		{"the list's own 403 for a client outside it", dnsTrustH1, "192.0.2.99", f2bGateLine("192.0.2.99", "trust1.example.com", "/x", 403, "-", "access_denied"), 0},
+		{"a static trusted IP's 404", f2bGateHost, "192.0.2.5", f2bGateLine("192.0.2.5", "app.example.com", "/x", 404, "-", "-"), 0},
+	} {
+		c.handleAccessLine(ctx, tc.line)
+		if got := f2bGateCount(f2b, tc.hostID, tc.ip); got != tc.want {
+			t.Errorf("%s: fail2ban count = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+
+	for _, tc := range []struct {
+		ip   string
+		want int
+	}{{"192.0.2.20", 1}, {"192.0.2.5", 0}} {
+		line := strings.Replace(modsecAuditTemplate3015, `"client_ip":"203.0.113.10"`, `"client_ip":"`+tc.ip+`"`, 1)
+		c.handleModSecLine(ctx, line, time.Now())
+		waf.mu.RLock()
+		got := len(waf.ipEvents[tc.ip])
+		waf.mu.RUnlock()
+		if got != tc.want {
+			t.Errorf("WAF auto-ban events of %s = %d, want %d", tc.ip, got, tc.want)
 		}
 	}
 }
