@@ -185,8 +185,12 @@ services:
     # The UI runs nginx as the non-root "nginx" user (see ui/Dockerfile). We drop
     # ALL capabilities and re-add only NET_BIND_SERVICE, which the non-root nginx
     # needs to bind the privileged container port 443.
-    security_opt:
-      - "no-new-privileges:true"
+    # No no-new-privileges here: where Docker cannot open ports below 1024 to
+    # non-root processes (kernels older than 4.11, e.g. Synology DSM 7), nginx
+    # binds 443 only through the file capability on its binary, and
+    # no-new-privileges makes the kernel drop it ("bind() to 0.0.0.0:443
+    # failed (13: Permission denied)"). With cap_drop ALL nothing in this
+    # container can gain more than NET_BIND_SERVICE anyway.
     cap_drop:
       - ALL
     cap_add:

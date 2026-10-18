@@ -28,5 +28,16 @@ if [ ! -f "$CERT_FILE" ] || [ ! -f "$KEY_FILE" ]; then
     echo "  - Validity: 100 years (36500 days)"
 fi
 
+# Where Docker cannot open ports below 1024 to non-root processes (kernels
+# older than 4.11, e.g. Synology DSM 7), nginx binds 443 only through the
+# capability on its binary, which no-new-privileges cancels. Say how to fix
+# it before nginx fails with "bind() to 0.0.0.0:443 failed (13: Permission
+# denied)".
+floor=$(cat /proc/sys/net/ipv4/ip_unprivileged_port_start 2>/dev/null || echo 1024)
+if [ "$(id -u)" != 0 ] && [ "$floor" -gt 443 ] && grep -q '^NoNewPrivs:[[:space:]]*1' /proc/self/status; then
+    echo "[Entrypoint] ERROR: this host keeps port 443 privileged and no-new-privileges stops nginx from binding it." >&2
+    echo "[Entrypoint] In docker-compose.yml, delete the 'security_opt' and '- \"no-new-privileges:true\"' lines of the ui service, then run: docker compose up -d" >&2
+fi
+
 # Start nginx
 exec nginx -g 'daemon off;'
