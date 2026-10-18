@@ -17,6 +17,9 @@ type GeoHandler struct {
 	proxyHostRepo    *repository.ProxyHostRepository
 	proxyHostService *service.ProxyHostService
 	audit            *service.AuditService
+	// dns is the DNS entry service (SetDNSEntries, #320). Without it the
+	// priority allow domain names are stored and checked against no limit.
+	dns dnsScopeSyncer
 }
 
 func NewGeoHandler(
@@ -54,19 +57,26 @@ func (h *GeoHandler) UpdateGlobal(c echo.Context) error {
 	if req.Mode != nil && *req.Mode != "whitelist" && *req.Mode != "blacklist" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Mode must be 'whitelist' or 'blacklist'"})
 	}
-	if err := model.ValidateGeoLists(req.Countries, req.AllowedIPs); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": trimInvalidInputPrefix(err)})
+	ctx := c.Request().Context()
+	if err := normalizeDNSNames("allowed_hostnames", req.AllowedHostnames); err != nil {
+		return geoRefused(c, err)
+	}
+	before := h.globalGeoBefore(ctx, req.AllowedIPs, req.AllowedHostnames != nil)
+	if err := h.checkGeoLists(ctx, globalPriorityScope, req.Countries, req.AllowedIPs, req.AllowedHostnames, before); err != nil {
+		return geoRefused(c, err)
 	}
 
-	g, err := h.globalGeoRepo.Upsert(c.Request().Context(), &req)
+	g, err := h.globalGeoRepo.Upsert(ctx, &req)
 	if err != nil {
 		return directInternalError(c, err)
 	}
+	h.syncGeoNames(ctx, globalPriorityScope, before, g.AllowedHostnames)
+	namesSent := req.AllowedHostnames != nil
 
 	// Regenerate all hosts so inheriting hosts pick up the new default.
-	if err := h.proxyHostService.SyncAllConfigs(c.Request().Context()); err != nil {
+	if err := h.proxyHostService.SyncAllConfigs(ctx); err != nil {
 		if reloadRefused(err) {
-			h.auditGlobalUpdate(c)
+			h.auditGlobalUpdate(c, namesSent, before, g.AllowedHostnames)
 		}
 		if status, body, ok := reloadRejectedResponse(err); ok {
 			return c.JSON(status, body)
@@ -74,16 +84,20 @@ func (h *GeoHandler) UpdateGlobal(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to regenerate configs: " + SafeErrorMessage(err)})
 	}
 
-	h.auditGlobalUpdate(c)
+	h.auditGlobalUpdate(c, namesSent, before, g.AllowedHostnames)
 
 	return c.JSON(http.StatusOK, g)
 }
 
-// auditGlobalUpdate records a change to the global geo default.
-func (h *GeoHandler) auditGlobalUpdate(c echo.Context) {
+// auditGlobalUpdate records a change to the global geo default and, when
+// the save sent the names, a change of them (#320).
+func (h *GeoHandler) auditGlobalUpdate(c echo.Context, namesSent bool, before geoBefore, names []string) {
 	if h.audit != nil {
 		auditCtx := service.ContextWithAudit(c.Request().Context(), c)
 		h.audit.LogGlobalGeoUpdate(auditCtx)
+		if namesSent {
+			auditDNSNames(auditCtx, h.audit, globalPriorityScope, before.names, names)
+		}
 	}
 }
 
@@ -141,24 +155,37 @@ func (h *GeoHandler) SetForProxyHost(c echo.Context) error {
 	if req.Mode != "whitelist" && req.Mode != "blacklist" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Mode must be 'whitelist' or 'blacklist'"})
 	}
-	if err := model.ValidateGeoLists(req.Countries, req.AllowedIPs); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": trimInvalidInputPrefix(err)})
+	ctx := c.Request().Context()
+	if err := normalizeDNSNames("allowed_hostnames", req.AllowedHostnames); err != nil {
+		return geoRefused(c, err)
+	}
+	scope := exceptionHostScope(model.DNSScopeKindPriority, host.ID)
+	before := h.hostGeoBefore(ctx, host.ID, req.AllowedIPs, req.AllowedHostnames != nil)
+	if err := h.checkGeoLists(ctx, scope, req.Countries, req.AllowedIPs, req.AllowedHostnames, before); err != nil {
+		return geoRefused(c, err)
 	}
 
-	geo, err := h.geoRepo.Upsert(c.Request().Context(), proxyHostID, &req)
+	geo, err := h.geoRepo.Upsert(ctx, proxyHostID, &req)
 	if err != nil {
 		return directInternalError(c, err)
+	}
+	h.syncGeoNames(ctx, scope, before, geo.AllowedHostnames)
+	audit := func() {
+		h.auditHostGeo(c, hostDomain(host), scope, map[string]interface{}{"enabled": geo.Enabled, "mode": geo.Mode},
+			req.AllowedHostnames != nil, before, geo.AllowedHostnames)
 	}
 
 	// Regenerate nginx config with geo restrictions (skip if requested)
 	if !skipReload {
 		if err := h.regenerateHostConfig(c, proxyHostID); err != nil {
 			if status, body, ok := reloadRejectedResponse(err); ok {
+				audit()
 				return c.JSON(status, body)
 			}
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to regenerate nginx config: " + SafeErrorMessage(err)})
 		}
 	}
+	audit()
 
 	return c.JSON(http.StatusOK, geo)
 }
@@ -171,25 +198,38 @@ func (h *GeoHandler) UpdateForProxyHost(c echo.Context) error {
 	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
 	}
-	if err := model.ValidateGeoLists(req.Countries, req.AllowedIPs); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": trimInvalidInputPrefix(err)})
+	ctx := c.Request().Context()
+	if err := normalizeDNSNames("allowed_hostnames", req.AllowedHostnames); err != nil {
+		return geoRefused(c, err)
+	}
+	before := h.hostGeoBefore(ctx, proxyHostID, req.AllowedIPs, req.AllowedHostnames != nil)
+	if err := h.checkGeoLists(ctx, exceptionHostScope(model.DNSScopeKindPriority, proxyHostID), req.Countries, req.AllowedIPs, req.AllowedHostnames, before); err != nil {
+		return geoRefused(c, err)
 	}
 
-	geo, err := h.geoRepo.Update(c.Request().Context(), proxyHostID, &req)
+	geo, err := h.geoRepo.Update(ctx, proxyHostID, &req)
 	if err != nil {
 		return directInternalError(c, err)
 	}
 	if geo == nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Geo restriction not found"})
 	}
+	scope := exceptionHostScope(model.DNSScopeKindPriority, geo.ProxyHostID)
+	h.syncGeoNames(ctx, scope, before, geo.AllowedHostnames)
+	audit := func() {
+		h.auditHostGeo(c, h.hostName(ctx, proxyHostID), scope, map[string]interface{}{"enabled": geo.Enabled, "mode": geo.Mode},
+			req.AllowedHostnames != nil, before, geo.AllowedHostnames)
+	}
 
 	// Regenerate nginx config
 	if err := h.regenerateHostConfig(c, proxyHostID); err != nil {
 		if status, body, ok := reloadRejectedResponse(err); ok {
+			audit()
 			return c.JSON(status, body)
 		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to regenerate nginx config: " + SafeErrorMessage(err)})
 	}
+	audit()
 
 	return c.JSON(http.StatusOK, geo)
 }
@@ -198,20 +238,30 @@ func (h *GeoHandler) UpdateForProxyHost(c echo.Context) error {
 func (h *GeoHandler) DeleteForProxyHost(c echo.Context) error {
 	proxyHostID := c.Param("id")
 	skipReload := c.QueryParam("skip_reload") == "true"
+	ctx := c.Request().Context()
+	before := h.hostGeoBefore(ctx, proxyHostID, nil, true)
 
-	if err := h.geoRepo.Delete(c.Request().Context(), proxyHostID); err != nil {
+	if err := h.geoRepo.Delete(ctx, proxyHostID); err != nil {
 		return directInternalError(c, err)
+	}
+	// The row's names leave with it: their files are emptied before the skip.
+	scope := exceptionHostScope(model.DNSScopeKindPriority, proxyHostID)
+	h.syncGeoNames(ctx, scope, before, nil)
+	audit := func() {
+		h.auditHostGeo(c, h.hostName(ctx, proxyHostID), scope, map[string]interface{}{"action": "delete"}, true, before, nil)
 	}
 
 	// Regenerate nginx config without geo restrictions (skip if requested)
 	if !skipReload {
 		if err := h.regenerateHostConfig(c, proxyHostID); err != nil {
 			if status, body, ok := reloadRejectedResponse(err); ok {
+				audit()
 				return c.JSON(status, body)
 			}
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to regenerate nginx config: " + SafeErrorMessage(err)})
 		}
 	}
+	audit()
 
 	return c.NoContent(http.StatusNoContent)
 }

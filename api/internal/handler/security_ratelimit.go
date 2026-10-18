@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -44,21 +45,31 @@ func (h *SecurityHandler) UpsertRateLimit(c echo.Context) error {
 	// error message was the first to ever mention. Unchanged values pass
 	// through — render-time filtering already keeps them out of nginx — and the
 	// moment the operator edits the field, the strict check applies.
+	// The domain names (#320) are checked whole, as they are new.
+	if err := normalizeDNSNames("whitelist_hostnames", req.WhitelistHostnames); err != nil {
+		return rateLimitRefused(c, err, "upsert rate limit")
+	}
+	var cur *model.RateLimit
+	if req.WhitelistIPs != nil || req.WhitelistHostnames != nil {
+		if stored, err := h.securityService.GetRateLimit(c.Request().Context(), proxyHostID); err == nil {
+			cur = stored
+		}
+	}
 	if req.WhitelistIPs != nil {
 		stored := ""
-		if cur, err := h.securityService.GetRateLimit(c.Request().Context(), proxyHostID); err == nil && cur != nil {
+		if cur != nil {
 			stored = cur.WhitelistIPs
 		}
 		if *req.WhitelistIPs != stored {
-			if err := model.ValidateIPWhitelist(*req.WhitelistIPs); err != nil {
-				return badRequestError(c, err.Error())
+			if err := checkWhitelistIPs(*req.WhitelistIPs); err != nil {
+				return rateLimitRefused(c, err, "upsert rate limit")
 			}
 		}
 	}
 
 	rateLimit, err := h.securityService.UpsertRateLimit(c.Request().Context(), proxyHostID, &req)
 	if err != nil {
-		return internalError(c, "upsert rate limit", err)
+		return rateLimitRefused(c, err, "upsert rate limit")
 	}
 
 	// Get host name for audit
@@ -67,6 +78,13 @@ func (h *SecurityHandler) UpsertRateLimit(c echo.Context) error {
 	// Audit log
 	auditCtx := service.ContextWithAudit(c.Request().Context(), c)
 	h.audit.LogSecurityFeatureUpdate(auditCtx, "rate_limit", hostName, rateLimit.Enabled, nil)
+	if req.WhitelistHostnames != nil {
+		var storedNames []string
+		if cur != nil {
+			storedNames = cur.WhitelistHostnames
+		}
+		auditDNSNames(auditCtx, h.audit, exceptionHostScope(model.DNSScopeKindRateLimit, rateLimit.ProxyHostID), storedNames, rateLimit.WhitelistHostnames)
+	}
 
 	return c.JSON(http.StatusOK, rateLimit)
 }
@@ -76,6 +94,7 @@ func (h *SecurityHandler) DeleteRateLimit(c echo.Context) error {
 
 	// Get host name for audit
 	hostName := h.securityService.GetHostName(c.Request().Context(), proxyHostID)
+	storedNames := h.storedRateLimitNames(c.Request().Context(), proxyHostID)
 
 	if err := h.securityService.DeleteRateLimit(c.Request().Context(), proxyHostID); err != nil {
 		return internalError(c, "delete rate limit", err)
@@ -84,6 +103,7 @@ func (h *SecurityHandler) DeleteRateLimit(c echo.Context) error {
 	// Audit log
 	auditCtx := service.ContextWithAudit(c.Request().Context(), c)
 	h.audit.LogSecurityFeatureUpdate(auditCtx, "rate_limit", hostName, false, nil)
+	auditDNSNames(auditCtx, h.audit, exceptionHostScope(model.DNSScopeKindRateLimit, proxyHostID), storedNames, nil)
 
 	return c.NoContent(http.StatusNoContent)
 }
@@ -386,28 +406,51 @@ func (h *SecurityHandler) UpdateGlobalRateLimit(c echo.Context) error {
 	}
 	// Same grandfather rule as the per-host endpoint: validate only a CHANGED
 	// list, so a pre-validation row cannot freeze the Global Rate Limit form.
+	if err := normalizeDNSNames("whitelist_hostnames", req.WhitelistHostnames); err != nil {
+		return rateLimitRefused(c, err, "update global rate limit")
+	}
+	var cur *model.GlobalRateLimit
+	if req.WhitelistIPs != nil || req.WhitelistHostnames != nil {
+		if stored, err := h.securityService.GetGlobalRateLimit(c.Request().Context()); err == nil {
+			cur = stored
+		}
+	}
 	if req.WhitelistIPs != nil {
 		stored := ""
-		if cur, err := h.securityService.GetGlobalRateLimit(c.Request().Context()); err == nil && cur != nil {
+		if cur != nil {
 			stored = cur.WhitelistIPs
 		}
 		if *req.WhitelistIPs != stored {
-			if err := model.ValidateIPWhitelist(*req.WhitelistIPs); err != nil {
-				return badRequestError(c, err.Error())
+			if err := checkWhitelistIPs(*req.WhitelistIPs); err != nil {
+				return rateLimitRefused(c, err, "update global rate limit")
 			}
+		}
+	}
+	// The names' change (#320) is recorded with the save: the names saved
+	// are the request's, which a refused reload does not undo.
+	auditNames := func(auditCtx context.Context) {
+		if req.WhitelistHostnames != nil {
+			var storedNames []string
+			if cur != nil {
+				storedNames = cur.WhitelistHostnames
+			}
+			auditDNSNames(auditCtx, h.audit, globalRateLimitScope, storedNames, *req.WhitelistHostnames)
 		}
 	}
 
 	g, err := h.securityService.UpdateGlobalRateLimit(c.Request().Context(), &req)
 	if err != nil {
 		if reloadRefused(err) {
-			h.audit.LogGlobalRateLimitUpdate(service.ContextWithAudit(c.Request().Context(), c))
+			auditCtx := service.ContextWithAudit(c.Request().Context(), c)
+			h.audit.LogGlobalRateLimitUpdate(auditCtx)
+			auditNames(auditCtx)
 		}
-		return internalError(c, "update global rate limit", err)
+		return rateLimitRefused(c, err, "update global rate limit")
 	}
 
 	auditCtx := service.ContextWithAudit(c.Request().Context(), c)
 	h.audit.LogGlobalRateLimitUpdate(auditCtx)
+	auditNames(auditCtx)
 
 	return c.JSON(http.StatusOK, g)
 }

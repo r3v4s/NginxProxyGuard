@@ -11222,10 +11222,10 @@ components:
           type: string
         field:
           type: string
-          description: "The request field a 400 is about, by its position in the request (access lists: items[2].address)."
+          description: "The request field a 400 is about, by its position in the request (access lists: items[2].address; exception lists: allowed_hostnames[1], exception_ips[0], global_trusted_ips[3] for the fourth line, whitelist_ips)."
         code:
           type: string
-          description: "Machine-readable reason, when there is one. nginx_reload_rejected (409): the change is saved, but the running nginx refused to load it; details holds nginx's message. Access list rules (400, with field): hostname_needs_kind, deny_hostname, duplicate_hostname, deny_all_with_hostname, legacy_not_in_list, limit, or the code of a domain name rule. POST /access-lists/{id}/dns-confirm: not_in_list, not_in_review (400); lookup_unavailable, observation_changed (409)."
+          description: "Machine-readable reason, when there is one. nginx_reload_rejected (409): the change is saved, but the running nginx refused to load it; details holds nginx's message. Access list rules (400, with field): hostname_needs_kind, deny_hostname, duplicate_hostname, deny_all_with_hostname, legacy_not_in_list, limit, or the code of a domain name rule. Exception lists (URI block exceptions, priority allow, rate limit exceptions, global trusted list; 400, with field): hostname_in_ip_field (a domain name in an IP field; error names the field that takes it), limit, or the code of a domain name rule. POST /access-lists/{id}/dns-confirm: not_in_list, not_in_review (400); lookup_unavailable, observation_changed (409)."
         id:
           type: string
           format: uuid

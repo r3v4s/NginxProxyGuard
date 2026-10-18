@@ -73,6 +73,7 @@ func InitHandlers(
 		svcs.ProxyHost,
 		svcs.Audit,
 	)
+	h.Geo.SetDNSEntries(svcs.DNSEntries)
 	h.Security = handler.NewSecurityHandler(svcs.Security, svcs.Audit)
 	h.Settings = handler.NewSettingsHandler(svcs.Settings, svcs.Audit, svcs.CloudflareTunnel)
 	h.Settings.SetDNSEntries(svcs.DNSEntries)

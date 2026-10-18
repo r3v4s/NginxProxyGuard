@@ -418,6 +418,42 @@ func ValidateGeoLists(countries, allowedIPs []string) error {
 	return nil
 }
 
+// ValidateChangedGeoLists is ValidateGeoLists for a save that sends the
+// stored priority allow entries back, as the forms do (#320). An entry that
+// is not an IP address or a CIDR range passes, unchanged, when stored
+// holds it already: before v2.61.1 the field was not checked, so a stored
+// list can hold a domain name, the configs leave it out, and it must not
+// block a save of the rest of the form. A new one is refused, with
+// CodeHostnameInIPField when it is a domain name (it goes in
+// allowed_hostnames). Countries are all checked, and entries normalized, as
+// ValidateGeoLists does; entries are compared without the whitespace around
+// them.
+func ValidateChangedGeoLists(countries, allowedIPs, stored []string) error {
+	if err := ValidateGeoLists(countries, nil); err != nil {
+		return err
+	}
+	kept := make(map[string]bool, len(stored))
+	for _, s := range stored {
+		kept[strings.TrimSpace(s)] = true
+	}
+	for i := range allowedIPs {
+		entry := strings.TrimSpace(allowedIPs[i])
+		if normalized, ok := NormalizeIPOrCIDR(entry); ok {
+			allowedIPs[i] = normalized
+			continue
+		}
+		if kept[entry] {
+			continue
+		}
+		field := fmt.Sprintf("allowed_ips[%d]", i)
+		if e := HostnameInIPField(field, entry, "allowed_hostnames"); e != nil {
+			return e
+		}
+		return fmt.Errorf("%w: %s %.60q is not an IP address or CIDR range", ErrInvalidInput, field, allowedIPs[i])
+	}
+	return nil
+}
+
 // UsableGeoLists returns the countries and priority allow entries
 // ValidateGeoLists accepts (normalized as it saves them), and the rest, for a
 // restore that keeps what it can.

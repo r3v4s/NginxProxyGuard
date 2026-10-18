@@ -130,11 +130,14 @@ func (h *SystemSettingsHandler) UpdateSystemSettings(c echo.Context) error {
 
 	// One read of the stored row serves every field compared with it: the
 	// raw log files, the domain entry tunables (merged over the stored
-	// object, #320) and the WAF-bypass switch (audited as before → after).
+	// object, #320), the WAF-bypass switch (audited as before → after) and
+	// the global trusted list (its stored lines pass as they are, and its
+	// names are compared, #320).
 	rawLogFields := req.RawLogRetentionDays != nil || req.RawLogMaxSizeMB != nil || req.RawLogRotateCount != nil ||
 		req.RawLogArchiveRetentionDays != nil || req.RawLogArchiveEnabled != nil
 	var cur *model.SystemSettings
-	if rawLogFields || req.DNSEntrySettings != nil || req.GlobalTrustedIPsBypassWAF != nil {
+	if rawLogFields || req.DNSEntrySettings != nil || req.GlobalTrustedIPsBypassWAF != nil ||
+		req.GlobalTrustedIPs != nil || req.GlobalTrustedHostnames != nil {
 		stored, err := h.repo.Get(c.Request().Context())
 		if err != nil {
 			return directInternalError(c, err)
@@ -191,6 +194,13 @@ func (h *SystemSettingsHandler) UpdateSystemSettings(c echo.Context) error {
 		req.RealIPHeader = &normalized
 	}
 
+	// The global trusted list (#320): the IP lines a save changes, the
+	// domain names and their limits.
+	trustedNames, err := h.checkTrustedLists(c.Request().Context(), &req, cur)
+	if err != nil {
+		return trustedListsRefused(c, err)
+	}
+
 	// Domain entry tunables (#320): merged over the stored object and saved
 	// whole; a refused key is named.
 	dnsSave, err := prepareDNSEntrySettings(&req, cur)
@@ -205,6 +215,9 @@ func (h *SystemSettingsHandler) UpdateSystemSettings(c echo.Context) error {
 	// Audit a change of the tunables, then let the DNS entry service act on
 	// it at once: switching the feature off empties every name's files now.
 	h.afterDNSEntrySettingsSave(c, dnsSave)
+	// The global trusted names go to the DNS entry service before the
+	// worker below re-renders nginx.conf and the hosts.
+	h.finishTrustedSave(c, trustedNames, settings)
 
 	// Apply the raw log settings if they changed
 	if req.RawLogEnabled != nil || req.RawLogRetentionDays != nil ||
@@ -240,7 +253,9 @@ func (h *SystemSettingsHandler) UpdateSystemSettings(c echo.Context) error {
 	// Also regenerate when only the WAF-bypass flag (#166) toggles — the
 	// http-level ctl:ruleEngine=Off rule lives in nginx.conf, so a flag change
 	// with unchanged trusted-IP list must still re-render the main config.
-	if req.GlobalTrustedIPs != nil || req.GlobalTrustedIPsBypassWAF != nil ||
+	// And when only the trusted domain names change (#320): nginx.conf and
+	// the hosts include their files only while a name is set.
+	if req.GlobalTrustedIPs != nil || req.GlobalTrustedIPsBypassWAF != nil || req.GlobalTrustedHostnames != nil ||
 		req.TrustedProxyCIDRs != nil || req.TrustedProxyPreset != nil || req.RealIPHeader != nil {
 		trusted := service.ResolveTrustedIPConfig(settings)
 		// Trusted proxies live in the same http-level block, so the same

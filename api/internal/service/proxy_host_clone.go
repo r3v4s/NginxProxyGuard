@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 
 	"nginx-proxy-guard/internal/model"
@@ -227,6 +228,9 @@ func (s *ProxyHostService) Clone(ctx context.Context, sourceID string, req *mode
 		}
 		return nil, fmt.Errorf("failed to clone related configurations: %w", err)
 	}
+	// The copied lists' domain names (#320) get the new host's scopes before
+	// its config is written.
+	s.syncClonedDNSNames(ctx, newHost.ID)
 
 	// Regenerate nginx config to include cloned settings
 	if newHost.Enabled {
@@ -241,6 +245,76 @@ func (s *ProxyHostService) Clone(ctx context.Context, sourceID string, req *mode
 
 	// Return fresh host data
 	return s.GetByID(ctx, newHost.ID)
+}
+
+// SetDNSEntries wires the DNS entry service (#320): a clone hands the
+// domain names of the lists it copied to it, under the new host's scopes.
+// Without it the names are copied, and the next DNS check writes their
+// files.
+func (s *ProxyHostService) SetDNSEntries(svc dnsScopeSyncer) {
+	if dnsSyncerMissing(svc) {
+		return
+	}
+	s.dns = svc
+}
+
+// HostDNSNames returns the domain names (#320) of a host's own exception
+// lists, by scope: prio:<id> (priority allow), rl:<id> (rate limit
+// exceptions) and uri:<id> (URI block exceptions), each only when it has
+// names. A list the service has no repository for is skipped.
+func (s *ProxyHostService) HostDNSNames(ctx context.Context, hostID string) (map[string][]string, error) {
+	out := make(map[string][]string)
+	if s.geoRepo != nil {
+		geo, err := s.geoRepo.GetByProxyHostID(ctx, hostID)
+		if err != nil {
+			return nil, fmt.Errorf("read the geo restriction: %w", err)
+		}
+		if geo != nil && len(geo.AllowedHostnames) > 0 {
+			out[hostDNSScope(model.DNSScopeKindPriority, geo.ProxyHostID)] = geo.AllowedHostnames
+		}
+	}
+	if s.rateLimitRepo != nil {
+		rl, err := s.rateLimitRepo.GetByProxyHostID(ctx, hostID)
+		if err != nil {
+			return nil, fmt.Errorf("read the rate limit: %w", err)
+		}
+		if rl != nil && len(rl.WhitelistHostnames) > 0 {
+			out[rateLimitDNSScope(rl.ProxyHostID)] = rl.WhitelistHostnames
+		}
+	}
+	if s.uriBlockRepo != nil {
+		ub, err := s.uriBlockRepo.GetByProxyHostID(ctx, hostID)
+		if err != nil {
+			return nil, fmt.Errorf("read the URI block: %w", err)
+		}
+		if ub != nil && len(ub.ExceptionHostnames) > 0 {
+			out[uriBlockDNSScope(ub.ProxyHostID)] = ub.ExceptionHostnames
+		}
+	}
+	return out, nil
+}
+
+// syncClonedDNSNames hands the domain names of a clone's lists
+// (HostDNSNames) to the DNS entry service, one scope at a time in scope
+// order. A failure is logged: the next DNS check does the same from the
+// database.
+func (s *ProxyHostService) syncClonedDNSNames(ctx context.Context, hostID string) {
+	if s.dns == nil {
+		return
+	}
+	names, err := s.HostDNSNames(ctx, hostID)
+	if err != nil {
+		log.Printf("[DNSEntries] WARN: the clone %s is saved, but its domains were not handed over (%v); the next DNS check writes their files", hostID, err)
+		return
+	}
+	scopes := make([]string, 0, len(names))
+	for scope := range names {
+		scopes = append(scopes, scope)
+	}
+	sort.Strings(scopes)
+	for _, scope := range scopes {
+		syncDNSScope(ctx, s.dns, scope, false, names[scope])
+	}
 }
 
 // cloneRelatedConfigs copies all related configurations from source to target host
@@ -259,6 +333,8 @@ func (s *ProxyHostService) cloneRelatedConfigs(ctx context.Context, sourceID, ta
 				AllowSearchBots: &geo.AllowSearchBots,
 				Enabled:         &geo.Enabled,
 				ChallengeMode:   &geo.ChallengeMode,
+
+				AllowedHostnames: &geo.AllowedHostnames,
 			}
 			if _, err := s.geoRepo.Upsert(ctx, targetID, geoReq); err != nil {
 				log.Printf("[Clone] Failed to clone geo restriction: %v", err)
@@ -285,6 +361,8 @@ func (s *ProxyHostService) cloneRelatedConfigs(ctx context.Context, sourceID, ta
 				// into INHERIT: the copy silently picked the global rate limit
 				// back up while looking identical in the UI list.
 				DisableGlobal: &rl.DisableGlobal,
+
+				WhitelistHostnames: &rl.WhitelistHostnames,
 			}
 			if _, err := s.rateLimitRepo.Upsert(ctx, targetID, rlReq); err != nil {
 				log.Printf("[Clone] Failed to clone rate limit: %v", err)
@@ -386,6 +464,8 @@ func (s *ProxyHostService) cloneRelatedConfigs(ctx context.Context, sourceID, ta
 				Rules:           ub.Rules,
 				ExceptionIPs:    ub.ExceptionIPs,
 				AllowPrivateIPs: &ub.AllowPrivateIPs,
+
+				ExceptionHostnames: &ub.ExceptionHostnames,
 			}
 			if _, err := s.uriBlockRepo.Upsert(ctx, targetID, ubReq); err != nil {
 				log.Printf("[Clone] Failed to clone URI block: %v", err)

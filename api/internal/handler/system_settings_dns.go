@@ -19,9 +19,11 @@ import (
 // the dns_entry.apply_failed alert.
 
 // dnsSettingsChanger is what a settings save needs of
-// service.DNSEntryService.
+// service.DNSEntryService: the tunables, and the global trusted domain
+// names (scope trusted).
 type dnsSettingsChanger interface {
 	SettingsChanged(ctx context.Context, before, after model.DNSEntrySettings)
+	dnsScopeSyncer
 }
 
 // dnsSettingsAuditor records a change of the tunables (service.AuditService).

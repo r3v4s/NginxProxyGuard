@@ -284,6 +284,7 @@ func formatActionLabel(action string) string {
 		"dns_entry_revoke_blocked": "도메인 항목 회수 막힘·풀림",
 		"dns_entries_env_disabled": "도메인 항목 환경변수로 꺼짐",
 		"dns_entry_settings_changed": "도메인 항목 설정 변경",
+		"dns_entries_changed":        "목록 도메인 변경",
 	}
 
 	if label, ok := labels[action]; ok {

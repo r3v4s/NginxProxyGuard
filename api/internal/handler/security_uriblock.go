@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/labstack/echo/v4"
 
@@ -34,14 +33,14 @@ func (h *SecurityHandler) UpsertURIBlock(c echo.Context) error {
 		return badRequestError(c, "Invalid request body")
 	}
 
-	if len(req.ExceptionIPs) > 0 {
-		if invalid := ValidateIPList(req.ExceptionIPs); len(invalid) > 0 {
-			return badRequestError(c, fmt.Sprintf("Invalid IP address(es) in exception_ips: %s", strings.Join(invalid, ", ")))
-		}
+	if err := checkURIBlockExceptions(req.ExceptionIPs, req.ExceptionHostnames); err != nil {
+		return uriBlockRefused(c, err, "upsert URI block")
 	}
 	var stored []model.URIBlockRule
+	var storedNames []string
 	if cur, err := h.securityService.GetURIBlock(c.Request().Context(), proxyHostID); err == nil && cur != nil {
 		stored = cur.Rules
+		storedNames = cur.ExceptionHostnames
 	}
 	if err := validateChangedURIBlockRules(req.Rules, stored); err != nil {
 		return badRequestError(c, err.Error())
@@ -49,7 +48,7 @@ func (h *SecurityHandler) UpsertURIBlock(c echo.Context) error {
 
 	uriBlock, err := h.securityService.UpsertURIBlock(c.Request().Context(), proxyHostID, &req, skipReload)
 	if err != nil {
-		return internalError(c, "upsert URI block", err)
+		return uriBlockRefused(c, err, "upsert URI block")
 	}
 
 	// Get host name for audit
@@ -58,6 +57,9 @@ func (h *SecurityHandler) UpsertURIBlock(c echo.Context) error {
 	// Audit log
 	auditCtx := service.ContextWithAudit(c.Request().Context(), c)
 	h.audit.LogSecurityFeatureUpdate(auditCtx, "uri_block", hostName, uriBlock.Enabled, nil)
+	if req.ExceptionHostnames != nil {
+		auditDNSNames(auditCtx, h.audit, exceptionHostScope(model.DNSScopeKindURIBlock, uriBlock.ProxyHostID), storedNames, uriBlock.ExceptionHostnames)
+	}
 
 	return c.JSON(http.StatusOK, uriBlock)
 }
@@ -67,6 +69,7 @@ func (h *SecurityHandler) DeleteURIBlock(c echo.Context) error {
 
 	// Get host name for audit
 	hostName := h.securityService.GetHostName(c.Request().Context(), proxyHostID)
+	storedNames := h.storedURIBlockNames(c.Request().Context(), proxyHostID)
 
 	if err := h.securityService.DeleteURIBlock(c.Request().Context(), proxyHostID); err != nil {
 		return internalError(c, "delete URI block", err)
@@ -75,6 +78,7 @@ func (h *SecurityHandler) DeleteURIBlock(c echo.Context) error {
 	// Audit log
 	auditCtx := service.ContextWithAudit(c.Request().Context(), c)
 	h.audit.LogSecurityFeatureUpdate(auditCtx, "uri_block", hostName, false, nil)
+	auditDNSNames(auditCtx, h.audit, exceptionHostScope(model.DNSScopeKindURIBlock, proxyHostID), storedNames, nil)
 
 	return c.NoContent(http.StatusNoContent)
 }
@@ -230,14 +234,14 @@ func (h *SecurityHandler) UpdateGlobalURIBlock(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
 	}
 
-	if len(req.ExceptionIPs) > 0 {
-		if invalid := ValidateIPList(req.ExceptionIPs); len(invalid) > 0 {
-			return badRequestError(c, fmt.Sprintf("Invalid IP address(es) in exception_ips: %s", strings.Join(invalid, ", ")))
-		}
+	if err := checkURIBlockExceptions(req.ExceptionIPs, req.ExceptionHostnames); err != nil {
+		return uriBlockRefused(c, err, "update global URI block")
 	}
 	var stored []model.URIBlockRule
+	var storedNames []string
 	if cur, err := h.securityService.GetGlobalURIBlock(c.Request().Context()); err == nil && cur != nil {
 		stored = cur.Rules
+		storedNames = cur.ExceptionHostnames
 	}
 	if err := validateChangedURIBlockRules(req.Rules, stored); err != nil {
 		return badRequestError(c, err.Error())
@@ -245,10 +249,17 @@ func (h *SecurityHandler) UpdateGlobalURIBlock(c echo.Context) error {
 
 	block, err := h.securityService.UpdateGlobalURIBlock(c.Request().Context(), &req)
 	if err != nil {
+		if body, ok := exceptionListRefusal(err, "exception_hostnames"); ok {
+			return c.JSON(http.StatusBadRequest, body)
+		}
 		if reloadRefused(err) && block != nil {
-			h.audit.LogSecurityFeatureUpdate(service.ContextWithAudit(c.Request().Context(), c), "global_uri_block", "global", block.Enabled, map[string]interface{}{
+			auditCtx := service.ContextWithAudit(c.Request().Context(), c)
+			h.audit.LogSecurityFeatureUpdate(auditCtx, "global_uri_block", "global", block.Enabled, map[string]interface{}{
 				"rules_count": len(block.Rules),
 			})
+			if req.ExceptionHostnames != nil {
+				auditDNSNames(auditCtx, h.audit, globalURIBlockScope, storedNames, block.ExceptionHostnames)
+			}
 			return internalError(c, "update global URI block", err)
 		}
 		return databaseError(c, "update global URI block", err)
@@ -259,6 +270,9 @@ func (h *SecurityHandler) UpdateGlobalURIBlock(c echo.Context) error {
 	h.audit.LogSecurityFeatureUpdate(auditCtx, "global_uri_block", "global", block.Enabled, map[string]interface{}{
 		"rules_count": len(block.Rules),
 	})
+	if req.ExceptionHostnames != nil {
+		auditDNSNames(auditCtx, h.audit, globalURIBlockScope, storedNames, block.ExceptionHostnames)
+	}
 
 	return c.JSON(http.StatusOK, block)
 }

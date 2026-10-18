@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -454,7 +455,7 @@ func (h *ProxyHostHandler) Clone(c echo.Context) error {
 		if reloadRefused(err) && host != nil {
 			// The clone is saved and its file is on disk (the service keeps
 			// both): record it, and name it in the 409.
-			h.auditClone(c, sourceHost, &req)
+			h.auditClone(c, sourceHost, host, &req)
 			return reloadRejectedWithID(c, "clone proxy host", err, host.ID)
 		}
 		errMsg := err.Error()
@@ -470,15 +471,24 @@ func (h *ProxyHostHandler) Clone(c echo.Context) error {
 		return internalError(c, "clone proxy host", err)
 	}
 
-	h.auditClone(c, sourceHost, &req)
+	h.auditClone(c, sourceHost, host, &req)
 
 	return c.JSON(http.StatusCreated, host)
 }
 
-// auditClone records a clone of sourceHost under req's domain names.
-func (h *ProxyHostHandler) auditClone(c echo.Context, sourceHost *model.ProxyHost, req *model.CloneProxyHostRequest) {
+// auditClone records a clone of sourceHost under req's domain names, with
+// the domain names (#320) the clone's lists got.
+func (h *ProxyHostHandler) auditClone(c echo.Context, sourceHost, clone *model.ProxyHost, req *model.CloneProxyHostRequest) {
 	if sourceHost != nil {
 		auditCtx := service.ContextWithAudit(c.Request().Context(), c)
-		h.audit.LogProxyHostClone(auditCtx, sourceHost.DomainNames, req.DomainNames)
+		var dnsNames map[string][]string
+		if clone != nil {
+			names, err := h.service.HostDNSNames(c.Request().Context(), clone.ID)
+			if err != nil {
+				log.Printf("[ProxyHost] WARN: the audit of clone %s does not name its domains: %v", clone.ID, err)
+			}
+			dnsNames = names
+		}
+		h.audit.LogProxyHostClone(auditCtx, sourceHost.DomainNames, req.DomainNames, dnsNames)
 	}
 }

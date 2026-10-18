@@ -43,6 +43,8 @@ type SecurityService struct {
 	// is the edge, and one global ban takes every site down for everyone
 	// behind that edge (#275).
 	systemSettingsRepo *repository.SystemSettingsRepository
+
+	dns dnsScopeSyncer // DNS entry service (SetDNSEntries, #320); nil: names are only stored
 }
 
 // SetSystemSettingsRepo wires the settings the global jail's precondition needs.
@@ -179,10 +181,15 @@ func (s *SecurityService) GetRateLimit(ctx context.Context, proxyHostID string) 
 }
 
 func (s *SecurityService) UpsertRateLimit(ctx context.Context, proxyHostID string, req *model.CreateRateLimitRequest) (*model.RateLimit, error) {
+	if err := checkDNSLimits(ctx, s.dns, rateLimitDNSScope(proxyHostID), req.WhitelistHostnames); err != nil {
+		return nil, err
+	}
+	hadNames := req.WhitelistHostnames != nil && s.rateLimitHadNames(ctx, proxyHostID)
 	rateLimit, err := s.rateLimitRepo.Upsert(ctx, proxyHostID, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upsert rate limit: %w", err)
 	}
+	syncDNSScope(ctx, s.dns, rateLimitDNSScope(rateLimit.ProxyHostID), hadNames, rateLimit.WhitelistHostnames)
 
 	// Regenerate nginx config to apply rate limit changes
 	host, _ := s.proxyHostRepo.GetByID(ctx, proxyHostID)
@@ -197,10 +204,12 @@ func (s *SecurityService) UpsertRateLimit(ctx context.Context, proxyHostID strin
 
 func (s *SecurityService) DeleteRateLimit(ctx context.Context, proxyHostID string) error {
 	host, _ := s.proxyHostRepo.GetByID(ctx, proxyHostID)
+	hadNames := s.rateLimitHadNames(ctx, proxyHostID)
 
 	if err := s.rateLimitRepo.Delete(ctx, proxyHostID); err != nil {
 		return fmt.Errorf("failed to delete rate limit: %w", err)
 	}
+	syncDNSScope(ctx, s.dns, rateLimitDNSScope(proxyHostID), hadNames, nil)
 
 	// Regenerate nginx config to remove rate limit
 	if host != nil && host.Enabled && s.proxyHostService != nil {
@@ -920,10 +929,15 @@ func (s *SecurityService) UpdateGlobalRateLimit(ctx context.Context, req *model.
 	if s.globalRateLimitRepo == nil {
 		return nil, fmt.Errorf("global rate limit is not available")
 	}
+	if err := checkDNSLimits(ctx, s.dns, globalRateLimitDNSScope, req.WhitelistHostnames); err != nil {
+		return nil, err
+	}
+	hadNames := req.WhitelistHostnames != nil && s.globalRateLimitHadNames(ctx)
 	g, err := s.globalRateLimitRepo.Upsert(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update global rate limit: %w", err)
 	}
+	syncDNSScope(ctx, s.dns, globalRateLimitDNSScope, hadNames, g.WhitelistHostnames)
 	if s.proxyHostService != nil {
 		if err := s.proxyHostService.SyncAllConfigs(ctx); err != nil {
 			return nil, fmt.Errorf("failed to regenerate configs: %w", err)

@@ -21,6 +21,11 @@ func (f *fakeSettingsChanger) SettingsChanged(ctx context.Context, before, after
 	f.cancelled = append(f.cancelled, ctx.Err() != nil)
 }
 
+// The global trusted domains are not what these tests are about.
+func (f *fakeSettingsChanger) ValidateScopeNames(context.Context, string, []string) error { return nil }
+
+func (f *fakeSettingsChanger) SyncScope(context.Context, string, []string) error { return nil }
+
 // fakeSettingsAudit records the dns_entry_settings_changed entries, and
 // whether each came on a context already cancelled.
 type fakeSettingsAudit struct {

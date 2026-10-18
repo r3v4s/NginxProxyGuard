@@ -90,6 +90,9 @@ func initDNSEntries(nginxManager *nginx.Manager, repos *Repositories, svcs *Serv
 		SystemLog: repos.SystemLog,
 	}, dnsEntryOptions())
 	nginxManager.SetReloadHooks(svcs.DNSEntries.ReloadHooks())
+	// The exception lists' saves and a clone hand their domain names to it.
+	svcs.Security.SetDNSEntries(svcs.DNSEntries)
+	svcs.ProxyHost.SetDNSEntries(svcs.DNSEntries)
 }
 
 // startDNSEntries is the domain entries' boot step. It runs

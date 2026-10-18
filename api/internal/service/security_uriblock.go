@@ -34,6 +34,10 @@ func (s *SecurityService) GetURIBlock(ctx context.Context, proxyHostID string) (
 }
 
 func (s *SecurityService) UpsertURIBlock(ctx context.Context, proxyHostID string, req *model.CreateURIBlockRequest, skipReload bool) (*model.URIBlock, error) {
+	if err := checkDNSLimits(ctx, s.dns, uriBlockDNSScope(proxyHostID), req.ExceptionHostnames); err != nil {
+		return nil, err
+	}
+	hadNames := req.ExceptionHostnames != nil && s.uriBlockHadNames(ctx, proxyHostID)
 	uriBlock, err := s.uriBlockRepo.Upsert(ctx, proxyHostID, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upsert URI block: %w", err)
@@ -41,6 +45,10 @@ func (s *SecurityService) UpsertURIBlock(ctx context.Context, proxyHostID string
 
 	// Update cache
 	s.cacheURIBlock(ctx, proxyHostID, uriBlock)
+
+	// The domain names go to the DNS entry service before the skip: the host
+	// form saves with skip_reload and reloads once at the end (#320).
+	syncDNSScope(ctx, s.dns, uriBlockDNSScope(uriBlock.ProxyHostID), hadNames, uriBlock.ExceptionHostnames)
 
 	// Regenerate nginx config with debounced reload (skip if requested)
 	if !skipReload {
@@ -60,6 +68,7 @@ func (s *SecurityService) UpsertURIBlock(ctx context.Context, proxyHostID string
 
 func (s *SecurityService) DeleteURIBlock(ctx context.Context, proxyHostID string) error {
 	host, _ := s.proxyHostRepo.GetByID(ctx, proxyHostID)
+	hadNames := s.uriBlockHadNames(ctx, proxyHostID)
 
 	if err := s.uriBlockRepo.Delete(ctx, proxyHostID); err != nil {
 		return fmt.Errorf("failed to delete URI block: %w", err)
@@ -69,6 +78,7 @@ func (s *SecurityService) DeleteURIBlock(ctx context.Context, proxyHostID string
 	if s.redisCache != nil {
 		s.redisCache.DeleteURIBlock(ctx, proxyHostID)
 	}
+	syncDNSScope(ctx, s.dns, uriBlockDNSScope(proxyHostID), hadNames, nil)
 
 	// Regenerate nginx config with debounced reload
 	if host != nil && host.Enabled && s.proxyHostService != nil {
@@ -230,10 +240,15 @@ func (s *SecurityService) GetGlobalURIBlock(ctx context.Context) (*model.GlobalU
 }
 
 func (s *SecurityService) UpdateGlobalURIBlock(ctx context.Context, req *model.CreateGlobalURIBlockRequest) (*model.GlobalURIBlock, error) {
+	if err := checkDNSLimits(ctx, s.dns, globalURIBlockDNSScope, req.ExceptionHostnames); err != nil {
+		return nil, err
+	}
+	hadNames := req.ExceptionHostnames != nil && s.globalURIBlockHadNames(ctx)
 	block, err := s.uriBlockRepo.UpsertGlobalURIBlock(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update global URI block: %w", err)
 	}
+	syncDNSScope(ctx, s.dns, globalURIBlockDNSScope, hadNames, block.ExceptionHostnames)
 
 	// Sync all proxy host configs to apply global rules (synchronous)
 	if s.proxyHostService != nil {

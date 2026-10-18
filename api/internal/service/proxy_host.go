@@ -95,6 +95,7 @@ type ProxyHostService struct {
 	certService            CertificateCreator         // Optional: for creating certificates during clone
 	containerResolver      ContainerResolver          // Optional: resolves docker container name → IP (#150)
 	redirectHostRepo       redirectHostsByCertificate // Optional: certificate fan-out to redirect hosts (wired in bootstrap)
+	dns                    dnsScopeSyncer             // Optional: DNS entry service, for a clone's domain names (SetDNSEntries, #320)
 }
 
 func NewProxyHostService(

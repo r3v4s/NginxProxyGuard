@@ -168,8 +168,11 @@ func (s *AuditService) LogProxyHostDelete(ctx context.Context, domains []string)
 	return s.logEntry(ctx, "proxy_host_deleted", "proxy_host", "", domainStr, nil)
 }
 
-// LogProxyHostClone logs proxy host cloning
-func (s *AuditService) LogProxyHostClone(ctx context.Context, sourceDomains []string, targetDomains []string) error {
+// LogProxyHostClone logs proxy host cloning. dnsNames are the domain names
+// (#320) the clone's exception lists got, by scope (ProxyHostService
+// .HostDNSNames): a clone trusts those names on one more host. It is left
+// out when there are none.
+func (s *AuditService) LogProxyHostClone(ctx context.Context, sourceDomains []string, targetDomains []string, dnsNames map[string][]string) error {
 	sourceDomainStr := ""
 	if len(sourceDomains) > 0 {
 		sourceDomainStr = sourceDomains[0]
@@ -178,11 +181,15 @@ func (s *AuditService) LogProxyHostClone(ctx context.Context, sourceDomains []st
 	if len(targetDomains) > 0 {
 		targetDomainStr = targetDomains[0]
 	}
-	return s.logEntry(ctx, "proxy_host_cloned", "proxy_host", "", targetDomainStr, map[string]interface{}{
+	details := map[string]interface{}{
 		"source_domains": sourceDomains,
 		"target_domains": targetDomains,
 		"source_domain":  sourceDomainStr,
-	})
+	}
+	if len(dnsNames) > 0 {
+		details["dns_names"] = dnsNames
+	}
+	return s.logEntry(ctx, "proxy_host_cloned", "proxy_host", "", targetDomainStr, details)
 }
 
 // LogProxyHostToggle logs proxy host enable/disable
@@ -590,6 +597,18 @@ func (s *AuditService) LogDNSEntrySettingsChanged(ctx context.Context, changes m
 		details[k] = v
 	}
 	return s.logEntry(ctx, "dns_entry_settings_changed", "settings", "", "dns_entry_settings", details)
+}
+
+// LogDNSEntriesChanged records that a save changed the domain names of one
+// exception list: scope is the list's use ("prio:<host id>", "uri:global",
+// "trusted"), added and removed the names it gained and lost. The scope is
+// also the entry's name.
+func (s *AuditService) LogDNSEntriesChanged(ctx context.Context, scope string, added, removed []string) error {
+	return s.logEntry(ctx, "dns_entries_changed", "dns_entry", "", scope, map[string]interface{}{
+		"scope":   scope,
+		"added":   auditStrings(added),
+		"removed": auditStrings(removed),
+	})
 }
 
 // auditStrings returns list, or an empty list for nil, so a details value
