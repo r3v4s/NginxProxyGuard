@@ -54,3 +54,26 @@ func (h *SecurityHandler) storedRateLimitNames(ctx context.Context, proxyHostID 
 	}
 	return nil
 }
+
+// rateLimitView is a host's rate limit as GET shows it: the state of its
+// exception domains.
+type rateLimitView struct {
+	*model.RateLimit
+	WhitelistHostnameStatus []model.DNSEntryStatus `json:"whitelist_hostname_status"`
+}
+
+// globalRateLimitView is rateLimitView for the global rate limit.
+type globalRateLimitView struct {
+	*model.GlobalRateLimit
+	WhitelistHostnameStatus []model.DNSEntryStatus `json:"whitelist_hostname_status"`
+}
+
+// rateLimitView converts a host's rate limit for this caller.
+func (h *SecurityHandler) rateLimitView(c echo.Context, rl *model.RateLimit) rateLimitView {
+	return rateLimitView{RateLimit: rl, WhitelistHostnameStatus: dnsStatusList(c, h.dnsStatus, rl.WhitelistHostnames)}
+}
+
+// globalRateLimitView converts the global rate limit for this caller.
+func (h *SecurityHandler) globalRateLimitView(c echo.Context, g *model.GlobalRateLimit) globalRateLimitView {
+	return globalRateLimitView{GlobalRateLimit: g, WhitelistHostnameStatus: dnsStatusList(c, h.dnsStatus, g.WhitelistHostnames)}
+}

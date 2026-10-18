@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 
@@ -69,4 +70,24 @@ func (h *SystemSettingsHandler) finishTrustedSave(c echo.Context, save trustedSa
 	ctx := c.Request().Context()
 	syncExceptionNames(ctx, h.dnsEntries, model.DNSScopeKindTrusted, len(save.before) > 0, settings.GlobalTrustedHostnames)
 	auditDNSNames(context.WithoutCancel(service.ContextWithAudit(ctx, c)), h.audit, model.DNSScopeKindTrusted, save.before, settings.GlobalTrustedHostnames)
+}
+
+// systemSettingsView is the system settings as GET shows them: the state of
+// the global trusted domains, and the lines of global_trusted_ips the
+// configs leave out (not an address: a name typed there before the domains
+// had a field of their own). Such a line stays stored; it moves to
+// global_trusted_hostnames only when a save sends it there.
+type systemSettingsView struct {
+	*model.SystemSettingsResponse
+	GlobalTrustedHostnameStatus []model.DNSEntryStatus `json:"global_trusted_hostname_status"`
+	GlobalTrustedIPsIgnored     []string               `json:"global_trusted_ips_ignored"`
+}
+
+// settingsView converts the stored settings for this caller.
+func (h *SystemSettingsHandler) settingsView(c echo.Context, settings *model.SystemSettings) systemSettingsView {
+	return systemSettingsView{
+		SystemSettingsResponse:      settings.ToResponse(),
+		GlobalTrustedHostnameStatus: dnsStatusList(c, h.dnsStatus, settings.GlobalTrustedHostnames),
+		GlobalTrustedIPsIgnored:     ignoredIPEntries(strings.Split(settings.GlobalTrustedIPs, "\n")),
+	}
 }

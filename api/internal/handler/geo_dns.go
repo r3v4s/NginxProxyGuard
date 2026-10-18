@@ -20,10 +20,48 @@ const globalPriorityScope = model.DNSScopeKindPriority + ":global"
 
 // SetDNSEntries wires the DNS entry service: a geo save checks its domain
 // names against the limits and hands them to it before nginx is
-// regenerated.
+// regenerated, and a GET shows their state.
 func (h *GeoHandler) SetDNSEntries(svc *service.DNSEntryService) {
 	if svc != nil {
 		h.dns = svc
+		h.dnsStatus = svc
+	}
+}
+
+// geoRestrictionView is a host's geo restriction as GET shows it: the state
+// of its priority allow domains, and the entries of allowed_ips the configs
+// leave out (not an address: a name typed there before the domains had a
+// field of their own). Such an entry stays stored; it moves to
+// allowed_hostnames only when a save sends it there.
+type geoRestrictionView struct {
+	*model.GeoRestriction
+	AllowedHostnameStatus []model.DNSEntryStatus `json:"allowed_hostname_status"`
+	AllowedIPsIgnored     []string               `json:"allowed_ips_ignored"`
+}
+
+// globalGeoRestrictionView is geoRestrictionView for the global geo
+// restriction.
+type globalGeoRestrictionView struct {
+	*model.GlobalGeoRestriction
+	AllowedHostnameStatus []model.DNSEntryStatus `json:"allowed_hostname_status"`
+	AllowedIPsIgnored     []string               `json:"allowed_ips_ignored"`
+}
+
+// hostGeoView converts a host's stored geo restriction for this caller.
+func (h *GeoHandler) hostGeoView(c echo.Context, geo *model.GeoRestriction) geoRestrictionView {
+	return geoRestrictionView{
+		GeoRestriction:        geo,
+		AllowedHostnameStatus: dnsStatusList(c, h.dnsStatus, geo.AllowedHostnames),
+		AllowedIPsIgnored:     ignoredIPEntries(geo.AllowedIPs),
+	}
+}
+
+// globalGeoView converts the global geo restriction for this caller.
+func (h *GeoHandler) globalGeoView(c echo.Context, g *model.GlobalGeoRestriction) globalGeoRestrictionView {
+	return globalGeoRestrictionView{
+		GlobalGeoRestriction:  g,
+		AllowedHostnameStatus: dnsStatusList(c, h.dnsStatus, g.AllowedHostnames),
+		AllowedIPsIgnored:     ignoredIPEntries(g.AllowedIPs),
 	}
 }
 

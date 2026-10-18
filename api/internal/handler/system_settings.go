@@ -35,6 +35,7 @@ type SystemSettingsHandler struct {
 	archiver             *service.RawLogArchiver // raw log archive mover; set by SetRawLogArchiver
 	rawLogOverride       *rawLogPaths            // nil: defaultRawLogPaths (tests point it elsewhere)
 	dnsEntries           dnsSettingsChanger      // DNS entry service (SetDNSEntries, #320); nil: tunables are only stored
+	dnsStatus            dnsStatusReader         // the same service for GET: the global trusted domains' state; nil: none shown
 }
 
 func NewSystemSettingsHandler(
@@ -73,7 +74,7 @@ func (h *SystemSettingsHandler) GetSystemSettings(c echo.Context) error {
 	if err != nil {
 		return directInternalError(c, err)
 	}
-	return c.JSON(http.StatusOK, settings.ToResponse())
+	return c.JSON(http.StatusOK, h.settingsView(c, settings))
 }
 
 // GetPublicUISettings returns public UI settings (font, language, etc.) without authentication

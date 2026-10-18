@@ -105,3 +105,31 @@ func TestAllowlistsHaveNoStaleEntries(t *testing.T) {
 		}
 	}
 }
+
+// The confirm routes of the four exception lists (#320) are registered,
+// so the coverage test above holds them to a decision, and each needs
+// the permission of its list's PUT: a confirm allows the domain again there.
+// The handler checks the other lists that use the name.
+func TestExceptionListConfirmRoutesNeedTheirListsWritePermission(t *testing.T) {
+	want := map[string]string{
+		"/api/v1/proxy-hosts/:id/dns-confirm":            "proxy:write",
+		"/api/v1/global-uri-block/dns-confirm":           "waf:write",
+		"/api/v1/settings/global-geo/dns-confirm":        "waf:write",
+		"/api/v1/settings/global-rate-limit/dns-confirm": "waf:write",
+		"/api/v1/system-settings/trusted-dns-confirm":    "settings:write",
+	}
+	registered := map[string]bool{}
+	for _, r := range registerAllRoutesForAudit(t).Routes() {
+		if r.Method == "POST" {
+			registered[r.Path] = true
+		}
+	}
+	for path, perm := range want {
+		if !registered[path] {
+			t.Errorf("POST %s is not registered", path)
+		}
+		if p, ok := middleware.RoutePermission("POST", path); !ok || p != perm {
+			t.Errorf("POST %s needs %q (mapped %v), want %s", path, p, ok, perm)
+		}
+	}
+}

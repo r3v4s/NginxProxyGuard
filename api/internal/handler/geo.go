@@ -20,6 +20,9 @@ type GeoHandler struct {
 	// dns is the DNS entry service (SetDNSEntries, #320). Without it the
 	// priority allow domain names are stored and checked against no limit.
 	dns dnsScopeSyncer
+	// dnsStatus is the same service as the GETs read it: the state of the
+	// priority allow domains. Without it they show none.
+	dnsStatus dnsStatusReader
 }
 
 func NewGeoHandler(
@@ -44,7 +47,7 @@ func (h *GeoHandler) GetGlobal(c echo.Context) error {
 	if err != nil {
 		return directInternalError(c, err)
 	}
-	return c.JSON(http.StatusOK, g)
+	return c.JSON(http.StatusOK, h.globalGeoView(c, g))
 }
 
 // UpdateGlobal updates the global geo default and regenerates every inheriting
@@ -126,11 +129,13 @@ func (h *GeoHandler) GetByProxyHost(c echo.Context) error {
 			"countries":     []string{},
 			"enabled":       false,
 
-			"allowed_hostnames": []string{},
+			"allowed_hostnames":       []string{},
+			"allowed_hostname_status": []model.DNSEntryStatus{},
+			"allowed_ips_ignored":     []string{},
 		})
 	}
 
-	return c.JSON(http.StatusOK, geo)
+	return c.JSON(http.StatusOK, h.hostGeoView(c, geo))
 }
 
 // SetForProxyHost creates or updates geo restriction settings

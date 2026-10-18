@@ -13,36 +13,60 @@ import (
 // questions need the permission of each use's scope: who uses a name (the
 // overview names a use only to a caller who may read its list), and who may
 // confirm a name that waits for review (a confirm allows the name again in
-// every list that uses it). One table answers both.
-// Only access lists have a row so far; the uri, prio, rl and trusted
-// scopes come later. A scope without a row is readable and writable by no
-// one, so a confirm of a name used there answers 403 naming the scope.
+// every list that uses it). One table answers both: a use is read and
+// changed with the permissions of its list's screen. An access list is
+// access; a host's URI block exceptions, priority allow and rate limit
+// exceptions are proxy, as the host form that edits them; the global ones
+// are waf, the area their screens sit under; the global trusted list is
+// settings. A scope that does not parse is readable and writable by no one,
+// so a confirm of a name used there answers 403 naming the scope.
 
 // Permissions checked in this file.
 const (
-	permAccessRead  = "access:read"
-	permAccessWrite = "access:write"
-	permWAFRead     = "waf:read"
-	permDDNSRead    = "ddns:read"
-	permProxyRead   = "proxy:read"
+	permAccessRead    = "access:read"
+	permAccessWrite   = "access:write"
+	permWAFRead       = "waf:read"
+	permWAFWrite      = "waf:write"
+	permDDNSRead      = "ddns:read"
+	permProxyRead     = "proxy:read"
+	permProxyWrite    = "proxy:write"
+	permSettingsRead  = "settings:read"
+	permSettingsWrite = "settings:write"
 )
+
+// dnsScopePermissions returns the permissions that show and change a use of a
+// name in scope, "" and "" when none do.
+func dnsScopePermissions(scope string) (read, write string) {
+	kind, owner, ok := model.ParseDNSScope(scope)
+	if !ok {
+		return "", ""
+	}
+	switch kind {
+	case model.DNSScopeKindAccessList:
+		return permAccessRead, permAccessWrite
+	case model.DNSScopeKindURIBlock, model.DNSScopeKindPriority, model.DNSScopeKindRateLimit:
+		if owner == "global" {
+			return permWAFRead, permWAFWrite
+		}
+		return permProxyRead, permProxyWrite
+	case model.DNSScopeKindTrusted:
+		return permSettingsRead, permSettingsWrite
+	}
+	return "", ""
+}
 
 // dnsScopeReadPermission returns the permission that shows a use of a name in
 // scope, "" when none does.
 func dnsScopeReadPermission(scope string) string {
-	if kind, _, ok := model.ParseDNSScope(scope); ok && kind == model.DNSScopeKindAccessList {
-		return permAccessRead
-	}
-	return ""
+	read, _ := dnsScopePermissions(scope)
+	return read
 }
 
 // dnsScopeWritePermission returns the permission that changes a name's use in
 // scope, "" when none does.
 func dnsScopeWritePermission(scope string) string {
-	if kind, _, ok := model.ParseDNSScope(scope); ok && kind == model.DNSScopeKindAccessList {
-		return permAccessWrite
-	}
-	return ""
+	_, write := dnsScopePermissions(scope)
+	return write
 }
 
 // missingDNSWritePermissions returns what the caller lacks to confirm a name

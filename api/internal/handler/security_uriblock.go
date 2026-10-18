@@ -21,7 +21,7 @@ func (h *SecurityHandler) GetURIBlock(c echo.Context) error {
 		return databaseError(c, "get URI block", err)
 	}
 
-	return c.JSON(http.StatusOK, uriBlock)
+	return c.JSON(http.StatusOK, h.uriBlockView(c, uriBlock))
 }
 
 func (h *SecurityHandler) UpsertURIBlock(c echo.Context) error {
@@ -210,7 +210,7 @@ func (h *SecurityHandler) ListAllURIBlocks(c echo.Context) error {
 	if err != nil {
 		return databaseError(c, "list all URI blocks", err)
 	}
-	return c.JSON(http.StatusOK, blocks)
+	return c.JSON(http.StatusOK, h.uriBlockListView(c, blocks))
 }
 
 // ============================================================================
@@ -224,7 +224,7 @@ func (h *SecurityHandler) GetGlobalURIBlock(c echo.Context) error {
 		return databaseError(c, "get global URI block", err)
 	}
 
-	return c.JSON(http.StatusOK, block)
+	return c.JSON(http.StatusOK, h.globalURIBlockView(c, block))
 }
 
 // UpdateGlobalURIBlock updates the global URI block settings

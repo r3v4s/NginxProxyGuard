@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"nginx-proxy-guard/internal/model"
+	"nginx-proxy-guard/internal/nginx"
 )
 
 // Domain names (#320) in the exception lists the security service saves:
@@ -156,3 +157,14 @@ const (
 	globalURIBlockDNSScope  = model.DNSScopeKindURIBlock + ":global"
 	globalRateLimitDNSScope = model.DNSScopeKindRateLimit + ":global"
 )
+
+// URIExceptionDomainsSkipped reports whether the host leaves its URI block
+// exception domains, and the global ones, out of its config: its Advanced
+// Config asks for a login (auth_basic or auth_request), which the exception
+// path cannot run (nginx.ProxyHostConfigData.URIExceptionDNSIncludes). A
+// host that cannot be read reports false; GET shows it, nothing decides on
+// it.
+func (s *SecurityService) URIExceptionDomainsSkipped(ctx context.Context, proxyHostID string) bool {
+	host, err := s.proxyHostRepo.GetByID(ctx, proxyHostID)
+	return err == nil && host != nil && nginx.AdvancedConfigHasAuth(host.AdvancedConfig)
+}

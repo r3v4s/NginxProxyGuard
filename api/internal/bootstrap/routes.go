@@ -378,6 +378,7 @@ func registerTokenProtectedRoutes(v1 *echo.Group, c *Container) {
 	registerRedirectHostRoutes(v1, c.Handlers.RedirectHost)
 	registerGeoRoutes(v1, c.Handlers.Geo)
 	registerSecurityRoutes(v1, c.Handlers.Security)
+	registerExceptionDNSRoutes(v1, c.Handlers.ExceptionDNS)
 	registerSettingsRoutes(v1, c.Handlers.Settings)
 	registerSystemLogRoutes(v1, c.Handlers.SystemLog)
 	registerSystemSettingsRoutes(v1, c.Handlers.SystemSettings)
@@ -690,6 +691,23 @@ func registerAccessListRoutes(v1 *echo.Group, h *handler.AccessListHandler) {
 	// Allows a domain that waits for review again (#320). The token scope is
 	// the list PUT's; the handler also checks every other list using the name.
 	g.POST("/:id/dns-confirm", h.ConfirmDNS, proxyWrite)
+}
+
+// registerExceptionDNSRoutes: "allow again" for a domain that waits for
+// review in the exception lists (#320). Each route takes the token scope of
+// its lists' PUT (proxy for a host's lists and the global URI block,
+// settings for the global geo and rate limit defaults and the global trusted
+// list); middleware/permissions.go gives each the RBAC of that PUT. The
+// handler also checks every other list that uses the name.
+func registerExceptionDNSRoutes(v1 *echo.Group, h *handler.ExceptionDNSHandler) {
+	proxyWrite := authMiddleware.RequireAPIPermission(model.PermissionProxyWrite)
+	settingsWrite := authMiddleware.RequireAPIPermission(model.PermissionSettingsWrite)
+
+	v1.POST("/proxy-hosts/:id/dns-confirm", h.ConfirmHost, proxyWrite)
+	v1.POST("/global-uri-block/dns-confirm", h.ConfirmGlobalURIBlock, proxyWrite)
+	v1.POST("/settings/global-geo/dns-confirm", h.ConfirmGlobalGeo, settingsWrite)
+	v1.POST("/settings/global-rate-limit/dns-confirm", h.ConfirmGlobalRateLimit, settingsWrite)
+	v1.POST("/system-settings/trusted-dns-confirm", h.ConfirmTrusted, settingsWrite)
 }
 
 // registerAuthProviderRoutes wires the ForwardAuth provider CRUD (#179). Auth

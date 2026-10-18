@@ -112,8 +112,10 @@ func TestDNSEntryOverviewShowsOnlyWhatTheCallerMayRead(t *testing.T) {
 	if got.Apply.BlockingFile != nil || got.Apply.BlockedDetail != nil || dnsTestDeref(got.Apply.BlockedOutcome) != "blocked" {
 		t.Errorf("settings:read alone sees the apply state %+v", got.Apply)
 	}
-	if svc.view != (model.DNSStatusView{}) || svc.canRead(acl) {
-		t.Errorf("settings:read alone: view %+v, may read %s %v", svc.view, acl, svc.canRead(acl))
+	// settings:read reads the global trusted list, so it names that use.
+	if svc.view != (model.DNSStatusView{}) || svc.canRead(acl) || !svc.canRead("trusted") || svc.canRead("uri:global") {
+		t.Errorf("settings:read alone: view %+v, may read %s %v, trusted %v, uri:global %v",
+			svc.view, acl, svc.canRead(acl), svc.canRead("trusted"), svc.canRead("uri:global"))
 	}
 
 	all := permGrants{"settings:read": true, "access:read": true, "waf:read": true, "ddns:read": true, "proxy:read": true}
@@ -125,7 +127,7 @@ func TestDNSEntryOverviewShowsOnlyWhatTheCallerMayRead(t *testing.T) {
 		t.Errorf("every permission sees the apply state %+v", got.Apply)
 	}
 	if svc.view != (model.DNSStatusView{Banned: true, SelfIP: true, BlockingFile: true}) || !svc.canRead(acl) ||
-		svc.canRead("trusted") || svc.canRead("acl:not-a-uuid") {
+		!svc.canRead("trusted") || svc.canRead("acl:not-a-uuid") {
 		t.Errorf("every permission: view %+v, may read %s %v, trusted %v, a malformed scope %v",
 			svc.view, acl, svc.canRead(acl), svc.canRead("trusted"), svc.canRead("acl:not-a-uuid"))
 	}

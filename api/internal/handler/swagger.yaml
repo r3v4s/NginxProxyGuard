@@ -723,8 +723,9 @@ paths:
       description: |
         Returns the host's stored geo restriction. When the host has no geo row at
         all the response is a stub containing only `proxy_host_id`, `mode`
-        (`blacklist`), `countries` (empty array) and `enabled` (false) — the other
-        GeoRestriction fields are absent. Requires the `proxy:read` scope when
+        (`blacklist`), `countries` (empty array), `enabled` (false) and empty
+        `allowed_hostnames`, `allowed_hostname_status` and `allowed_ips_ignored` — the
+        other GeoRestriction fields are absent. Requires the `proxy:read` scope when
         called with an API token.
       security:
         - BearerAuth: []
@@ -1458,7 +1459,9 @@ paths:
         Every domain (DDNS) name in use, and every name nginx may still allow after it
         was dropped, with its state and uses; the apply state; the effective domain
         entry settings and the environment switches. A use is named in `uses` only when
-        the caller may read its list (access lists: `access:read`); the others are only
+        the caller may read its list (access lists `access:read`; a host's URI block
+        exceptions, priority allow and rate limit exceptions `proxy:read`; the global ones
+        `waf:read`; the global trusted list `settings:read`); the others are only
         counted in `hidden_uses`. The `banned` warning needs `waf:read` and `self_ip`
         needs `ddns:read`; `blocking_file` and `apply.blocked_detail` need `proxy:read`.
         Without them they are left out.
@@ -2699,6 +2702,290 @@ paths:
                         type: string
                         nullable: true
 
+  /proxy-hosts/{id}/dns-confirm:
+    post:
+      tags: [Security]
+      summary: Allow a domain of a host's exception lists again
+      description: |
+        As POST /access-lists/{id}/dns-confirm, for a domain of the host's URI block exceptions, priority allow or rate limit exceptions that waits
+        for review (`status: needs_review`, nothing allowed): the server looks the name up
+        again (at most 3 s) and, when the answer is still what the client showed
+        (`expected_addresses`, `expected_canonical_name`), publishes that answer and
+        applies it to nginx. A value the client sends is never published. A domain has
+        one state for every list that uses it, so the caller also needs the write
+        permission of every other list that uses it. Needs `proxy:write`; an API token needs
+        `proxy:write`, the scope of the lists' PUT routes.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProxyHostId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccessListDNSConfirm'
+      responses:
+        '200':
+          description: The domain's state after the confirm, as the caller may see it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSEntryStatus'
+        '400':
+          description: |
+            `code` is `not_in_list` (the host's URI block exceptions, priority allow or rate limit exceptions has no such domain) or `not_in_review` (the
+            domain does not wait for review).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: |
+            The domain is also used where the caller may not make changes; `required`
+            lists the missing permissions. Without `proxy:write` the route answers first, as
+            every route does, with `required` as one string.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSConfirmForbidden'
+        '404':
+          description: Proxy host not found
+        '409':
+          description: |
+            Nothing was allowed: `code` is `lookup_unavailable` (the domain could not be
+            looked up just now; try again) or `observation_changed` (it answers differently
+            now; `observed` holds the new answer, which the domain's state shows too). Or
+            `code` is `nginx_reload_rejected`: the domain is allowed again, but the running
+            nginx refused to load it; `details` is nginx's message.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSConfirmConflict'
+  /global-uri-block/dns-confirm:
+    post:
+      tags: [Security]
+      summary: Allow a domain of the global URI block exceptions again
+      description: |
+        As POST /access-lists/{id}/dns-confirm, for a domain of the global URI block exceptions that waits
+        for review (`status: needs_review`, nothing allowed): the server looks the name up
+        again (at most 3 s) and, when the answer is still what the client showed
+        (`expected_addresses`, `expected_canonical_name`), publishes that answer and
+        applies it to nginx. A value the client sends is never published. A domain has
+        one state for every list that uses it, so the caller also needs the write
+        permission of every other list that uses it. Needs `waf:write`; an API token needs
+        `proxy:write`, the scope of PUT /global-uri-block.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccessListDNSConfirm'
+      responses:
+        '200':
+          description: The domain's state after the confirm, as the caller may see it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSEntryStatus'
+        '400':
+          description: |
+            `code` is `not_in_list` (the global URI block exceptions has no such domain) or `not_in_review` (the
+            domain does not wait for review).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: |
+            The domain is also used where the caller may not make changes; `required`
+            lists the missing permissions. Without `waf:write` the route answers first, as
+            every route does, with `required` as one string.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSConfirmForbidden'
+        '409':
+          description: |
+            Nothing was allowed: `code` is `lookup_unavailable` (the domain could not be
+            looked up just now; try again) or `observation_changed` (it answers differently
+            now; `observed` holds the new answer, which the domain's state shows too). Or
+            `code` is `nginx_reload_rejected`: the domain is allowed again, but the running
+            nginx refused to load it; `details` is nginx's message.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSConfirmConflict'
+  /settings/global-geo/dns-confirm:
+    post:
+      tags: [Settings]
+      summary: Allow a domain of the global priority allow list again
+      description: |
+        As POST /access-lists/{id}/dns-confirm, for a domain of the global geo default's priority allow list that waits
+        for review (`status: needs_review`, nothing allowed): the server looks the name up
+        again (at most 3 s) and, when the answer is still what the client showed
+        (`expected_addresses`, `expected_canonical_name`), publishes that answer and
+        applies it to nginx. A value the client sends is never published. A domain has
+        one state for every list that uses it, so the caller also needs the write
+        permission of every other list that uses it. Needs `waf:write`; an API token needs
+        `settings:write`, the scope of PUT /settings/global-geo.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccessListDNSConfirm'
+      responses:
+        '200':
+          description: The domain's state after the confirm, as the caller may see it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSEntryStatus'
+        '400':
+          description: |
+            `code` is `not_in_list` (the global geo default's priority allow list has no such domain) or `not_in_review` (the
+            domain does not wait for review).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: |
+            The domain is also used where the caller may not make changes; `required`
+            lists the missing permissions. Without `waf:write` the route answers first, as
+            every route does, with `required` as one string.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSConfirmForbidden'
+        '409':
+          description: |
+            Nothing was allowed: `code` is `lookup_unavailable` (the domain could not be
+            looked up just now; try again) or `observation_changed` (it answers differently
+            now; `observed` holds the new answer, which the domain's state shows too). Or
+            `code` is `nginx_reload_rejected`: the domain is allowed again, but the running
+            nginx refused to load it; `details` is nginx's message.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSConfirmConflict'
+  /settings/global-rate-limit/dns-confirm:
+    post:
+      tags: [Settings]
+      summary: Allow a domain of the global rate limit exceptions again
+      description: |
+        As POST /access-lists/{id}/dns-confirm, for a domain of the global rate limit default's exceptions that waits
+        for review (`status: needs_review`, nothing allowed): the server looks the name up
+        again (at most 3 s) and, when the answer is still what the client showed
+        (`expected_addresses`, `expected_canonical_name`), publishes that answer and
+        applies it to nginx. A value the client sends is never published. A domain has
+        one state for every list that uses it, so the caller also needs the write
+        permission of every other list that uses it. Needs `waf:write`; an API token needs
+        `settings:write`, the scope of PUT /settings/global-rate-limit.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccessListDNSConfirm'
+      responses:
+        '200':
+          description: The domain's state after the confirm, as the caller may see it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSEntryStatus'
+        '400':
+          description: |
+            `code` is `not_in_list` (the global rate limit default's exceptions has no such domain) or `not_in_review` (the
+            domain does not wait for review).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: |
+            The domain is also used where the caller may not make changes; `required`
+            lists the missing permissions. Without `waf:write` the route answers first, as
+            every route does, with `required` as one string.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSConfirmForbidden'
+        '409':
+          description: |
+            Nothing was allowed: `code` is `lookup_unavailable` (the domain could not be
+            looked up just now; try again) or `observation_changed` (it answers differently
+            now; `observed` holds the new answer, which the domain's state shows too). Or
+            `code` is `nginx_reload_rejected`: the domain is allowed again, but the running
+            nginx refused to load it; `details` is nginx's message.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSConfirmConflict'
+  /system-settings/trusted-dns-confirm:
+    post:
+      tags: [Settings]
+      summary: Allow a domain of the global trusted list again
+      description: |
+        As POST /access-lists/{id}/dns-confirm, for a domain of the global trusted list that waits
+        for review (`status: needs_review`, nothing allowed): the server looks the name up
+        again (at most 3 s) and, when the answer is still what the client showed
+        (`expected_addresses`, `expected_canonical_name`), publishes that answer and
+        applies it to nginx. A value the client sends is never published. A domain has
+        one state for every list that uses it, so the caller also needs the write
+        permission of every other list that uses it. Needs `settings:write`; an API token needs
+        `settings:write`, the scope of PUT /system-settings.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccessListDNSConfirm'
+      responses:
+        '200':
+          description: The domain's state after the confirm, as the caller may see it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSEntryStatus'
+        '400':
+          description: |
+            `code` is `not_in_list` (the global trusted list has no such domain) or `not_in_review` (the
+            domain does not wait for review).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: |
+            The domain is also used where the caller may not make changes; `required`
+            lists the missing permissions. Without `settings:write` the route answers first, as
+            every route does, with `required` as one string.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSConfirmForbidden'
+        '409':
+          description: |
+            Nothing was allowed: `code` is `lookup_unavailable` (the domain could not be
+            looked up just now; try again) or `observation_changed` (it answers differently
+            now; `observed` holds the new answer, which the domain's state shows too). Or
+            `code` is `nginx_reload_rejected`: the domain is allowed again, but the running
+            nginx refused to load it; `details` is nginx's message.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSConfirmConflict'
   # ============================================================================
   # Banned IPs
   # (/proxy-hosts/{id}/fail2ban and the Fail2banConfig / CreateFail2ban schemas
@@ -11225,7 +11512,7 @@ components:
           description: "The request field a 400 is about, by its position in the request (access lists: items[2].address; exception lists: allowed_hostnames[1], exception_ips[0], global_trusted_ips[3] for the fourth line, whitelist_ips)."
         code:
           type: string
-          description: "Machine-readable reason, when there is one. nginx_reload_rejected (409): the change is saved, but the running nginx refused to load it; details holds nginx's message. Access list rules (400, with field): hostname_needs_kind, deny_hostname, duplicate_hostname, deny_all_with_hostname, legacy_not_in_list, limit, or the code of a domain name rule. Exception lists (URI block exceptions, priority allow, rate limit exceptions, global trusted list; 400, with field): hostname_in_ip_field (a domain name in an IP field; error names the field that takes it), limit, or the code of a domain name rule. POST /access-lists/{id}/dns-confirm: not_in_list, not_in_review (400); lookup_unavailable, observation_changed (409)."
+          description: "Machine-readable reason, when there is one. nginx_reload_rejected (409): the change is saved, but the running nginx refused to load it; details holds nginx's message. Access list rules (400, with field): hostname_needs_kind, deny_hostname, duplicate_hostname, deny_all_with_hostname, legacy_not_in_list, limit, or the code of a domain name rule. Exception lists (URI block exceptions, priority allow, rate limit exceptions, global trusted list; 400, with field): hostname_in_ip_field (a domain name in an IP field; error names the field that takes it), limit, or the code of a domain name rule. POST /access-lists/{id}/dns-confirm and the exception lists' dns-confirm routes: not_in_list, not_in_review (400); lookup_unavailable, observation_changed (409)."
         id:
           type: string
           format: uuid
@@ -11934,6 +12221,24 @@ components:
         updated_at:
           type: string
           format: date-time
+        whitelist_hostnames:
+          type: array
+          items:
+            type: string
+          description: >-
+            Domain (DDNS) names whose addresses count as whitelist_ips (#320). NPG
+            looks them up on a schedule and applies the addresses it accepts.
+            Their requests are never rate limited. Never null.
+        whitelist_hostname_status:
+          type: array
+          readOnly: true
+          items:
+            $ref: '#/components/schemas/DNSEntryStatus'
+          description: >-
+            Sent by GET only, not by a save. The state of each name of
+            whitelist_hostnames, in their order, as the caller may see it: the banned
+            warning needs waf:read, self_ip ddns:read, blocking_file
+            proxy:read. Empty when the state cannot be read.
     BotFilter:
       type: object
       description: A proxy host's own bot-filter row. This is the stored row, not the value in force after global-default resolution.
@@ -12124,6 +12429,35 @@ components:
         updated_at:
           type: string
           format: date-time
+        allowed_hostnames:
+          type: array
+          items:
+            type: string
+          description: >-
+            Domain (DDNS) names whose addresses count as allowed_ips (#320). NPG
+            looks them up on a schedule and applies the addresses it accepts.
+            They pass the geo block, the geo challenge, the cloud provider block and the bot filter, but unlike allowed_ips they never turn the WAF off. Never null.
+        allowed_hostname_status:
+          type: array
+          readOnly: true
+          items:
+            $ref: '#/components/schemas/DNSEntryStatus'
+          description: >-
+            Sent by GET only, not by a save. The state of each name of
+            allowed_hostnames, in their order, as the caller may see it: the banned
+            warning needs waf:read, self_ip ddns:read, blocking_file
+            proxy:read. Empty when the state cannot be read.
+        allowed_ips_ignored:
+          type: array
+          readOnly: true
+          items:
+            type: string
+          description: >-
+            Sent by GET only. The entries of allowed_ips that are not an IP
+            address or CIDR range (trimmed), which the configs leave out: a
+            name typed there before allowed_hostnames existed. They stay stored, and a
+            save may send them back unchanged while a new one is refused; move
+            a name to allowed_hostnames to apply it.
     Upstream:
       type: object
       description: Per-host upstream (load balancing) pool. Replaces the single forward_host/forward_port target when configured.
@@ -12315,11 +12649,63 @@ components:
             key, a value of the wrong type or a number out of range is refused with 400.
           allOf:
             - $ref: '#/components/schemas/DNSEntrySettings'
+        global_trusted_ips:
+          type: string
+          description: >-
+            Newline-separated IP addresses and CIDR ranges trusted on every
+            host: they pass the geo block, the cloud provider block, the bot
+            filter, rate limiting, bans, fail2ban and the WAF auto-ban, but
+            not the WAF unless global_trusted_ips_bypass_waf. Blank lines and
+            `# comment` lines are allowed. In PUT a new line must be an address
+            or a range (a domain name answers 400 hostname_in_ip_field with
+            field global_trusted_ips[i], i the line's position from 0); a line
+            the stored list holds passes as it is.
+        global_trusted_ips_bypass_waf:
+          type: boolean
+          default: false
+          description: >-
+            Also exempt the global trusted IPs from WAF (ModSecurity/CRS)
+            inspection. Never the global trusted domains.
+        global_trusted_hostnames:
+          type: array
+          items:
+            type: string
+          description: >-
+            Domain (DDNS) names whose addresses are trusted like
+            global_trusted_ips (#320), but never past a ban, a filter
+            subscription's IP block, the WAF (whatever
+            global_trusted_ips_bypass_waf says), an access list's deny or the
+            login of a host with a satisfy-any access list. In PUT, left out
+            keeps the stored names and [] clears them; a refused name answers
+            400 with field global_trusted_hostnames[i]. Never null.
+        global_trusted_hostname_status:
+          type: array
+          readOnly: true
+          items:
+            $ref: '#/components/schemas/DNSEntryStatus'
+          description: >-
+            Sent by GET only, not by a save. The state of each name of
+            global_trusted_hostnames, in their order, as the caller may see it: the banned
+            warning needs waf:read, self_ip ddns:read, blocking_file
+            proxy:read. Empty when the state cannot be read.
+        global_trusted_ips_ignored:
+          type: array
+          readOnly: true
+          items:
+            type: string
+          description: >-
+            Sent by GET only. The entries of global_trusted_ips (by line) that are not an IP
+            address or CIDR range (trimmed), which the configs leave out: a
+            name typed there before global_trusted_hostnames existed. They stay stored, and a
+            save may send them back unchanged while a new one is refused; move
+            a name to global_trusted_hostnames to apply it.
     DNSEntrySettings:
       type: object
       description: |
-        Tunables of the domain (DDNS) entries of access lists. Lowering a limit keeps
-        the names already saved; only a save that adds names past it is refused.
+        Tunables of the domain (DDNS) entries of access lists and of the exception lists
+        (URI block exceptions, priority allow, rate limit exceptions, global trusted list).
+        Lowering a limit keeps the names already saved; only a save that adds names past
+        it is refused.
       properties:
         enabled:
           type: boolean
@@ -12362,7 +12748,7 @@ components:
           minimum: 1
           maximum: 64
           default: 16
-          description: Domain names in one access list.
+          description: Domain names in one list (an access list, or one exception list of a host, of the global defaults or the global trusted list).
         max_total:
           type: integer
           minimum: 1
@@ -12422,20 +12808,24 @@ components:
       properties:
         scope:
           type: string
+          description: "acl:<list id>; uri:, prio: or rl: followed by a host id or global; trusted."
           example: 'acl:00000000-0000-4000-8000-000000000001'
         kind:
           type: string
-          enum: [access_list]
+          enum: [access_list, uri_block, priority_allow, rate_limit, trusted]
         key:
           type: string
-          description: The key of this use's include file, npg_dns/<key>.allow, as nginx's messages name it.
+          description: >-
+            The key of this use's include files, as nginx's messages name
+            them: npg_dns/<key>.allow for an access list, npg_dns/<key>.geo for
+            an exception list, both for the global trusted list.
           example: '579249690b065558'
         owner_id:
           type: string
-          format: uuid
+          description: The access list's or the host's id, "global" for a global default, "" for the global trusted list.
         owner_name:
           type: string
-          description: The list's name.
+          description: The access list's name, the host's first domain name, or "" for a global list.
     DNSApplyState:
       type: object
       properties:
@@ -13125,6 +13515,33 @@ components:
         updated_at:
           type: string
           format: date-time
+        exception_hostnames:
+          type: array
+          items:
+            type: string
+          description: >-
+            Domain (DDNS) names whose addresses count as exception_ips (#320). NPG
+            looks them up on a schedule and applies the addresses it accepts.
+            They open only the blocked paths: the WAF, bans and the other checks still apply. A host whose Advanced Config asks for a login applies none (exception_hostnames_skipped). Never null.
+        exception_hostname_status:
+          type: array
+          readOnly: true
+          items:
+            $ref: '#/components/schemas/DNSEntryStatus'
+          description: >-
+            Sent by GET /proxy-hosts/{id}/uri-block and GET /uri-blocks only, not by a save. The state of each name of
+            exception_hostnames, in their order, as the caller may see it: the banned
+            warning needs waf:read, self_ip ddns:read, blocking_file
+            proxy:read. Empty when the state cannot be read.
+        exception_hostnames_skipped:
+          type: boolean
+          readOnly: true
+          description: >-
+            Sent by GET /proxy-hosts/{id}/uri-block and GET /uri-blocks only.
+            true when the host's Advanced Config asks for a login (auth_basic
+            or auth_request): the exception path cannot run it, so this host
+            applies no exception domain, its own or the global ones. Its
+            exception IPs still apply.
     GlobalURIBlockConfig:
       type: object
       properties:
@@ -13144,6 +13561,25 @@ components:
                 enum: [block, challenge]
               description:
                 type: string
+        exception_ips:
+          type: array
+          items:
+            type: string
+          description: IPs/CIDRs exempt from every rule on every host. Written as sent; left out clears the list.
+        allow_private_ips:
+          type: boolean
+          description: Exempt RFC1918 ranges from every rule. Defaults to true when left out.
+        exception_hostnames:
+          type: array
+          items:
+            type: string
+          description: >-
+            Domain (DDNS) names whose addresses count as exception_ips (#320).
+            Replaces the stored names; left out keeps them, [] clears them.
+            Stored normalized (lower case, no trailing dot, each once). A
+            refused name answers 400 with field exception_hostnames[i] and the name
+            rule's code; a domain name sent in exception_ips answers 400
+            hostname_in_ip_field.
     Fail2banConfig:
       type: object
       description: Per-host fail2ban-style auto-ban configuration. It has no global default and therefore no disable_global field.
@@ -13309,6 +13745,35 @@ components:
         updated_at:
           type: string
           format: date-time
+        allowed_hostnames:
+          type: array
+          items:
+            type: string
+          description: >-
+            Domain (DDNS) names whose addresses count as allowed_ips (#320). NPG
+            looks them up on a schedule and applies the addresses it accepts.
+            They pass the geo block, the geo challenge, the cloud provider block and the bot filter, but unlike allowed_ips they never turn the WAF off. Never null.
+        allowed_hostname_status:
+          type: array
+          readOnly: true
+          items:
+            $ref: '#/components/schemas/DNSEntryStatus'
+          description: >-
+            Sent by GET only, not by a save. The state of each name of
+            allowed_hostnames, in their order, as the caller may see it: the banned
+            warning needs waf:read, self_ip ddns:read, blocking_file
+            proxy:read. Empty when the state cannot be read.
+        allowed_ips_ignored:
+          type: array
+          readOnly: true
+          items:
+            type: string
+          description: >-
+            Sent by GET only. The entries of allowed_ips that are not an IP
+            address or CIDR range (trimmed), which the configs leave out: a
+            name typed there before allowed_hostnames existed. They stay stored, and a
+            save may send them back unchanged while a new one is refused; move
+            a name to allowed_hostnames to apply it.
     UpdateGlobalGeoRestriction:
       type: object
       description: Partial update of the global geo default; omitted fields keep their stored value.
@@ -13335,6 +13800,17 @@ components:
           type: boolean
         challenge_mode:
           type: boolean
+        allowed_hostnames:
+          type: array
+          items:
+            type: string
+          description: >-
+            Domain (DDNS) names whose addresses count as allowed_ips (#320).
+            Replaces the stored names; left out keeps them, [] clears them.
+            Stored normalized (lower case, no trailing dot, each once). A
+            refused name answers 400 with field allowed_hostnames[i] and the name
+            rule's code; a domain name sent in allowed_ips answers 400
+            hostname_in_ip_field.
     GlobalBotFilter:
       type: object
       description: |
@@ -13445,6 +13921,24 @@ components:
         updated_at:
           type: string
           format: date-time
+        whitelist_hostnames:
+          type: array
+          items:
+            type: string
+          description: >-
+            Domain (DDNS) names whose addresses count as whitelist_ips (#320). NPG
+            looks them up on a schedule and applies the addresses it accepts.
+            Their requests are never rate limited. Never null.
+        whitelist_hostname_status:
+          type: array
+          readOnly: true
+          items:
+            $ref: '#/components/schemas/DNSEntryStatus'
+          description: >-
+            Sent by GET only, not by a save. The state of each name of
+            whitelist_hostnames, in their order, as the caller may see it: the banned
+            warning needs waf:read, self_ip ddns:read, blocking_file
+            proxy:read. Empty when the state cannot be read.
     UpdateGlobalRateLimit:
       type: object
       description: |
@@ -13479,6 +13973,17 @@ components:
             Comma- or newline-separated IPs and CIDR ranges exempt from the
             limit. Omit to keep the stored list, send "" to clear it. Invalid
             entries are rejected with 400.
+        whitelist_hostnames:
+          type: array
+          items:
+            type: string
+          description: >-
+            Domain (DDNS) names whose addresses count as whitelist_ips (#320).
+            Replaces the stored names; left out keeps them, [] clears them.
+            Stored normalized (lower case, no trailing dot, each once). A
+            refused name answers 400 with field whitelist_hostnames[i] and the name
+            rule's code; a domain name sent in whitelist_ips answers 400
+            hostname_in_ip_field.
     GlobalSecurityHeaders:
       type: object
       description: |
@@ -13761,6 +14266,24 @@ components:
         updated_at:
           type: string
           format: date-time
+        exception_hostnames:
+          type: array
+          items:
+            type: string
+          description: >-
+            Domain (DDNS) names whose addresses count as exception_ips (#320). NPG
+            looks them up on a schedule and applies the addresses it accepts.
+            They are unioned with each host's; they open only the blocked paths. Never null.
+        exception_hostname_status:
+          type: array
+          readOnly: true
+          items:
+            $ref: '#/components/schemas/DNSEntryStatus'
+          description: >-
+            Sent by GET only, not by a save. The state of each name of
+            exception_hostnames, in their order, as the caller may see it: the banned
+            warning needs waf:read, self_ip ddns:read, blocking_file
+            proxy:read. Empty when the state cannot be read.
     AddGlobalURIBlockRule:
       type: object
       description: A single rule appended to the global URI block list.
@@ -15913,6 +16436,7 @@ components:
             $ref: '#/components/schemas/CreateAccessListItem'
     AccessListDNSConfirm:
       type: object
+      description: The body of every dns-confirm route, an access list's and the exception lists'.
       required: [hostname, expected_addresses, expected_canonical_name]
       properties:
         hostname:
@@ -15930,6 +16454,40 @@ components:
             a CNAME is its own target. A target left out, or other than the one the server
             sees, is refused with 409 `observation_changed`, whose `observed.canonical_name`
             is the target to show.
+    DNSConfirmForbidden:
+      type: object
+      description: A dns-confirm the caller may not make for every list that uses the domain.
+      properties:
+        error:
+          type: string
+        required:
+          type: array
+          items:
+            type: string
+          description: The missing write permissions, or a use no permission covers.
+    DNSConfirmConflict:
+      type: object
+      description: A dns-confirm answered 409.
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum: [lookup_unavailable, observation_changed, nginx_reload_rejected]
+        details:
+          type: string
+          description: nginx's message (nginx_reload_rejected).
+        observed:
+          type: object
+          description: The domain's answer now (observation_changed), to show and confirm.
+          properties:
+            addresses:
+              type: array
+              items:
+                type: string
+            canonical_name:
+              type: string
+              nullable: true
     DNSEntryStatus:
       type: object
       description: |
@@ -17188,6 +17746,17 @@ components:
           type: boolean
           default: false
           description: See GeoRestriction.disable_global.
+        allowed_hostnames:
+          type: array
+          items:
+            type: string
+          description: >-
+            Domain (DDNS) names whose addresses count as allowed_ips (#320).
+            Replaces the stored names; left out keeps them, [] clears them.
+            Stored normalized (lower case, no trailing dot, each once). A
+            refused name answers 400 with field allowed_hostnames[i] and the name
+            rule's code; a domain name sent in allowed_ips answers 400
+            hostname_in_ip_field.
     UpdateGeoRestriction:
       type: object
       description: |
@@ -17216,6 +17785,17 @@ components:
         disable_global:
           type: boolean
           description: See GeoRestriction.disable_global.
+        allowed_hostnames:
+          type: array
+          items:
+            type: string
+          description: >-
+            Domain (DDNS) names whose addresses count as allowed_ips (#320).
+            Replaces the stored names; left out keeps them, [] clears them.
+            Stored normalized (lower case, no trailing dot, each once). A
+            refused name answers 400 with field allowed_hostnames[i] and the name
+            rule's code; a domain name sent in allowed_ips answers 400
+            hostname_in_ip_field.
     CreateBotFilter:
       type: object
       description: |
@@ -17336,6 +17916,17 @@ components:
         allow_private_ips:
           type: boolean
           default: true
+        exception_hostnames:
+          type: array
+          items:
+            type: string
+          description: >-
+            Domain (DDNS) names whose addresses count as exception_ips (#320).
+            Replaces the stored names; left out keeps them, [] clears them.
+            Stored normalized (lower case, no trailing dot, each once). A
+            refused name answers 400 with field exception_hostnames[i] and the name
+            rule's code; a domain name sent in exception_ips answers 400
+            hostname_in_ip_field.
     AddURIBlockRule:
       type: object
       description: Body for POST /proxy-hosts/{id}/uri-block/rules — adds one rule without rewriting the rest.
@@ -17392,6 +17983,17 @@ components:
         disable_global:
           type: boolean
           description: See RateLimit.disable_global.
+        whitelist_hostnames:
+          type: array
+          items:
+            type: string
+          description: >-
+            Domain (DDNS) names whose addresses count as whitelist_ips (#320).
+            Replaces the stored names; left out keeps them, [] clears them.
+            Stored normalized (lower case, no trailing dot, each once). A
+            refused name answers 400 with field whitelist_hostnames[i] and the name
+            rule's code; a domain name sent in whitelist_ips answers 400
+            hostname_in_ip_field.
     CreateFail2ban:
       type: object
       description: |

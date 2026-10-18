@@ -32,11 +32,13 @@ type dnsSettingsAuditor interface {
 }
 
 // SetDNSEntries wires the DNS entry service: a save that changes the domain
-// entry tunables hands the change to it. Without it the tunables are only
-// stored, and nothing switches the names at once.
+// entry tunables hands the change to it, and GET shows the global trusted
+// domains' state. Without it the tunables are only stored, and nothing
+// switches the names at once.
 func (h *SystemSettingsHandler) SetDNSEntries(svc *service.DNSEntryService) {
 	if svc != nil {
 		h.dnsEntries = svc
+		h.dnsStatus = svc
 	}
 }
 

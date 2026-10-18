@@ -218,6 +218,9 @@ type URIBlockWithHost struct {
 	model.URIBlock
 	DomainNames []string `json:"domain_names"`
 	HostEnabled bool     `json:"host_enabled"`
+	// AdvancedConfig is the host's Advanced Config, which decides whether it
+	// applies the exception domains (#320). Never sent.
+	AdvancedConfig string `json:"-"`
 }
 
 // ListAll returns all URI blocks with host information
@@ -226,7 +229,8 @@ func (r *URIBlockRepository) ListAll(ctx context.Context) ([]URIBlockWithHost, e
 		SELECT ub.id, ub.proxy_host_id, ub.enabled, ub.rules,
 		       COALESCE(ub.exception_ips, '{}'), COALESCE(ub.allow_private_ips, true),
 		       ub.created_at, ub.updated_at,
-		       ph.domain_names, ph.enabled as host_enabled, ub.exception_hostnames
+		       ph.domain_names, ph.enabled as host_enabled, ub.exception_hostnames,
+		       COALESCE(ph.advanced_config, '')
 		FROM uri_blocks ub
 		JOIN proxy_hosts ph ON ub.proxy_host_id = ph.id
 		ORDER BY ph.domain_names[1]
@@ -247,7 +251,7 @@ func (r *URIBlockRepository) ListAll(ctx context.Context) ([]URIBlockWithHost, e
 		if err := rows.Scan(
 			&ub.ID, &ub.ProxyHostID, &ub.Enabled, &rulesJSON,
 			&exceptionIPs, &allowPrivateIPs, &ub.CreatedAt, &ub.UpdatedAt,
-			&domainNames, &ub.HostEnabled, &exceptionHostnames,
+			&domainNames, &ub.HostEnabled, &exceptionHostnames, &ub.AdvancedConfig,
 		); err != nil {
 			return nil, err
 		}

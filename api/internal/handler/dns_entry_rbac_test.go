@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -57,14 +58,13 @@ func callWithGrantsCtx(t *testing.T, ctx context.Context, h echo.HandlerFunc, g 
 }
 
 // One table says which permission reads and writes a name's use in a scope.
-// Only access lists have a row so far; a scope without a row is readable and
-// writable by no one.
+// A scope that does not parse is readable and writable by no one.
 func TestDNSScopePermissions(t *testing.T) {
 	cases := map[string][2]string{
 		"acl:" + testListID: {"access:read", "access:write"},
-		"trusted":           {"", ""},
-		"uri:global":        {"", ""},
 		"acl:not-a-uuid":    {"", ""},
+		"uri:not-a-uuid":    {"", ""},
+		"trusted:global":    {"", ""},
 		"":                  {"", ""},
 	}
 	for scope, want := range cases {
@@ -73,6 +73,40 @@ func TestDNSScopePermissions(t *testing.T) {
 		}
 		if got := dnsScopeWritePermission(scope); got != want[1] {
 			t.Errorf("write %q = %q, want %q", scope, got, want[1])
+		}
+	}
+}
+
+// Each use of a name in an exception list (#320) is read and changed with
+// the permissions of the list's own screen: a host's lists proxy, the
+// global lists waf (the screens they sit under), the global trusted list
+// settings. A use without a row would make a confirm of every name used
+// there answer 403 to everyone, and hide it in every overview.
+func TestDNSScopePermissionsCoverEveryScopeKind(t *testing.T) {
+	const host = "00000000-0000-4000-8000-0000000006a1"
+	cases := map[string][2]string{
+		"uri:" + host:  {"proxy:read", "proxy:write"},
+		"prio:" + host: {"proxy:read", "proxy:write"},
+		"rl:" + host:   {"proxy:read", "proxy:write"},
+		"uri:global":   {"waf:read", "waf:write"},
+		"prio:global":  {"waf:read", "waf:write"},
+		"rl:global":    {"waf:read", "waf:write"},
+		"trusted":      {"settings:read", "settings:write"},
+	}
+	for scope, want := range cases {
+		if got := dnsScopeReadPermission(scope); got != want[0] {
+			t.Errorf("read %q = %q, want %q", scope, got, want[0])
+		}
+		if got := dnsScopeWritePermission(scope); got != want[1] {
+			t.Errorf("write %q = %q, want %q", scope, got, want[1])
+		}
+	}
+	// Every permission in the table is one a role can hold.
+	for _, want := range cases {
+		for _, p := range want {
+			if !slices.Contains(model.AllAreaPermissions, p) {
+				t.Errorf("%q is not a permission of any area", p)
+			}
 		}
 	}
 }

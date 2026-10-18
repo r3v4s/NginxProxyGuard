@@ -137,7 +137,7 @@ func dnsConfirmRefused(c echo.Context, err error) error {
 			Observed: observed,
 		})
 	}
-	return internalError(c, "confirm access list domain", err)
+	return internalError(c, "confirm domain", err)
 }
 
 // dnsRefScopes returns the scopes of refs, sorted, each once.

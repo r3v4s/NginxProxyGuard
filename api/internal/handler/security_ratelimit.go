@@ -25,7 +25,7 @@ func (h *SecurityHandler) GetRateLimit(c echo.Context) error {
 		return databaseError(c, "get rate limit", err)
 	}
 
-	return c.JSON(http.StatusOK, rateLimit)
+	return c.JSON(http.StatusOK, h.rateLimitView(c, rateLimit))
 }
 
 func (h *SecurityHandler) UpsertRateLimit(c echo.Context) error {
@@ -394,7 +394,7 @@ func (h *SecurityHandler) GetGlobalRateLimit(c echo.Context) error {
 	if err != nil {
 		return databaseError(c, "get global rate limit", err)
 	}
-	return c.JSON(http.StatusOK, g)
+	return c.JSON(http.StatusOK, h.globalRateLimitView(c, g))
 }
 
 // UpdateGlobalRateLimit updates the global rate-limit default and regenerates
