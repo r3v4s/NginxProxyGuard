@@ -1,6 +1,7 @@
 package nginx
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -23,7 +24,7 @@ func renderOnly(t *testing.T, s *model.GlobalSettings) string {
 	if err := os.MkdirAll(m.configPath, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := m.GenerateMainNginxConfig(context.Background(), s, nil, false, TrustedProxyConfig{}); err != nil {
+	if err := m.GenerateMainNginxConfig(context.Background(), s, TrustedIPConfig{}, TrustedProxyConfig{}); err != nil {
 		t.Fatalf("GenerateMainNginxConfig: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "nginx.conf"))
@@ -226,7 +227,7 @@ func TestMainConfig_RollsBackOnNginxTestFailure(t *testing.T) {
 
 	m := &Manager{configPath: confDir, cli: &fakeFailingCLI{}}
 
-	err := m.GenerateMainNginxConfig(context.Background(), baselineSettings(), nil, false, TrustedProxyConfig{})
+	err := m.GenerateMainNginxConfig(context.Background(), baselineSettings(), TrustedIPConfig{}, TrustedProxyConfig{})
 	if err == nil {
 		t.Fatal("expected GenerateMainNginxConfig to return an error when nginx -t fails")
 	}
@@ -287,7 +288,7 @@ func TestMainConfig_GlobalTrustedIPsBypassRateLimit(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	trusted := []string{"192.168.0.0/16", "10.0.0.5"}
-	if err := m.GenerateMainNginxConfig(context.Background(), s, trusted, false, TrustedProxyConfig{}); err != nil {
+	if err := m.GenerateMainNginxConfig(context.Background(), s, TrustedIPConfig{Static: trusted}, TrustedProxyConfig{}); err != nil {
 		t.Fatalf("GenerateMainNginxConfig: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "nginx.conf"))
@@ -329,7 +330,7 @@ func TestMainConfig_GlobalTrustedIPsBypassWAF(t *testing.T) {
 		if err := os.MkdirAll(m.configPath, 0755); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
-		if err := m.GenerateMainNginxConfig(context.Background(), baselineSettings(), trusted, bypass, TrustedProxyConfig{}); err != nil {
+		if err := m.GenerateMainNginxConfig(context.Background(), baselineSettings(), TrustedIPConfig{Static: trusted, BypassWAF: bypass}, TrustedProxyConfig{}); err != nil {
 			t.Fatalf("GenerateMainNginxConfig: %v", err)
 		}
 		b, err := os.ReadFile(filepath.Join(dir, "nginx.conf"))
@@ -437,7 +438,7 @@ func TestMainConfig_GlobalZoneKeysDoNotDependOnTrustedIPs(t *testing.T) {
 		if err := os.MkdirAll(m.configPath, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := m.GenerateMainNginxConfig(context.Background(), s, trusted, false, TrustedProxyConfig{}); err != nil {
+		if err := m.GenerateMainNginxConfig(context.Background(), s, TrustedIPConfig{Static: trusted}, TrustedProxyConfig{}); err != nil {
 			t.Fatal(err)
 		}
 		b, err := os.ReadFile(filepath.Join(dir, "nginx.conf"))
@@ -476,7 +477,7 @@ func TestMainConfig_OldGlobalZoneNamesInUseGetAliases(t *testing.T) {
 	m.SetLegacyZoneRefSource(func(context.Context) ([]string, error) {
 		return []string{"location /x {\n    limit_req zone=global_req_limit burst=5;\n}"}, nil
 	})
-	if err := m.GenerateMainNginxConfig(context.Background(), s, nil, false, TrustedProxyConfig{}); err != nil {
+	if err := m.GenerateMainNginxConfig(context.Background(), s, TrustedIPConfig{}, TrustedProxyConfig{}); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "nginx.conf"))
@@ -507,7 +508,7 @@ func TestMainConfig_FailsWhenOldZoneNamesCannotBeRead(t *testing.T) {
 	}
 	readErr := errors.New("db down")
 	m.SetLegacyZoneRefSource(func(context.Context) ([]string, error) { return nil, readErr })
-	if err := m.GenerateMainNginxConfig(context.Background(), s, nil, false, TrustedProxyConfig{}); !errors.Is(err, readErr) {
+	if err := m.GenerateMainNginxConfig(context.Background(), s, TrustedIPConfig{}, TrustedProxyConfig{}); !errors.Is(err, readErr) {
 		t.Fatalf("err = %v, want the read error", err)
 	}
 	if b, _ := os.ReadFile(target); string(b) != "# previous\n" {
@@ -531,7 +532,7 @@ func TestMainConfig_OldZoneNamesNotReadWithLimitsOff(t *testing.T) {
 		read = true
 		return nil, errors.New("db down")
 	})
-	if err := m.GenerateMainNginxConfig(context.Background(), s, nil, false, TrustedProxyConfig{}); err != nil {
+	if err := m.GenerateMainNginxConfig(context.Background(), s, TrustedIPConfig{}, TrustedProxyConfig{}); err != nil {
 		t.Fatalf("GenerateMainNginxConfig: %v", err)
 	}
 	if read {
@@ -567,11 +568,13 @@ func TestMainConfig_KeyMapsWrittenWithoutTrustedIPs(t *testing.T) {
 	}
 }
 
-// Each rate-limited host defines five variables with long names, and from
+// Each rate-limited host defines six variables with long names, and from
 // about 31 such hosts nginx's variables hash no longer fits the default
 // max size (1024) with 128-byte buckets: nginx -t then warns "could not build
 // optimal variables_hash". A max size of 4096 alone fits about 60 such hosts;
-// with 256-byte buckets it fits about 400.
+// with 256-byte buckets it fits about 400. These were measured with five
+// variables; the sixth, $npg_trusted_<id> (#320), lowers them by about an
+// eighth.
 func TestMainConfig_VariablesHashSizedForManyRateLimitedHosts(t *testing.T) {
 	out := renderOnly(t, baselineSettings())
 	if n := strings.Count(out, "variables_hash_max_size"); n != 1 || !strings.Contains(out, "    variables_hash_max_size 4096;\n") {
@@ -595,5 +598,140 @@ func TestMainConfig_VariablesHashMaxSizeLeftToCustomHTTPConfig(t *testing.T) {
 	s.CustomHTTPConfig = "# variables_hash_max_size 8192;"
 	if !strings.Contains(renderOnly(t, s), "    variables_hash_max_size 4096;\n") {
 		t.Error("a commented-out variables_hash_max_size in the custom HTTP config left nginx.conf without its own")
+	}
+}
+
+// renderMainWithTrusted renders nginx.conf with the global trusted list
+// trusted and returns it.
+func renderMainWithTrusted(t *testing.T, s *model.GlobalSettings, trusted TrustedIPConfig) string {
+	t.Helper()
+	dir := t.TempDir()
+	m := &Manager{configPath: filepath.Join(dir, "conf.d")}
+	if err := os.MkdirAll(m.configPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.GenerateMainNginxConfig(context.Background(), s, trusted, TrustedProxyConfig{}); err != nil {
+		t.Fatalf("GenerateMainNginxConfig: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "nginx.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// Global trusted domains reach nginx.conf only as includes in the geo of
+// the global limits ($global_trusted_ip). With the WAF bypass on, the WAF
+// rule (id:9000001) matches the static addresses alone: a domain never
+// turns the WAF off, and domains alone write no rule.
+func TestMainConfigTrustedDomainsAreGeoIncludesOnly(t *testing.T) {
+	s := baselineSettings()
+	s.LimitConnEnabled, s.LimitConnZoneSize, s.LimitConnPerIP = true, "10m", 50
+	s.LimitReqEnabled, s.LimitReqZoneSize, s.LimitReqRate, s.LimitReqBurst = true, "10m", 50, 100
+	names := []string{"office.example.com", "partner.example.com"}
+	globalGeo := func(t *testing.T, out string) string {
+		t.Helper()
+		start := strings.Index(out, "geo $global_trusted_ip {")
+		if start < 0 {
+			t.Fatalf("no geo $global_trusted_ip")
+		}
+		return out[start : start+strings.Index(out[start:], "\n    }")]
+	}
+	include := func(name string) string {
+		return "# dns: " + name + "\n        include " + DNSIncludeRenderDir + "/" + DNSIncludeKey(model.DNSScopeKindTrusted, name) + ".geo;"
+	}
+
+	out := renderMainWithTrusted(t, s, TrustedIPConfig{Static: []string{"192.0.2.7"}, Hostnames: names, BypassWAF: true})
+	if !strings.Contains(out, `"@ipMatch 192.0.2.7" "id:9000001,`) {
+		t.Errorf("the WAF rule does not match exactly the static address:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "id:9000001") && (strings.Contains(line, "example.com") || strings.Contains(line, DNSIncludeRenderDir)) {
+			t.Errorf("a trusted domain reaches the WAF rule: %s", line)
+		}
+	}
+	geo := globalGeo(t, out)
+	for _, want := range []string{"192.0.2.7 1;", include(names[0]), include(names[1])} {
+		if !strings.Contains(geo, want) {
+			t.Errorf("the global trusted geo is missing %q:\n%s", want, geo)
+		}
+	}
+	if n := strings.Count(out, DNSIncludeRenderDir); n != 2 {
+		t.Errorf("nginx.conf names a domain file %d time(s), want 2 (the geo's includes)", n)
+	}
+
+	out = renderMainWithTrusted(t, s, TrustedIPConfig{Hostnames: names, BypassWAF: true})
+	if strings.Contains(out, "id:9000001") {
+		t.Errorf("trusted domains alone wrote the WAF bypass rule")
+	}
+	if geo := globalGeo(t, out); !strings.Contains(geo, include(names[0])) {
+		t.Errorf("the global trusted geo does not include the domain:\n%s", geo)
+	}
+
+	if out := renderMainWithTrusted(t, baselineSettings(), TrustedIPConfig{Hostnames: names}); strings.Contains(out, DNSIncludeRenderDir) {
+		t.Errorf("with both global limits off nginx.conf includes a domain file")
+	}
+}
+
+// includeCheckingCLI is an nginx -t that runs check each time it is called.
+type includeCheckingCLI struct {
+	check func()
+	tests int
+}
+
+func (c *includeCheckingCLI) Test(ctx context.Context) error {
+	c.tests++
+	c.check()
+	return nil
+}
+func (c *includeCheckingCLI) Reload(ctx context.Context) error { return nil }
+
+// nginx -t fails on a missing include, and a failed nginx -t rolls
+// nginx.conf back to the previous release's: each trusted domain file the
+// new nginx.conf includes exists before nginx -t reads it. A missing one is
+// created empty (it lets no one through), and one the DNS entry service
+// wrote keeps its content.
+func TestGenerateMainNginxConfigCreatesMissingTrustedIncludes(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manager{configPath: filepath.Join(dir, "conf.d")}
+	if err := os.MkdirAll(m.configPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := baselineSettings()
+	s.LimitReqEnabled, s.LimitReqZoneSize, s.LimitReqRate, s.LimitReqBurst = true, "10m", 50, 100
+	const office, partner = "office.example.com", "partner.example.com"
+	keyOffice, keyPartner := DNSIncludeKey(model.DNSScopeKindTrusted, office), DNSIncludeKey(model.DNSScopeKindTrusted, partner)
+	written := FormatDNSIncludeFile(office, model.DNSScopeKindTrusted, 4, ".geo", []string{"192.0.2.7"})
+	if err := os.MkdirAll(m.dnsIncludeDiskDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(m.dnsIncludeDiskPath(keyOffice, ".geo"), written, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]byte{keyOffice: written, keyPartner: {}}
+	cli := &includeCheckingCLI{check: func() {
+		for key, content := range want {
+			if got, err := os.ReadFile(m.dnsIncludeDiskPath(key, ".geo")); err != nil || !bytes.Equal(got, content) {
+				t.Errorf("at nginx -t, %s.geo holds %q (%v), want %q", key, got, err, content)
+			}
+		}
+	}}
+	m.cli = cli
+
+	if err := m.GenerateMainNginxConfig(context.Background(), s, TrustedIPConfig{Hostnames: []string{office, partner}}, TrustedProxyConfig{}); err != nil {
+		t.Fatalf("GenerateMainNginxConfig: %v", err)
+	}
+	if cli.tests != 1 {
+		t.Fatalf("nginx -t ran %d time(s), want once", cli.tests)
+	}
+	refs, err := m.ScanDNSIncludeReferences()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 2 || !refs[keyOffice+".geo"] || !refs[keyPartner+".geo"] {
+		t.Errorf("nginx.conf includes %v, want the two trusted domains' .geo files", refs)
+	}
+	if files, err := m.ReadDNSIncludeDir(); err != nil || len(files) != 2 {
+		t.Errorf("%d file(s) in the directory (%v), want the two .geo files", len(files), err)
 	}
 }

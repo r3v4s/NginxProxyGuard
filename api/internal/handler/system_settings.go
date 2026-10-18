@@ -242,8 +242,7 @@ func (h *SystemSettingsHandler) UpdateSystemSettings(c echo.Context) error {
 	// with unchanged trusted-IP list must still re-render the main config.
 	if req.GlobalTrustedIPs != nil || req.GlobalTrustedIPsBypassWAF != nil ||
 		req.TrustedProxyCIDRs != nil || req.TrustedProxyPreset != nil || req.RealIPHeader != nil {
-		trustedIPs := service.ParseGlobalTrustedIPs(settings.GlobalTrustedIPs)
-		bypassWAF := settings.GlobalTrustedIPsBypassWAF
+		trusted := service.ResolveTrustedIPConfig(settings)
 		// Trusted proxies live in the same http-level block, so the same
 		// ordered worker applies them (#278).
 		trustedProxies := service.ResolveTrustedProxyConfig(settings)
@@ -261,7 +260,7 @@ func (h *SystemSettingsHandler) UpdateSystemSettings(c echo.Context) error {
 					log.Printf("[SystemSettings] ERROR: trusted IPs change NOT fully applied — failed to load global settings for nginx.conf regen: %v (run Sync All to retry)", err)
 					return
 				}
-				if err := h.nginxManager.GenerateMainNginxConfig(bgCtx, gs, trustedIPs, bypassWAF, trustedProxies); err != nil {
+				if err := h.nginxManager.GenerateMainNginxConfig(bgCtx, gs, trusted, trustedProxies); err != nil {
 					log.Printf("[SystemSettings] ERROR: trusted IPs change NOT fully applied — nginx.conf regeneration failed: %v (run Sync All to retry)", err)
 					return
 				}

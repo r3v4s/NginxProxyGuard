@@ -89,35 +89,36 @@ func NewSettingsService(
 	}
 }
 
-// loadGlobalTrustedIPs reads system_settings.global_trusted_ips and returns the
-// parsed list. Errors are logged and treated as "no whitelist" so a transient
-// DB hiccup doesn't fail an otherwise-valid global settings save.
-func (s *SettingsService) loadGlobalTrustedIPs(ctx context.Context) []string {
+// loadTrustedIPConfig reads the global trusted list for nginx.conf
+// (ResolveTrustedIPConfig). Errors are logged and treated as "no trusted
+// list": nginx.conf keeps its structure (the limits' geo and maps), trusts no
+// one and bypasses no WAF, and a transient DB hiccup doesn't fail an
+// otherwise-valid global settings save.
+func (s *SettingsService) loadTrustedIPConfig(ctx context.Context) nginx.TrustedIPConfig {
 	if s.systemSettingsRepo == nil {
-		return nil
+		return nginx.TrustedIPConfig{}
 	}
 	sys, err := s.systemSettingsRepo.Get(ctx)
 	if err != nil {
 		log.Printf("[SettingsService] failed to load system settings for trusted IPs: %v", err)
-		return nil
+		return nginx.TrustedIPConfig{}
 	}
 	if sys == nil {
-		return nil
+		return nginx.TrustedIPConfig{}
 	}
-	return ParseGlobalTrustedIPs(sys.GlobalTrustedIPs)
+	return ResolveTrustedIPConfig(sys)
 }
 
-// loadGlobalTrustedIPsBypassWAF reports whether trusted IPs should also bypass
-// the WAF (ModSecurity), the opt-in #166 flag. Defaults false on any error.
-func (s *SettingsService) loadGlobalTrustedIPsBypassWAF(ctx context.Context) bool {
-	if s.systemSettingsRepo == nil {
-		return false
+// ResolveTrustedIPConfig returns the global trusted list of sys as nginx.conf
+// takes it: the valid IP/CIDR entries of global_trusted_ips
+// (ParseGlobalTrustedIPs), the global trusted domains (#320) and the #166
+// WAF bypass flag, which nginx.conf applies to the IPs alone.
+func ResolveTrustedIPConfig(sys *model.SystemSettings) nginx.TrustedIPConfig {
+	return nginx.TrustedIPConfig{
+		Static:    ParseGlobalTrustedIPs(sys.GlobalTrustedIPs),
+		Hostnames: sys.GlobalTrustedHostnames,
+		BypassWAF: sys.GlobalTrustedIPsBypassWAF,
 	}
-	sys, err := s.systemSettingsRepo.Get(ctx)
-	if err != nil || sys == nil {
-		return false
-	}
-	return sys.GlobalTrustedIPsBypassWAF
 }
 
 // loadTrustedProxies reads the operator's trusted-proxy settings. On any error
@@ -169,8 +170,9 @@ func (s *SettingsService) GetGlobalSettings(ctx context.Context) (*model.GlobalS
 }
 
 // RegenerateMainNginxConfig re-renders /etc/nginx/nginx.conf from the current DB
-// global + system settings, including the global trusted-IP list and the #166
-// WAF-bypass flag. It does NOT reload nginx — the caller runs its own test+reload.
+// global + system settings, including the global trusted-IP list, its domains
+// (#320) and the #166 WAF-bypass flag. It does NOT reload nginx — the caller
+// runs its own test+reload.
 //
 // Needed by the backup restore path: restore writes settings back to the DB but
 // nginx.conf is the ONLY place the http-level trusted-IP limit_conn/limit_req
@@ -182,7 +184,7 @@ func (s *SettingsService) RegenerateMainNginxConfig(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return s.nginxManager.GenerateMainNginxConfig(ctx, settings, s.loadGlobalTrustedIPs(ctx), s.loadGlobalTrustedIPsBypassWAF(ctx), s.loadTrustedProxies(ctx))
+	return s.nginxManager.GenerateMainNginxConfig(ctx, settings, s.loadTrustedIPConfig(ctx), s.loadTrustedProxies(ctx))
 }
 
 func (s *SettingsService) UpdateGlobalSettings(ctx context.Context, req *model.UpdateGlobalSettingsRequest) (*model.GlobalSettings, error) {
@@ -201,7 +203,7 @@ func (s *SettingsService) UpdateGlobalSettings(ctx context.Context, req *model.U
 	// learns their input was rejected (otherwise they see "200 OK" and wonder
 	// why nothing changed). The DB retains the saved value; the operator can
 	// reopen the form and fix it.
-	if err := s.nginxManager.GenerateMainNginxConfig(ctx, settings, s.loadGlobalTrustedIPs(ctx), s.loadGlobalTrustedIPsBypassWAF(ctx), s.loadTrustedProxies(ctx)); err != nil {
+	if err := s.nginxManager.GenerateMainNginxConfig(ctx, settings, s.loadTrustedIPConfig(ctx), s.loadTrustedProxies(ctx)); err != nil {
 		// Separate "your value is wrong" from "we could not apply it right now".
 		// A cancelled context means the nginx lock was contended or the request
 		// went away — the config was never tested, let alone rejected. Reporting
@@ -279,7 +281,7 @@ func (s *SettingsService) ResetGlobalSettings(ctx context.Context) (*model.Globa
 	}
 
 	// Regenerate main nginx.conf so the reset defaults actually hit nginx.
-	if err := s.nginxManager.GenerateMainNginxConfig(ctx, settings, s.loadGlobalTrustedIPs(ctx), s.loadGlobalTrustedIPsBypassWAF(ctx), s.loadTrustedProxies(ctx)); err != nil {
+	if err := s.nginxManager.GenerateMainNginxConfig(ctx, settings, s.loadTrustedIPConfig(ctx), s.loadTrustedProxies(ctx)); err != nil {
 		log.Printf("[SettingsService] Warning: failed to regenerate nginx.conf after reset: %v", err)
 	}
 

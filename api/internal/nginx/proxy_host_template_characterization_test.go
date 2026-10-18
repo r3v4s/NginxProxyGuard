@@ -1212,6 +1212,67 @@ func goldenCases() []goldenCase {
 		})
 	}
 
+	// 32-34) global trusted domains (#320): each name is an include of the
+	// file the DNS entry service writes for the scope "trusted". Domains
+	// alone turn on the perimeter bypasses ($npg_trusted_<id>: geo, cloud
+	// provider, bot filter, rate limit), but neither the ban override nor
+	// the filter subscription bypass, which read the static list. In an
+	// access list a trusted domain comes after the list's address rules and
+	// before its domains; a satisfy any list on a login host leaves it out.
+	{
+		hostBypass := goldenBaseHost("00000000-0000-0000-0000-000000000a20", "trusted-domains.example.com")
+		hostBypassID := hostBypass.ID
+		cases = append(cases, goldenCase{
+			name: "trusted_domains_bypass",
+			data: ProxyHostConfigData{Host: hostBypass, GlobalSettings: baseGlobalSettings(),
+				TrustedHostnames: []string{"office.example.com", "partner.example.com"},
+				GeoRestriction: &model.GeoRestriction{ID: "00000000-0000-0000-0000-0000000000cc", ProxyHostID: hostBypass.ID,
+					Mode: "whitelist", Countries: []string{"KR"}, Enabled: true, CreatedAt: fixtureNow, UpdatedAt: fixtureNow},
+				BlockedCloudIPRanges: []string{"192.0.2.128/25"},
+				BotFilter: &model.BotFilter{ID: "00000000-0000-0000-0000-0000000000cd", ProxyHostID: hostBypass.ID, Enabled: true,
+					CustomBlockedAgents: "BadBot", CreatedAt: fixtureNow, UpdatedAt: fixtureNow},
+				RateLimit: &model.RateLimit{ID: "00000000-0000-0000-0000-0000000000ce", ProxyHostID: hostBypass.ID, Enabled: true,
+					RequestsPerSecond: 10, BurstSize: 20, ZoneSize: "10m", LimitBy: "ip", LimitResponse: 429, CreatedAt: fixtureNow, UpdatedAt: fixtureNow},
+				BannedIPs: []model.BannedIP{{ID: "00000000-0000-0000-0000-0000000000cf", ProxyHostID: &hostBypassID, IPAddress: "192.0.2.99",
+					Reason: "test ban", BannedAt: fixtureNow, CreatedAt: fixtureNow}},
+				UseFilterSubscription: true},
+		})
+
+		alID := "00000000-0000-0000-0000-0000000000a7"
+		hostOrder := goldenBaseHost("00000000-0000-0000-0000-000000000a21", "trusted-acl.example.com")
+		hostOrder.AccessListID = &alID
+		cases = append(cases, goldenCase{
+			name: "trusted_domains_access_list_order",
+			data: ProxyHostConfigData{Host: hostOrder, GlobalSettings: baseGlobalSettings(),
+				GlobalTrustedIPs: []string{"192.0.2.10"}, TrustedHostnames: []string{"office.example.com"},
+				AccessList: &model.AccessList{ID: alID, Name: "partners", SatisfyAny: false, Items: []model.AccessListItem{
+					{ID: "00000000-0000-0000-0000-0000000000d0", AccessListID: alID, Directive: "allow", Address: "192.0.2.64/26", SortOrder: 0, CreatedAt: fixtureNow},
+					{ID: "00000000-0000-0000-0000-0000000000d1", AccessListID: alID, Directive: "deny", Address: "192.0.2.70", Description: "old office", SortOrder: 1, CreatedAt: fixtureNow},
+					{ID: "00000000-0000-0000-0000-0000000000d2", AccessListID: alID, Directive: "deny", Address: "all", Hostname: "partner.example.com", SortOrder: 2, CreatedAt: fixtureNow},
+				}, CreatedAt: fixtureNow, UpdatedAt: fixtureNow}},
+		})
+
+		anyID := "00000000-0000-0000-0000-0000000000a8"
+		apID := "00000000-0000-0000-0000-0000000000d3"
+		hostAny := goldenBaseHost("00000000-0000-0000-0000-000000000a22", "trusted-login.example.com")
+		hostAny.AccessListID = &anyID
+		hostAny.AuthProviderID = &apID
+		cases = append(cases, goldenCase{
+			name: "trusted_domains_satisfy_any_forwardauth",
+			data: ProxyHostConfigData{Host: hostAny, GlobalSettings: baseGlobalSettings(),
+				TrustedHostnames: []string{"office.example.com"},
+				AuthProvider: &model.AuthProvider{ID: apID, Name: "authelia", Type: "authelia",
+					ProviderURL: "http://127.0.0.1:9091", TimeoutMs: 5000, Enabled: true, CreatedAt: fixtureNow, UpdatedAt: fixtureNow},
+				AccessList: &model.AccessList{ID: anyID, Name: "office", SatisfyAny: true, Items: []model.AccessListItem{
+					{ID: "00000000-0000-0000-0000-0000000000d4", AccessListID: anyID, Directive: "allow", Address: "192.0.2.64/26", SortOrder: 0, CreatedAt: fixtureNow},
+				}, CreatedAt: fixtureNow, UpdatedAt: fixtureNow},
+				GeoRestriction: &model.GeoRestriction{ID: "00000000-0000-0000-0000-0000000000d5", ProxyHostID: hostAny.ID,
+					Mode: "whitelist", Countries: []string{"KR"}, Enabled: true, CreatedAt: fixtureNow, UpdatedAt: fixtureNow},
+				BotFilter: &model.BotFilter{ID: "00000000-0000-0000-0000-0000000000d6", ProxyHostID: hostAny.ID, Enabled: true,
+					CustomBlockedAgents: "BadBot", CreatedAt: fixtureNow, UpdatedAt: fixtureNow}},
+		})
+	}
+
 	return cases
 }
 
@@ -1245,9 +1306,11 @@ func TestTrustedIPBypassesPerimeterControls(t *testing.T) {
 	out := string(rendered)
 
 	// sanitizeID (template_funcs.go) replaces hyphens with underscores for nginx
-	// zone names, so the guard variable is trusted_ip_<id-with-underscores>.
+	// zone names, so the guard variable is npg_trusted_<id-with-underscores>:
+	// the trusted IPs and domains (#320). $trusted_ip_<id>, the IPs alone, is
+	// left to the filter subscription bypass.
 	sanitizedID := strings.ReplaceAll(fixture.Host.ID, "-", "_")
-	guard := "if ($trusted_ip_" + sanitizedID + " = 1)"
+	guard := "if ($npg_trusted_" + sanitizedID + " = 1)"
 
 	// (a) The block-mode geo section must contain the trusted-IP guard.
 	geoIdx := strings.Index(out, "Direct Block Mode")

@@ -303,7 +303,7 @@ func TestEnsureHostCommonIncludeWritesRequestPathMapFirst(t *testing.T) {
 func TestRequestPathDefinedOnceAcrossGeneratedFiles(t *testing.T) {
 	m, root := newRequestPathTestManager(t)
 	ctx := context.Background()
-	if err := m.GenerateMainNginxConfig(ctx, baselineSettings(), nil, false, TrustedProxyConfig{}); err != nil {
+	if err := m.GenerateMainNginxConfig(ctx, baselineSettings(), TrustedIPConfig{}, TrustedProxyConfig{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.EnsureFilterSubscriptionFiles(); err != nil {

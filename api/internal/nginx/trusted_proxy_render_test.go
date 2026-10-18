@@ -18,7 +18,7 @@ func renderWithProxies(t *testing.T, cfg TrustedProxyConfig) string {
 	if err := os.MkdirAll(m.configPath, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := m.GenerateMainNginxConfig(context.Background(), baselineSettings(), nil, false, cfg); err != nil {
+	if err := m.GenerateMainNginxConfig(context.Background(), baselineSettings(), TrustedIPConfig{}, cfg); err != nil {
 		t.Fatalf("GenerateMainNginxConfig: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "nginx.conf"))

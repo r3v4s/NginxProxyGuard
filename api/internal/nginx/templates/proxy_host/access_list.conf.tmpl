@@ -15,15 +15,33 @@ geo $banned_ip_{{sanitizeID .Host.ID}} {
 {{end}}
 
 {{if or .GlobalTrustedIPs .RateLimitEnabled}}
-# Global trusted IPs geo mapping (bypass all security)
-{{- if .RateLimitEnabled}}. Written for a host
-# with rate limiting even with no trusted IPs: its key chain reads it.
+# Global trusted IPs geo mapping (filter subscription IP bypass)
+{{- if .RateLimitEnabled}}. Written
+# for a host with rate limiting even with no trusted IPs: Advanced Config may
+# read it.
 {{- end}}
 geo $trusted_ip_{{sanitizeID .Host.ID}} {
     default 0;
 {{range .GlobalTrustedIPs}}
     {{.}} 1;
 {{end}}
+}
+{{end}}{{if or .TrustedConfigured .RateLimitEnabled}}
+# Global trusted IPs and domains geo mapping (geo restriction, cloud provider,
+# bot filter and rate limit bypass; bans, filter subscription IPs and the WAF
+# give way to the IPs alone)
+{{- if .RateLimitEnabled}}. Written for a host with rate limiting even with
+# no trusted IPs or domains: its key chain reads it.
+{{- end}}
+geo $npg_trusted_{{sanitizeID .Host.ID}} {
+    default 0;
+{{- range .GlobalTrustedIPs}}
+    {{.}} 1;
+{{- end}}
+{{- range .TrustedDNSIncludes ".geo"}}
+    # dns: {{commentText .Name}}
+    include {{.Path}};
+{{- end}}
 }
 {{end}}
 

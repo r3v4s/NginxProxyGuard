@@ -300,11 +300,14 @@ http {
     # Same pattern as per-host rate_limit.conf.tmpl: empty key = no counting.
     # Written even with no trusted IPs, so the zones' keys never change: a
     # running nginx refuses a reload that changes the key of a zone it has.
-    # Sourced from system_settings.global_trusted_ips.
+    # Sourced from system_settings.global_trusted_ips, and an include per
+    # global trusted domain (global_trusted_hostnames).
     # ==========================================================================
     geo $global_trusted_ip {
         default 0;
 {{range .GlobalTrustedIPs}}        {{.}} 1;
+{{end}}{{range .GlobalTrustedDNSIncludes}}        # dns: {{.Name}}
+        include {{.Path}};
 {{end}}    }
 {{end}}{{if .LimitConnEnabled}}    # ==========================================================================
     # Global connection limit (DDoS protection)
@@ -470,6 +473,12 @@ type MainConfigData struct {
 	// configured; the geo+map blocks are written either way while a limit is on.
 	GlobalTrustedIPs []string
 
+	// GlobalTrustedDNSIncludes are the include lines, in that geo block, of
+	// the .geo files of the global trusted domains (#320): set only while a
+	// global limit is on, as the geo is. The names are checked
+	// (model.ValidateDNSName), so they are safe in the comment above each.
+	GlobalTrustedDNSIncludes []DNSIncludeLine
+
 	// GlobalTrustedIPsBypassWAFCSV is the comma-joined trusted IP list, set ONLY
 	// when the opt-in global_trusted_ips_bypass_waf flag is on AND there are
 	// trusted IPs (#166). Empty string disables the http-level WAF-bypass rule.
@@ -477,8 +486,10 @@ type MainConfigData struct {
 	GlobalTrustedIPsBypassWAFCSV string
 
 	// SetVariablesHashMaxSize writes variables_hash_max_size: each
-	// rate-limited host defines five variables, too many for nginx's default
-	// from about 31 such hosts (with 256-byte buckets, 4096 fits about 400).
+	// rate-limited host defines six variables, too many for nginx's default
+	// from about 31 such hosts (with 256-byte buckets, 4096 fits about 400;
+	// both measured with five, before $npg_trusted_<id>, which lowers them
+	// by about an eighth).
 	// Not when the custom HTTP config sets it: a second one fails nginx -t.
 	SetVariablesHashMaxSize bool
 
@@ -493,14 +504,24 @@ var validErrorLogLevels = map[string]bool{
 	"warn": true, "error": true, "crit": true, "alert": true, "emerg": true,
 }
 
+// TrustedIPConfig is the global trusted list nginx.conf renders: Static, the
+// valid IP/CIDR entries of system_settings.global_trusted_ips; Hostnames, the
+// global trusted domains (#320), included by name in the limits' geo; and
+// BypassWAF, the #166 opt-in, which lets the Static entries alone past the
+// WAF. A domain never bypasses the WAF.
+type TrustedIPConfig struct {
+	Static, Hostnames []string
+	BypassWAF         bool
+}
+
 // buildMainConfigData translates a GlobalSettings row into template inputs,
 // applying fallbacks for fields where a zero value would produce an invalid
 // nginx directive (e.g. empty ssl_protocols, 0 worker_connections).
 //
-// trustedIPs come from system_settings.global_trusted_ips (already parsed into
-// individual entries) and are wired into the http-level limit_conn / limit_req
-// zones so whitelisted IPs bypass DDoS limits the same way they bypass per-host
-// rate limits and bot/WAF checks. Pass nil when no whitelist applies.
+// The global trusted list (TrustedIPConfig) is wired into the http-level
+// limit_conn / limit_req zones so trusted clients bypass DDoS limits the same
+// way they bypass per-host rate limits and bot checks. Pass the zero value
+// when no trusted list applies.
 // TrustedProxyConfig carries the operator's real-IP settings into the render.
 // The zero value is meaningful and safe: it reproduces the behaviour NPG had
 // before the setting existed (private/loopback ranges only, X-Forwarded-For).
@@ -541,7 +562,7 @@ func resolveTrustedProxies(cfg TrustedProxyConfig) (builtins, extra []string, he
 	return builtins, extra, header
 }
 
-func buildMainConfigData(s *model.GlobalSettings, trustedIPs []string, trustedBypassWAF bool, proxies TrustedProxyConfig) MainConfigData {
+func buildMainConfigData(s *model.GlobalSettings, trusted TrustedIPConfig, proxies TrustedProxyConfig) MainConfigData {
 	builtins, extraProxies, realIPHeader := resolveTrustedProxies(proxies)
 	d := MainConfigData{
 		TrustedProxyBuiltins:     builtins,
@@ -619,12 +640,16 @@ func buildMainConfigData(s *model.GlobalSettings, trustedIPs []string, trustedBy
 		LimitReqBurst:            s.LimitReqBurst,
 		CustomHTTPConfig:         strings.TrimSpace(s.CustomHTTPConfig),
 		CustomStreamConfig:       strings.TrimSpace(s.CustomStreamConfig),
-		GlobalTrustedIPs:         trustedIPs,
+		GlobalTrustedIPs:         trusted.Static,
 	}
 	// Opt-in WAF bypass (#166): only emit the http-level ctl:ruleEngine=Off rule
-	// when the flag is on AND there are trusted IPs to match.
-	if trustedBypassWAF && len(trustedIPs) > 0 {
-		d.GlobalTrustedIPsBypassWAFCSV = strings.Join(trustedIPs, ",")
+	// when the flag is on AND there are trusted IPs to match. The trusted
+	// domains never reach it (#320).
+	if trusted.BypassWAF && len(trusted.Static) > 0 {
+		d.GlobalTrustedIPsBypassWAFCSV = strings.Join(trusted.Static, ",")
+	}
+	if s.LimitConnEnabled || s.LimitReqEnabled {
+		d.GlobalTrustedDNSIncludes = trustedDNSIncludes(trusted.Hostnames, ".geo")
 	}
 	// The custom HTTP config sits at the http block's top level, as Advanced
 	// Config sits at the server block's.
@@ -649,14 +674,16 @@ func buildMainConfigData(s *model.GlobalSettings, trustedIPs []string, trustedBy
 // On test failure it restores the previous nginx.conf so a bad save can
 // never leave the container unable to reload or restart.
 //
-// trustedIPs are sourced from system_settings.global_trusted_ips (parsed into
-// individual IP/CIDR entries by the caller). Pass nil when no whitelist
-// applies. They flow into the http-level limit_conn / limit_req zones so
-// whitelisted IPs bypass DDoS limits — same trust contract as per-host limits.
+// trusted is the global trusted list (TrustedIPConfig, built by the caller
+// from system_settings). Pass the zero value when no trusted list applies. It
+// flows into the http-level limit_conn / limit_req zones so trusted clients
+// bypass DDoS limits — same trust contract as per-host limits. The files of
+// the trusted domains it includes are created, empty, before nginx -t when
+// they do not exist yet.
 //
 // Call from startup and from SettingsService.UpdateGlobalSettings, and also
 // from SystemSettingsHandler when global_trusted_ips changes.
-func (m *Manager) GenerateMainNginxConfig(ctx context.Context, s *model.GlobalSettings, trustedIPs []string, trustedBypassWAF bool, proxies TrustedProxyConfig) error {
+func (m *Manager) GenerateMainNginxConfig(ctx context.Context, s *model.GlobalSettings, trusted TrustedIPConfig, proxies TrustedProxyConfig) error {
 	if s == nil {
 		return fmt.Errorf("global settings are nil")
 	}
@@ -667,7 +694,7 @@ func (m *Manager) GenerateMainNginxConfig(ctx context.Context, s *model.GlobalSe
 	}
 
 	var buf bytes.Buffer
-	d := buildMainConfigData(s, trustedIPs, trustedBypassWAF, proxies)
+	d := buildMainConfigData(s, trusted, proxies)
 	// The aliases render only inside the limit blocks: with both limits off
 	// there is nothing to read the old names for.
 	if s.LimitConnEnabled || s.LimitReqEnabled {
@@ -703,6 +730,12 @@ func (m *Manager) GenerateMainNginxConfig(ctx context.Context, s *model.GlobalSe
 
 		if err := os.MkdirAll(filepath.Join(nginxRoot, "stream.d"), 0755); err != nil {
 			return fmt.Errorf("create stream.d: %w", err)
+		}
+		// nginx -t fails on a missing include, and the rollback below would
+		// then keep the previous nginx.conf: a trusted domain's file the DNS
+		// entry service has not written yet is created empty (#320).
+		if err := m.ensureDNSIncludeLines(d.GlobalTrustedDNSIncludes); err != nil {
+			return fmt.Errorf("ensure domain include files: %w", err)
 		}
 		if err := m.writeFileAtomic(target, buf.Bytes(), 0644); err != nil {
 			return fmt.Errorf("write %s: %w", target, err)

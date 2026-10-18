@@ -30,7 +30,7 @@ map $rate_wl_{{$id}} $rate_wl_key_{{$id}} {
     1       "";
     default $rate_limit_key_{{$id}};
 }
-map $trusted_ip_{{$id}} $rate_final_key_{{$id}} {
+map $npg_trusted_{{$id}} $rate_final_key_{{$id}} {
     1       "";
     default $rate_wl_key_{{$id}};
 }

@@ -30,9 +30,9 @@
         set $block_reason_var "-";
     }
 {{end}}
-{{- if $.GlobalTrustedIPs}}
+{{- if $.TrustedConfigured}}
     # Global trusted IPs - bypass geo restriction
-    if ($trusted_ip_{{sanitizeID $.Host.ID}} = 1) {
+    if ($npg_trusted_{{sanitizeID $.Host.ID}} = 1) {
         set $geo_allowed_ip 1;
         set $block_reason_var "-";
     }
@@ -68,9 +68,9 @@
         set $geo_block_check "";
         set $block_reason_var "-";
     }
-{{- if $.GlobalTrustedIPs}}
+{{- if $.TrustedConfigured}}
     # Global trusted IPs - bypass geo restriction
-    if ($trusted_ip_{{sanitizeID $.Host.ID}} = 1) {
+    if ($npg_trusted_{{sanitizeID $.Host.ID}} = 1) {
         set $geo_block_check "";
         set $block_reason_var "-";
     }
@@ -88,9 +88,9 @@
         set $geo_direct_block "Y";
         set $block_reason_var "geo_block";
     }
-{{- if $.GlobalTrustedIPs}}
+{{- if $.TrustedConfigured}}
     # Global trusted IPs - bypass geo restriction
-    if ($trusted_ip_{{sanitizeID $.Host.ID}} = 1) {
+    if ($npg_trusted_{{sanitizeID $.Host.ID}} = 1) {
         set $geo_direct_block "";
         set $block_reason_var "-";
     }
@@ -113,9 +113,9 @@
         set $block_reason_var "-";
     }
 {{end}}
-{{- if $.GlobalTrustedIPs}}
+{{- if $.TrustedConfigured}}
     # Global trusted IPs - bypass geo restriction
-    if ($trusted_ip_{{sanitizeID $.Host.ID}} = 1) {
+    if ($npg_trusted_{{sanitizeID $.Host.ID}} = 1) {
         set $geo_direct_block "";
         set $block_reason_var "-";
     }
@@ -173,9 +173,9 @@
         set $geo_blocked 0;
     }
 {{end}}
-{{if $.GlobalTrustedIPs}}
+{{if $.TrustedConfigured}}
     # Global trusted IPs - bypass geo restriction
-    if ($trusted_ip_{{sanitizeID $.Host.ID}} = 1) {
+    if ($npg_trusted_{{sanitizeID $.Host.ID}} = 1) {
         set $geo_blocked 0;
     }
 {{end}}
@@ -192,7 +192,10 @@
 {{end}}{{- end}}
 {{range accessListRules .AccessList}}
     {{.Directive}} {{.Address}};{{if .Description}} # {{commentText .Description}}{{end}}
-{{end}}{{range accessListDNSIncludes .AccessList}}
+{{end}}{{if .DNSTrustInAccessList}}{{range .TrustedDNSIncludes ".allow"}}
+    # dns(trusted): {{commentText .Name}}
+    include {{.Path}};
+{{end}}{{end}}{{range accessListDNSIncludes .AccessList}}
     # dns: {{commentText .Name}}
     include {{.Path}};
 {{end}}
@@ -469,9 +472,9 @@
         set $is_priority_allow_cloud 1;
     }
 {{end}}{{end}}
-{{- if $.GlobalTrustedIPs}}
+{{- if $.TrustedConfigured}}
     # Global trusted IPs bypass cloud provider blocking
-    if ($trusted_ip_{{sanitizeID $.Host.ID}} = 1) {
+    if ($npg_trusted_{{sanitizeID $.Host.ID}} = 1) {
         set $is_priority_allow_cloud 1;
     }
 {{- end}}
@@ -514,9 +517,9 @@
         set $priority_allow 1;
     }
 {{end}}{{end}}
-{{if $.GlobalTrustedIPs}}
+{{if $.TrustedConfigured}}
     # Global trusted IPs bypass bot filter
-    if ($trusted_ip_{{sanitizeID $.Host.ID}} = 1) {
+    if ($npg_trusted_{{sanitizeID $.Host.ID}} = 1) {
         set $priority_allow 1;
     }
 {{end}}

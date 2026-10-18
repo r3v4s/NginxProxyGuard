@@ -519,6 +519,9 @@ func (s *ProxyHostService) getHostConfigData(ctx context.Context, host *model.Pr
 			}
 			// Parse global trusted IPs for nginx ban bypass (with strict validation)
 			data.GlobalTrustedIPs = ParseGlobalTrustedIPs(settings.GlobalTrustedIPs)
+			// Global trusted domains (#320): the perimeter bypasses only, never
+			// the ban override below (the render checks each name again).
+			data.TrustedHostnames = settings.GlobalTrustedHostnames
 		}
 	}
 

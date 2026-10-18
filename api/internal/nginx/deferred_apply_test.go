@@ -105,7 +105,7 @@ func mainConfStep(m *Manager, live *liveSettings) DeferredStep {
 		live.mu.Lock()
 		s.AccessLogEnabled, s.BrotliEnabled = live.accessLog, live.brotli
 		live.mu.Unlock()
-		return m.GenerateMainNginxConfig(ctx, s, nil, false, TrustedProxyConfig{})
+		return m.GenerateMainNginxConfig(ctx, s, TrustedIPConfig{}, TrustedProxyConfig{})
 	}}
 }
 

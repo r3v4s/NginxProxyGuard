@@ -67,19 +67,18 @@ func mainNginxConfStep(c *Container) nginx.DeferredStep {
 		if err != nil {
 			return fmt.Errorf("load global settings: %w", err)
 		}
-		// Pull global trusted IPs so the http-level limit_conn / limit_req
-		// zones honor the same whitelist the per-host configs already use.
-		var trustedIPs []string
-		var trustedBypassWAF bool
+		// Pull the global trusted list (IPs and domains) so the http-level
+		// limit_conn / limit_req zones honor the same whitelist the per-host
+		// configs already use. Its zero value trusts no one.
+		var trusted nginx.TrustedIPConfig
 		// Zero value reproduces the pre-#278 behaviour, so a settings read
 		// failure here still renders a config nginx accepts.
 		var trustedProxies nginx.TrustedProxyConfig
 		if sys, err := c.Repositories.SystemSettings.Get(ctx); err == nil && sys != nil {
-			trustedIPs = service.ParseGlobalTrustedIPs(sys.GlobalTrustedIPs)
-			trustedBypassWAF = sys.GlobalTrustedIPsBypassWAF
+			trusted = service.ResolveTrustedIPConfig(sys)
 			trustedProxies = service.ResolveTrustedProxyConfig(sys)
 		}
-		return c.Nginx.GenerateMainNginxConfig(ctx, settings, trustedIPs, trustedBypassWAF, trustedProxies)
+		return c.Nginx.GenerateMainNginxConfig(ctx, settings, trusted, trustedProxies)
 	}}
 }
 

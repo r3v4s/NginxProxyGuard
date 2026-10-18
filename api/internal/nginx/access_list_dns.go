@@ -62,7 +62,13 @@ func accessListDNSIncludes(list *model.AccessList) []DNSIncludeLine {
 // twice, ensures each file once. No DNS lock is taken: GenerateConfigFull
 // runs both inside and outside the nginx lock.
 func (m *Manager) ensureDNSIncludes(data ProxyHostConfigData) error {
-	for _, line := range hostDNSIncludeLines(data) {
+	return m.ensureDNSIncludeLines(hostDNSIncludeLines(data))
+}
+
+// ensureDNSIncludeLines creates, empty, the file of each of lines that does
+// not exist yet (EnsureDNSIncludeFile), for a host config or nginx.conf.
+func (m *Manager) ensureDNSIncludeLines(lines []DNSIncludeLine) error {
+	for _, line := range lines {
 		file := filepath.Base(line.Path)
 		if err := m.EnsureDNSIncludeFile(file[:16], file[16:]); err != nil {
 			return err
