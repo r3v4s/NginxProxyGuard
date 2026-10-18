@@ -73,7 +73,8 @@ func (r *BackupRepository) ImportAllData(ctx context.Context, data *model.Export
 	}
 
 	// Import Access Lists (proxy hosts depend on them). dnsNames collects
-	// the domain names the restored lists use (#320).
+	// the domain names the restored lists use (#320): the access lists'
+	// here, each exception list's where it is imported below.
 	var dnsNames []string
 	for _, al := range data.AccessLists {
 		newID, names, err := r.importAccessList(ctx, tx, &al)
@@ -128,11 +129,12 @@ func (r *BackupRepository) ImportAllData(ctx context.Context, data *model.Export
 			ph.ProxyHost.DDNSEnabled = false
 		}
 
-		newID, err := r.importProxyHost(ctx, tx, &ph)
+		newID, names, err := r.importProxyHost(ctx, tx, &ph)
 		if err != nil {
 			return nil, fmt.Errorf("failed to import proxy host %v: %w", ph.ProxyHost.DomainNames, err)
 		}
 		proxyHostIDMap[ph.ProxyHost.ID] = newID
+		dnsNames = append(dnsNames, names...)
 	}
 
 	// Import Redirect Hosts
@@ -161,9 +163,11 @@ func (r *BackupRepository) ImportAllData(ctx context.Context, data *model.Export
 
 	// Import System Settings (update existing)
 	if data.SystemSettings != nil {
-		if err := r.importSystemSettings(ctx, tx, data.SystemSettings); err != nil {
+		names, err := r.importSystemSettings(ctx, tx, data.SystemSettings)
+		if err != nil {
 			return nil, fmt.Errorf("failed to import system settings: %w", err)
 		}
+		dnsNames = append(dnsNames, names...)
 	}
 
 	// Import Log Settings (update existing; nil for old backups keeps current values)
@@ -192,23 +196,29 @@ func (r *BackupRepository) ImportAllData(ctx context.Context, data *model.Export
 		if newID, ok := proxyHostIDMap[ub.ProxyHostID]; ok {
 			ub.ProxyHostID = newID
 		}
-		if err := r.importURIBlock(ctx, tx, &ub); err != nil {
+		names, err := r.importURIBlock(ctx, tx, &ub)
+		if err != nil {
 			return nil, fmt.Errorf("failed to import uri block for proxy host %s: %w", ub.ProxyHostID, err)
 		}
+		dnsNames = append(dnsNames, names...)
 	}
 
 	// Import Global URI Block
 	if data.GlobalURIBlock != nil {
-		if err := r.importGlobalURIBlock(ctx, tx, data.GlobalURIBlock); err != nil {
+		names, err := r.importGlobalURIBlock(ctx, tx, data.GlobalURIBlock)
+		if err != nil {
 			return nil, fmt.Errorf("failed to import global uri block: %w", err)
 		}
+		dnsNames = append(dnsNames, names...)
 	}
 
 	// Import Global Geo default (#198)
 	if data.GlobalGeoRestriction != nil {
-		if err := r.importGlobalGeo(ctx, tx, data.GlobalGeoRestriction); err != nil {
+		names, err := r.importGlobalGeo(ctx, tx, data.GlobalGeoRestriction)
+		if err != nil {
 			return nil, fmt.Errorf("failed to import global geo restriction: %w", err)
 		}
+		dnsNames = append(dnsNames, names...)
 	}
 
 	// Import Global Bot Filter default (#198)
@@ -241,9 +251,11 @@ func (r *BackupRepository) ImportAllData(ctx context.Context, data *model.Export
 
 	// Import Global Rate Limit default (#198 slice 5)
 	if data.GlobalRateLimit != nil {
-		if err := r.importGlobalRateLimit(ctx, tx, data.GlobalRateLimit); err != nil {
+		names, err := r.importGlobalRateLimit(ctx, tx, data.GlobalRateLimit)
+		if err != nil {
 			return nil, fmt.Errorf("failed to import global rate limit: %w", err)
 		}
+		dnsNames = append(dnsNames, names...)
 	}
 
 	// Import Global WAF default (#198 slice 6)

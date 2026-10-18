@@ -64,7 +64,9 @@ func (r *BackupRepository) importGlobalSettings(ctx context.Context, tx *sql.Tx,
 	return err
 }
 
-func (r *BackupRepository) importSystemSettings(ctx context.Context, tx *sql.Tx, ss *model.SystemSettingsExport) error {
+// importSystemSettings updates the system settings from a backup and returns
+// the domain names of the global trusted IPs it restored (#320).
+func (r *BackupRepository) importSystemSettings(ctx context.Context, tx *sql.Tx, ss *model.SystemSettingsExport) ([]string, error) {
 	query := `
 		UPDATE system_settings SET
 			geoip_enabled = $1, geoip_auto_update = $2, geoip_update_interval = $3,
@@ -100,6 +102,7 @@ func (r *BackupRepository) importSystemSettings(ctx context.Context, tx *sql.Tx,
 			raw_log_archive_enabled = COALESCE($60, raw_log_archive_enabled),
 			raw_log_archive_retention_days = COALESCE($61, raw_log_archive_retention_days),
 			dns_entry_settings = COALESCE($62::jsonb, dns_entry_settings),
+			global_trusted_hostnames = $63,
 			updated_at = NOW()
 	`
 
@@ -115,7 +118,7 @@ func (r *BackupRepository) importSystemSettings(ctx context.Context, tx *sql.Tx,
 	// 보존 인계 규칙을 받는다 — 복원 대상 설치의 created_at 기준.
 	var installedAt time.Time
 	if err := tx.QueryRowContext(ctx, `SELECT created_at FROM system_settings LIMIT 1`).Scan(&installedAt); err != nil && err != sql.ErrNoRows {
-		return fmt.Errorf("read install date: %w", err)
+		return nil, fmt.Errorf("read install date: %w", err)
 	}
 	model.CoerceRawLogImport(ss, installedAt, time.Now())
 
@@ -153,6 +156,13 @@ func (r *BackupRepository) importSystemSettings(ctx context.Context, tx *sql.Tx,
 
 	// Domain entry tunables (#320): nil (an older backup) keeps the live value.
 	dnsEntrySettings := dnsEntrySettingsFromBackup(ss.DNSEntrySettings)
+	// The trusted IPs' domain names (#320) are not kept that way: nil (an
+	// older backup) restores none, next to the backup's global_trusted_ips.
+	var trustedHostnames []string
+	if ss.GlobalTrustedHostnames != nil {
+		trustedHostnames = *ss.GlobalTrustedHostnames
+	}
+	trustedHostnames = restorableDNSNames("the global trusted IPs", trustedHostnames)
 
 	_, err := tx.ExecContext(ctx, query,
 		ss.GeoIPEnabled, ss.GeoIPAutoUpdate, ss.GeoIPUpdateInterval,
@@ -181,8 +191,12 @@ func (r *BackupRepository) importSystemSettings(ctx context.Context, tx *sql.Tx,
 		trustedProxyCIDRs, trustedProxyPreset, realIPHeader,
 		ss.RawLogArchiveEnabled, ss.RawLogArchiveRetentionDays,
 		dnsEntrySettings,
+		pq.Array(trustedHostnames),
 	)
-	return err
+	if err != nil {
+		return nil, err
+	}
+	return trustedHostnames, nil
 }
 
 // dnsEntrySettingsFromBackup is the dns_entry_settings value a restore writes
@@ -278,13 +292,16 @@ func mergeRestoredDNSEntryStates(ctx context.Context, store DNSEntryTx, states [
 	return nil
 }
 
-// RestoredDNSEntries reads, after an import, the domain names the access
-// lists use and which of them wait for review (#320), for the restore audit.
-// It reads the merged rows, not what the backup said.
+// RestoredDNSEntries reads, after an import, the domain names the lists use
+// (the access lists, the exception lists and the global trusted IPs: every
+// source of the DNS checks' references) and which of them wait for review
+// (#320), for the restore audit. It reads the merged rows, not what the
+// backup said.
 func (r *BackupRepository) RestoredDNSEntries(ctx context.Context) (model.DNSRestoreSummary, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT n.hostname, COALESCE(s.status, '') = $1
-		FROM (SELECT DISTINCT hostname FROM access_list_items WHERE hostname IS NOT NULL) n
+		FROM (SELECT DISTINCT refs.hostname FROM (`+dnsReferenceSources+`
+		) AS refs(scope, hostname, owner_id, owner_name)) n
 		LEFT JOIN dns_entry_states s ON s.hostname = n.hostname
 		ORDER BY n.hostname
 	`, model.DNSStatusNeedsReview)

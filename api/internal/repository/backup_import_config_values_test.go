@@ -122,9 +122,9 @@ func TestImportURIBlocks_KeepOnlyAddressesAsExceptionIPs(t *testing.T) {
 	repo, tx, mock := beginMockTx(t)
 	const hostID = "00000000-0000-0000-0000-000000000001"
 	mock.ExpectExec(`INSERT INTO uri_blocks`).
-		WithArgs(hostID, true, sqlmock.AnyArg(), `{"192.0.2.10","198.51.100.0/24"}`, false).
+		WithArgs(hostID, true, sqlmock.AnyArg(), `{"192.0.2.10","198.51.100.0/24"}`, false, "{}").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	err := repo.importURIBlock(context.Background(), tx, &model.URIBlockExport{
+	_, err := repo.importURIBlock(context.Background(), tx, &model.URIBlockExport{
 		ProxyHostID: hostID, Enabled: true,
 		ExceptionIPs: []string{"192.0.2.10", "all", `192.0.2.11"`, " 198.51.100.0/24", "192.0.2.12 second line", "192.0.2.13\nsecond line"},
 	})
@@ -134,9 +134,9 @@ func TestImportURIBlocks_KeepOnlyAddressesAsExceptionIPs(t *testing.T) {
 
 	mock.ExpectExec(`DELETE FROM global_uri_blocks`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`INSERT INTO global_uri_blocks`).
-		WithArgs(true, sqlmock.AnyArg(), `{"2001:db8::/32"}`, true).
+		WithArgs(true, sqlmock.AnyArg(), `{"2001:db8::/32"}`, true, "{}").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	err = repo.importGlobalURIBlock(context.Background(), tx, &model.GlobalURIBlockExport{
+	_, err = repo.importGlobalURIBlock(context.Background(), tx, &model.GlobalURIBlockExport{
 		Enabled: true, AllowPrivateIPs: true,
 		ExceptionIPs: []string{"2001:db8::/32", "example.com"},
 	})
@@ -162,9 +162,9 @@ func TestImportGeoRestrictions_KeepCountryCodesAndAddresses(t *testing.T) {
 	repo, tx, mock := beginMockTx(t)
 	const hostID = "00000000-0000-0000-0000-000000000001"
 	mock.ExpectExec(`INSERT INTO geo_restrictions`).
-		WithArgs(hostID, "blacklist", `{"CN","RU","KR","XK"}`, true, false, false, false, `{"192.0.2.10","198.51.100.0/24"}`, "{}", false, false, false, false).
+		WithArgs(hostID, "blacklist", `{"CN","RU","KR","XK"}`, true, false, false, false, `{"192.0.2.10","198.51.100.0/24"}`, "{}", false, false, false, false, "{}").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	err := repo.importGeoRestriction(context.Background(), tx, hostID, &model.GeoRestrictionExport{
+	_, err := repo.importGeoRestriction(context.Background(), tx, hostID, &model.GeoRestrictionExport{
 		Mode: "blacklist", Enabled: true,
 		Countries:  []string{"CN", `C"N`, "RU", "kr", " XK"},
 		AllowedIPs: []string{"192.0.2.10", "192.0.2.11 second line", " 198.51.100.0/24"},
@@ -175,9 +175,9 @@ func TestImportGeoRestrictions_KeepCountryCodesAndAddresses(t *testing.T) {
 
 	mock.ExpectExec(`DELETE FROM global_geo_restrictions`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`INSERT INTO global_geo_restrictions`).
-		WithArgs(true, "whitelist", `{"KR","--"}`, `{"2001:db8::/32"}`, true, false, false).
+		WithArgs(true, "whitelist", `{"KR","--"}`, `{"2001:db8::/32"}`, true, false, false, "{}").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	err = repo.importGlobalGeo(context.Background(), tx, &model.GlobalGeoRestrictionExport{
+	_, err = repo.importGlobalGeo(context.Background(), tx, &model.GlobalGeoRestrictionExport{
 		Enabled: true, Mode: "whitelist", AllowPrivateIPs: true,
 		Countries:  []string{"KR", "KR|CN", "--"},
 		AllowedIPs: []string{"2001:db8::/32", "example.com"},

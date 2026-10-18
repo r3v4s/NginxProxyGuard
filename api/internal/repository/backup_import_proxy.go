@@ -106,7 +106,7 @@ func backupTagsOrEmpty(raw []string) []string {
 	return tags
 }
 
-func (r *BackupRepository) importProxyHost(ctx context.Context, tx *sql.Tx, ph *model.ProxyHostExport) (string, error) {
+func (r *BackupRepository) importProxyHost(ctx context.Context, tx *sql.Tx, ph *model.ProxyHostExport) (string, []string, error) {
 	customLocations, _ := json.Marshal(ph.ProxyHost.CustomLocations)
 	meta, _ := json.Marshal(ph.ProxyHost.Meta)
 
@@ -206,64 +206,76 @@ func (r *BackupRepository) importProxyHost(ctx context.Context, tx *sql.Tx, ph *
 		pq.Array(backupTagsOrEmpty(ph.ProxyHost.Tags)),
 	).Scan(&newID)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
-	// Import related configurations
+	// Import related configurations. names collects the domain names of
+	// the host's exception lists (#320).
+	var names []string
 	if ph.RateLimit != nil {
-		if err := r.importRateLimit(ctx, tx, newID, ph.RateLimit); err != nil {
-			return "", fmt.Errorf("failed to import rate limit: %w", err)
+		rlNames, err := r.importRateLimit(ctx, tx, newID, ph.RateLimit)
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to import rate limit: %w", err)
 		}
+		names = append(names, rlNames...)
 	}
 
 	if ph.Fail2ban != nil {
 		if err := r.importFail2ban(ctx, tx, newID, ph.Fail2ban); err != nil {
-			return "", fmt.Errorf("failed to import fail2ban: %w", err)
+			return "", nil, fmt.Errorf("failed to import fail2ban: %w", err)
 		}
 	}
 
 	if ph.BotFilter != nil {
 		if err := r.importBotFilter(ctx, tx, newID, ph.BotFilter); err != nil {
-			return "", fmt.Errorf("failed to import bot filter: %w", err)
+			return "", nil, fmt.Errorf("failed to import bot filter: %w", err)
 		}
 	}
 
 	if ph.SecurityHeaders != nil {
 		if err := r.importSecurityHeaders(ctx, tx, newID, ph.SecurityHeaders); err != nil {
-			return "", fmt.Errorf("failed to import security headers: %w", err)
+			return "", nil, fmt.Errorf("failed to import security headers: %w", err)
 		}
 	}
 
 	if ph.GeoRestriction != nil {
-		if err := r.importGeoRestriction(ctx, tx, newID, ph.GeoRestriction); err != nil {
-			return "", fmt.Errorf("failed to import geo restriction: %w", err)
+		geoNames, err := r.importGeoRestriction(ctx, tx, newID, ph.GeoRestriction)
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to import geo restriction: %w", err)
 		}
+		names = append(names, geoNames...)
 	}
 
 	if ph.Upstream != nil {
 		if err := r.importUpstream(ctx, tx, newID, ph.Upstream); err != nil {
-			return "", fmt.Errorf("failed to import upstream: %w", err)
+			return "", nil, fmt.Errorf("failed to import upstream: %w", err)
 		}
 	}
 
 	if ph.ChallengeConfig != nil {
 		if err := r.importChallengeConfig(ctx, tx, newID, ph.ChallengeConfig); err != nil {
-			return "", fmt.Errorf("failed to import challenge config: %w", err)
+			return "", nil, fmt.Errorf("failed to import challenge config: %w", err)
 		}
 	}
 
-	return newID, nil
+	return newID, names, nil
 }
 
-func (r *BackupRepository) importRateLimit(ctx context.Context, tx *sql.Tx, proxyHostID string, rl *model.RateLimitExport) error {
+// importRateLimit restores a host's rate limit and returns the domain names
+// of its exceptions (#320).
+func (r *BackupRepository) importRateLimit(ctx context.Context, tx *sql.Tx, proxyHostID string, rl *model.RateLimitExport) ([]string, error) {
 	query := `
 		INSERT INTO rate_limits (proxy_host_id, enabled, requests_per_second, burst_size, zone_size,
-		                         limit_by, limit_response, whitelist_ips, disable_global)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		                         limit_by, limit_response, whitelist_ips, disable_global, whitelist_hostnames)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`
+	names := restorableDNSNames("the rate limit exceptions of proxy host "+proxyHostID, rl.WhitelistHostnames)
 	_, err := tx.ExecContext(ctx, query, proxyHostID, rl.Enabled, rl.RequestsPerSecond, rl.BurstSize,
-		rl.ZoneSize, rl.LimitBy, rl.LimitResponse, rl.WhitelistIPs, rl.DisableGlobal)
-	return err
+		rl.ZoneSize, rl.LimitBy, rl.LimitResponse, rl.WhitelistIPs, rl.DisableGlobal, pq.Array(names))
+	if err != nil {
+		return nil, err
+	}
+	return names, nil
 }
 
 func (r *BackupRepository) importFail2ban(ctx context.Context, tx *sql.Tx, proxyHostID string, f *model.Fail2banExport) error {
@@ -307,11 +319,14 @@ func (r *BackupRepository) importSecurityHeaders(ctx context.Context, tx *sql.Tx
 	return err
 }
 
-func (r *BackupRepository) importGeoRestriction(ctx context.Context, tx *sql.Tx, proxyHostID string, gr *model.GeoRestrictionExport) error {
+// importGeoRestriction restores a host's geo restriction and returns the
+// domain names of its priority allow list (#320).
+func (r *BackupRepository) importGeoRestriction(ctx context.Context, tx *sql.Tx, proxyHostID string, gr *model.GeoRestrictionExport) ([]string, error) {
 	query := `
 		INSERT INTO geo_restrictions (proxy_host_id, mode, countries, enabled, challenge_mode, allow_private_ips, allow_search_bots,
-		                              allowed_ips, blocked_cloud_providers, challenge_cloud_providers, allow_search_bots_cloud_providers, disable_global, cloud_disable_global)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		                              allowed_ips, blocked_cloud_providers, challenge_cloud_providers, allow_search_bots_cloud_providers, disable_global, cloud_disable_global,
+		                              allowed_hostnames)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		ON CONFLICT (proxy_host_id) DO UPDATE SET
 			mode = EXCLUDED.mode,
 			countries = EXCLUDED.countries,
@@ -325,6 +340,7 @@ func (r *BackupRepository) importGeoRestriction(ctx context.Context, tx *sql.Tx,
 			allow_search_bots_cloud_providers = EXCLUDED.allow_search_bots_cloud_providers,
 			disable_global = EXCLUDED.disable_global,
 			cloud_disable_global = EXCLUDED.cloud_disable_global,
+			allowed_hostnames = EXCLUDED.allowed_hostnames,
 			updated_at = NOW()
 	`
 	// Countries and priority allow entries are written into the host's
@@ -341,11 +357,16 @@ func (r *BackupRepository) importGeoRestriction(ctx context.Context, tx *sql.Tx,
 	if blockedCloudProviders == nil {
 		blockedCloudProviders = []string{}
 	}
+	names := restorableDNSNames("the priority allow list of proxy host "+proxyHostID, gr.AllowedHostnames)
 	_, err := tx.ExecContext(ctx, query, proxyHostID, gr.Mode, pq.Array(countries), gr.Enabled,
 		gr.ChallengeMode, gr.AllowPrivateIPs, gr.AllowSearchBots,
 		pq.Array(allowedIPs), pq.Array(blockedCloudProviders),
-		gr.ChallengeCloudProviders, gr.AllowSearchBotsCloudProviders, gr.DisableGlobal, gr.CloudDisableGlobal)
-	return err
+		gr.ChallengeCloudProviders, gr.AllowSearchBotsCloudProviders, gr.DisableGlobal, gr.CloudDisableGlobal,
+		pq.Array(names))
+	if err != nil {
+		return nil, err
+	}
+	return names, nil
 }
 
 func (r *BackupRepository) importUpstream(ctx context.Context, tx *sql.Tx, proxyHostID string, u *model.UpstreamExport) error {

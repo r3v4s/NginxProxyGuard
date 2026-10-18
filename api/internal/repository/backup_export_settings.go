@@ -109,7 +109,8 @@ func (r *BackupRepository) exportSystemSettings(ctx context.Context) (*model.Sys
 		       COALESCE(system_logs_levels, '{"npg-proxy": "info", "npg-api": "info", "npg-db": "warn", "npg-ui": "warn"}'::jsonb) as system_logs_levels,
 		       COALESCE(system_logs_exclude_patterns, ARRAY['/health', '/nginx_status', '/.well-known/', 'HEAD /']) as system_logs_exclude_patterns,
 		       COALESCE(system_logs_stdout_excluded, ARRAY['npg-proxy']) as system_logs_stdout_excluded,
-		       COALESCE(dns_entry_settings, '{}'::jsonb) as dns_entry_settings
+		       COALESCE(dns_entry_settings, '{}'::jsonb) as dns_entry_settings,
+		       global_trusted_hostnames
 		FROM system_settings LIMIT 1
 	`
 
@@ -124,6 +125,7 @@ func (r *BackupRepository) exportSystemSettings(ctx context.Context) (*model.Sys
 	var trustedProxyCIDRs, trustedProxyPreset, realIPHeader string
 	var systemLogsLevels, dnsEntrySettings []byte
 	var systemLogsExcludePatterns, systemLogsStdoutExcluded pq.StringArray
+	globalTrustedHostnames := []string{}
 	var rawLogArchiveEnabled bool
 	var rawLogArchiveRetentionDays int
 
@@ -154,6 +156,7 @@ func (r *BackupRepository) exportSystemSettings(ctx context.Context) (*model.Sys
 		&uiFontFamily, &uiErrorPageLanguage,
 		&systemLogsLevels, &systemLogsExcludePatterns, &systemLogsStdoutExcluded,
 		&dnsEntrySettings,
+		pq.Array(&globalTrustedHostnames),
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -188,14 +191,16 @@ func (r *BackupRepository) exportSystemSettings(ctx context.Context) (*model.Sys
 	ss.RawLogArchiveEnabled = &rawLogArchiveEnabled
 	ss.RawLogArchiveRetentionDays = &rawLogArchiveRetentionDays
 	ss.DNSEntrySettings = json.RawMessage(dnsEntrySettings)
+	ss.GlobalTrustedHostnames = &globalTrustedHostnames
 
 	return &ss, nil
 }
 
-// exportDNSEntryStates exports, for the domain names the exported access
-// lists use, the part of their dns_entry_states rows a restore needs to keep
-// them closed until an operator has looked at them (#320): the review flag
-// and its reason, the pinned CNAME target and the last published addresses.
+// exportDNSEntryStates exports, for the domain names the exported lists use
+// (exportedDNSNames), the part of their dns_entry_states rows a restore
+// needs to keep them closed until an operator has looked at them (#320): the
+// review flag and its reason, the pinned CNAME target and the last
+// published addresses.
 // Nothing the state machine derives travels: a restored name starts empty
 // and earns its addresses on its own answers.
 func (r *BackupRepository) exportDNSEntryStates(ctx context.Context, names []string) ([]model.DNSEntryStateExport, error) {
@@ -230,18 +235,48 @@ func (r *BackupRepository) exportDNSEntryStates(ctx context.Context, names []str
 	return out, rows.Err()
 }
 
-// exportedDNSNames returns the domain names of the exported access lists,
-// sorted, each once.
-func exportedDNSNames(lists []model.AccessListExport) []string {
+// exportedDNSNames returns the domain names the exported lists use (#320),
+// sorted, each once: the access lists' domain rows, the URI block
+// exceptions, priority allow lists and rate limit exceptions of the hosts
+// and the global ones, and the global trusted IPs' names.
+func exportedDNSNames(data *model.ExportData) []string {
 	seen := make(map[string]bool)
 	var names []string
-	for _, l := range lists {
-		for _, item := range l.AccessList.Items {
-			if item.Hostname != "" && !seen[item.Hostname] {
-				seen[item.Hostname] = true
-				names = append(names, item.Hostname)
+	add := func(list ...string) {
+		for _, name := range list {
+			if name != "" && !seen[name] {
+				seen[name] = true
+				names = append(names, name)
 			}
 		}
+	}
+	for _, l := range data.AccessLists {
+		for _, item := range l.AccessList.Items {
+			add(item.Hostname)
+		}
+	}
+	for _, ph := range data.ProxyHosts {
+		if ph.GeoRestriction != nil {
+			add(ph.GeoRestriction.AllowedHostnames...)
+		}
+		if ph.RateLimit != nil {
+			add(ph.RateLimit.WhitelistHostnames...)
+		}
+	}
+	for _, ub := range data.URIBlocks {
+		add(ub.ExceptionHostnames...)
+	}
+	if data.GlobalURIBlock != nil {
+		add(data.GlobalURIBlock.ExceptionHostnames...)
+	}
+	if data.GlobalGeoRestriction != nil {
+		add(data.GlobalGeoRestriction.AllowedHostnames...)
+	}
+	if data.GlobalRateLimit != nil {
+		add(data.GlobalRateLimit.WhitelistHostnames...)
+	}
+	if data.SystemSettings != nil && data.SystemSettings.GlobalTrustedHostnames != nil {
+		add(*data.SystemSettings.GlobalTrustedHostnames...)
 	}
 	sort.Strings(names)
 	return names

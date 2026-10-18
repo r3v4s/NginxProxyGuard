@@ -74,8 +74,8 @@ func (h *SettingsHandler) kickDNSEntriesAfterRestore(result *model.RestoreResult
 }
 
 // dnsRestoreAuditExtra is what the restore audit records about domain
-// entries: the names the restored access lists use, those of them waiting
-// for review (each list cut at restoreAuditNameCap) and how many names there
+// entries: the names the restored lists use, those of them waiting for
+// review (each list cut at restoreAuditNameCap) and how many names there
 // are. nil when the restore brought back no names.
 func dnsRestoreAuditExtra(s model.DNSRestoreSummary) map[string]interface{} {
 	if len(s.Names) == 0 {

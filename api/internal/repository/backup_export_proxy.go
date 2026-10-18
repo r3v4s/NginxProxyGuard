@@ -129,14 +129,14 @@ func (r *BackupRepository) exportProxyHosts(ctx context.Context) ([]model.ProxyH
 func (r *BackupRepository) getProxyHostRateLimit(ctx context.Context, proxyHostID string) (*model.RateLimitExport, error) {
 	query := `
 		SELECT enabled, requests_per_second, burst_size, zone_size, limit_by, limit_response, whitelist_ips,
-		       COALESCE(disable_global, false)
+		       COALESCE(disable_global, false), whitelist_hostnames
 		FROM rate_limits WHERE proxy_host_id = $1
 	`
 	var rl model.RateLimitExport
 	var whitelistIPs sql.NullString
 	err := r.db.QueryRowContext(ctx, query, proxyHostID).Scan(
 		&rl.Enabled, &rl.RequestsPerSecond, &rl.BurstSize, &rl.ZoneSize,
-		&rl.LimitBy, &rl.LimitResponse, &whitelistIPs, &rl.DisableGlobal,
+		&rl.LimitBy, &rl.LimitResponse, &whitelistIPs, &rl.DisableGlobal, pq.Array(&rl.WhitelistHostnames),
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -223,7 +223,8 @@ func (r *BackupRepository) getProxyHostGeoRestriction(ctx context.Context, proxy
 		SELECT mode, countries, enabled, challenge_mode, allow_private_ips, allow_search_bots,
 		       COALESCE(allowed_ips, '{}'), COALESCE(blocked_cloud_providers, '{}'),
 		       COALESCE(challenge_cloud_providers, false), COALESCE(allow_search_bots_cloud_providers, false),
-		       COALESCE(disable_global, false), COALESCE(cloud_disable_global, false)
+		       COALESCE(disable_global, false), COALESCE(cloud_disable_global, false),
+		       allowed_hostnames
 		FROM geo_restrictions WHERE proxy_host_id = $1
 	`
 	var gr model.GeoRestrictionExport
@@ -233,6 +234,7 @@ func (r *BackupRepository) getProxyHostGeoRestriction(ctx context.Context, proxy
 		pq.Array(&gr.AllowedIPs), pq.Array(&gr.BlockedCloudProviders),
 		&gr.ChallengeCloudProviders, &gr.AllowSearchBotsCloudProviders,
 		&gr.DisableGlobal, &gr.CloudDisableGlobal,
+		pq.Array(&gr.AllowedHostnames),
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil

@@ -248,37 +248,50 @@ func (r *BackupRepository) importBannedIP(ctx context.Context, tx *sql.Tx, bip *
 	return err
 }
 
-func (r *BackupRepository) importURIBlock(ctx context.Context, tx *sql.Tx, ub *model.URIBlockExport) error {
+// importURIBlock restores a host's URI block and returns the domain names of
+// its exceptions (#320).
+func (r *BackupRepository) importURIBlock(ctx context.Context, tx *sql.Tx, ub *model.URIBlockExport) ([]string, error) {
 	rulesJSON, _ := json.Marshal(writableURIBlockRules(ub.Rules))
+	names := restorableDNSNames("the URI block exceptions of proxy host "+ub.ProxyHostID, ub.ExceptionHostnames)
 
 	query := `
-		INSERT INTO uri_blocks (proxy_host_id, enabled, rules, exception_ips, allow_private_ips)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO uri_blocks (proxy_host_id, enabled, rules, exception_ips, allow_private_ips, exception_hostnames)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (proxy_host_id) DO UPDATE SET
 			enabled = EXCLUDED.enabled,
 			rules = EXCLUDED.rules,
 			exception_ips = EXCLUDED.exception_ips,
 			allow_private_ips = EXCLUDED.allow_private_ips,
+			exception_hostnames = EXCLUDED.exception_hostnames,
 			updated_at = NOW()
 	`
 
-	_, err := tx.ExecContext(ctx, query, ub.ProxyHostID, ub.Enabled, rulesJSON, pq.Array(usableExceptionIPs(ub.ExceptionIPs)), ub.AllowPrivateIPs)
-	return err
+	_, err := tx.ExecContext(ctx, query, ub.ProxyHostID, ub.Enabled, rulesJSON, pq.Array(usableExceptionIPs(ub.ExceptionIPs)), ub.AllowPrivateIPs, pq.Array(names))
+	if err != nil {
+		return nil, err
+	}
+	return names, nil
 }
 
-func (r *BackupRepository) importGlobalURIBlock(ctx context.Context, tx *sql.Tx, ub *model.GlobalURIBlockExport) error {
+// importGlobalURIBlock restores the global URI block and returns the domain
+// names of its exceptions (#320).
+func (r *BackupRepository) importGlobalURIBlock(ctx context.Context, tx *sql.Tx, ub *model.GlobalURIBlockExport) ([]string, error) {
 	rulesJSON, _ := json.Marshal(writableURIBlockRules(ub.Rules))
+	names := restorableDNSNames("the global URI block exceptions", ub.ExceptionHostnames)
 
 	// Delete existing and insert new
 	_, _ = tx.ExecContext(ctx, "DELETE FROM global_uri_blocks")
 
 	query := `
-		INSERT INTO global_uri_blocks (enabled, rules, exception_ips, allow_private_ips)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO global_uri_blocks (enabled, rules, exception_ips, allow_private_ips, exception_hostnames)
+		VALUES ($1, $2, $3, $4, $5)
 	`
 
-	_, err := tx.ExecContext(ctx, query, ub.Enabled, rulesJSON, pq.Array(usableExceptionIPs(ub.ExceptionIPs)), ub.AllowPrivateIPs)
-	return err
+	_, err := tx.ExecContext(ctx, query, ub.Enabled, rulesJSON, pq.Array(usableExceptionIPs(ub.ExceptionIPs)), ub.AllowPrivateIPs, pq.Array(names))
+	if err != nil {
+		return nil, err
+	}
+	return names, nil
 }
 
 // writableURIBlockRules returns the URI block rules of a backup whose pattern
@@ -332,9 +345,27 @@ func usableExceptionIPs(ips []string) []string {
 	return out
 }
 
+// restorableDNSNames returns the domain names of one exception list of a
+// backup as a save stores them (#320): normalized, each once, in the file's
+// order, never nil (the column is NOT NULL). A name a save would refuse is
+// left out and logged, and the restore goes on, as for usableExceptionIPs.
+// The number of names is not checked. list names the list in the log.
+func restorableDNSNames(list string, names []string) []string {
+	kept, err := model.ValidateDNSNameList("", names)
+	if err != nil {
+		for _, name := range names {
+			if model.ValidateDNSName(model.NormalizeDNSName(name)) != nil {
+				log.Printf("[Backup] Skipped domain name %.60q of %s: it is not a domain name this version accepts. Add it again if it is still needed.", name, list)
+			}
+		}
+	}
+	return kept
+}
+
 // importGlobalGeo restores the singleton global geo default (#198). Delete-then-
-// insert so the singleton stays unique.
-func (r *BackupRepository) importGlobalGeo(ctx context.Context, tx *sql.Tx, g *model.GlobalGeoRestrictionExport) error {
+// insert so the singleton stays unique. It returns the domain names of the
+// priority allow list (#320).
+func (r *BackupRepository) importGlobalGeo(ctx context.Context, tx *sql.Tx, g *model.GlobalGeoRestrictionExport) ([]string, error) {
 	_, _ = tx.ExecContext(ctx, "DELETE FROM global_geo_restrictions")
 
 	mode := g.Mode
@@ -347,12 +378,16 @@ func (r *BackupRepository) importGlobalGeo(ctx context.Context, tx *sql.Tx, g *m
 	if len(dropped) > 0 {
 		log.Printf("[Backup] Global geo restriction: skipped %d entr(ies) that are not a country code or an IP address/CIDR range (first: %.60q)", len(dropped), dropped[0])
 	}
+	names := restorableDNSNames("the global priority allow list", g.AllowedHostnames)
 	query := `
-		INSERT INTO global_geo_restrictions (enabled, mode, countries, allowed_ips, allow_private_ips, allow_search_bots, challenge_mode)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO global_geo_restrictions (enabled, mode, countries, allowed_ips, allow_private_ips, allow_search_bots, challenge_mode, allowed_hostnames)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`
-	_, err := tx.ExecContext(ctx, query, g.Enabled, mode, pq.Array(countries), pq.Array(allowedIPs), g.AllowPrivateIPs, g.AllowSearchBots, g.ChallengeMode)
-	return err
+	_, err := tx.ExecContext(ctx, query, g.Enabled, mode, pq.Array(countries), pq.Array(allowedIPs), g.AllowPrivateIPs, g.AllowSearchBots, g.ChallengeMode, pq.Array(names))
+	if err != nil {
+		return nil, err
+	}
+	return names, nil
 }
 
 // importGlobalBotFilter restores the singleton global bot-filter default (#198).
@@ -411,17 +446,22 @@ func (r *BackupRepository) importGlobalCloudProviders(ctx context.Context, tx *s
 }
 
 // importGlobalRateLimit restores the singleton global rate-limit default
-// (#198 slice 5). Delete-then-insert so the singleton stays unique.
-func (r *BackupRepository) importGlobalRateLimit(ctx context.Context, tx *sql.Tx, g *model.GlobalRateLimitExport) error {
+// (#198 slice 5). Delete-then-insert so the singleton stays unique. It
+// returns the domain names of the exceptions (#320).
+func (r *BackupRepository) importGlobalRateLimit(ctx context.Context, tx *sql.Tx, g *model.GlobalRateLimitExport) ([]string, error) {
 	_, _ = tx.ExecContext(ctx, "DELETE FROM global_rate_limits")
 
 	whitelist := sql.NullString{String: g.WhitelistIPs, Valid: g.WhitelistIPs != ""}
+	names := restorableDNSNames("the global rate limit exceptions", g.WhitelistHostnames)
 	query := `
-		INSERT INTO global_rate_limits (enabled, requests_per_second, burst_size, zone_size, limit_by, limit_response, whitelist_ips)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO global_rate_limits (enabled, requests_per_second, burst_size, zone_size, limit_by, limit_response, whitelist_ips, whitelist_hostnames)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`
-	_, err := tx.ExecContext(ctx, query, g.Enabled, g.RequestsPerSecond, g.BurstSize, g.ZoneSize, g.LimitBy, g.LimitResponse, whitelist)
-	return err
+	_, err := tx.ExecContext(ctx, query, g.Enabled, g.RequestsPerSecond, g.BurstSize, g.ZoneSize, g.LimitBy, g.LimitResponse, whitelist, pq.Array(names))
+	if err != nil {
+		return nil, err
+	}
+	return names, nil
 }
 
 // importGlobalFail2ban restores the singleton global jail (#275).

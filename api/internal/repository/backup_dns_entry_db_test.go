@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -228,5 +229,254 @@ func TestBackupDomainEntriesAgainstTheDatabase(t *testing.T) {
 	}
 	if got := restoredSettings(); got != wantSettings {
 		t.Errorf("an older backup changed the tunables to %+v, want them kept as %+v", got, wantSettings)
+	}
+}
+
+// backupFileRoundTrip returns export as a restore reads it from a backup
+// file: through its JSON, without the keys strip names at any depth (the
+// file a version that did not write them would have made).
+func backupFileRoundTrip(t *testing.T, export *model.ExportData, strip ...string) *model.ExportData {
+	t.Helper()
+	b, err := json.Marshal(export)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(strip) > 0 {
+		drop := make(map[string]bool, len(strip))
+		for _, key := range strip {
+			drop[key] = true
+		}
+		var doc interface{}
+		if err := json.Unmarshal(b, &doc); err != nil {
+			t.Fatal(err)
+		}
+		var walk func(v interface{})
+		walk = func(v interface{}) {
+			switch v := v.(type) {
+			case map[string]interface{}:
+				for key, child := range v {
+					if drop[key] {
+						delete(v, key)
+						continue
+					}
+					walk(child)
+				}
+			case []interface{}:
+				for _, child := range v {
+					walk(child)
+				}
+			}
+		}
+		walk(doc)
+		if b, err = json.Marshal(doc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out model.ExportData
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	return &out
+}
+
+// backupTestReferences returns every use of a domain name as "scope name".
+func backupTestReferences(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+	refs, err := NewDNSEntryRepository(db).ListReferences(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, r := range refs {
+		out = append(out, r.Scope+" "+r.Name)
+	}
+	return out
+}
+
+// A backup of an install with domain names in every exception list carries
+// them, and the state records of the names, a name only the global priority
+// allow list uses among them. Restored from the backup file into a new
+// install (no state rows), every list has its names again, and the name
+// that waited for review still does, with its pinned CNAME target and
+// nothing published.
+func TestBackupExceptionListDomainsRoundTrip(t *testing.T) {
+	db := openBackupTestDB(t)
+	repo := NewBackupRepository(db)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	hostID := insertTestProxyHost(t, db, "app.example.com")
+	fillExceptionLists(t, db, hostID,
+		[]string{"uri.example.com"}, []string{"guri.example.com"},
+		[]string{"prio.example.com"}, []string{"gprio.example.com"},
+		[]string{"rl.example.com"}, []string{"grl.example.com"},
+		[]string{"trusted.example.com"})
+	mustExec(t, db,
+		`INSERT INTO dns_entry_states (hostname, status, review_reason, canonical_name, last_applied)
+			VALUES ('gprio.example.com', 'needs_review', 'cname_changed', 'edge.example.com', '{192.0.2.20}')`,
+		`INSERT INTO dns_entry_states (hostname, status, canonical_name, published, last_applied, generation, applied_generation)
+			VALUES ('trusted.example.com', 'ok', 'trusted.example.com', '{192.0.2.30}', '{192.0.2.30}', 1, 1)`,
+	)
+
+	export, err := repo.ExportAllData(ctx)
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	if len(export.ProxyHosts) != 1 || export.ProxyHosts[0].GeoRestriction == nil || export.ProxyHosts[0].RateLimit == nil ||
+		len(export.URIBlocks) != 1 || export.GlobalURIBlock == nil || export.GlobalGeoRestriction == nil ||
+		export.GlobalRateLimit == nil || export.SystemSettings == nil {
+		t.Fatalf("the export lacks a list: %+v", export)
+	}
+	var trusted []string
+	if export.SystemSettings.GlobalTrustedHostnames != nil {
+		trusted = *export.SystemSettings.GlobalTrustedHostnames
+	}
+	got := map[string][]string{
+		"uri_blocks.exception_hostnames":           export.URIBlocks[0].ExceptionHostnames,
+		"global_uri_block.exception_hostnames":     export.GlobalURIBlock.ExceptionHostnames,
+		"geo_restriction.allowed_hostnames":        export.ProxyHosts[0].GeoRestriction.AllowedHostnames,
+		"global_geo_restriction.allowed_hostnames": export.GlobalGeoRestriction.AllowedHostnames,
+		"rate_limit.whitelist_hostnames":           export.ProxyHosts[0].RateLimit.WhitelistHostnames,
+		"global_rate_limit.whitelist_hostnames":    export.GlobalRateLimit.WhitelistHostnames,
+		"system_settings.global_trusted_hostnames": trusted,
+	}
+	want := map[string][]string{
+		"uri_blocks.exception_hostnames":           {"uri.example.com"},
+		"global_uri_block.exception_hostnames":     {"guri.example.com"},
+		"geo_restriction.allowed_hostnames":        {"prio.example.com"},
+		"global_geo_restriction.allowed_hostnames": {"gprio.example.com"},
+		"rate_limit.whitelist_hostnames":           {"rl.example.com"},
+		"global_rate_limit.whitelist_hostnames":    {"grl.example.com"},
+		"system_settings.global_trusted_hostnames": {"trusted.example.com"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("exported names:\n got  %q\n want %q", got, want)
+	}
+	var recorded []string
+	for _, rec := range export.DNSEntryStates {
+		recorded = append(recorded, rec.Hostname)
+	}
+	if want := []string{"gprio.example.com", "trusted.example.com"}; !reflect.DeepEqual(recorded, want) {
+		t.Errorf("state records of %q, want %q", recorded, want)
+	}
+
+	// A new install: the backup file read back, no state rows.
+	restored := backupFileRoundTrip(t, export)
+	mustExec(t, db, `DELETE FROM dns_entry_states`)
+	if _, err := repo.ImportAllData(ctx, restored); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	var newHostID string
+	if err := db.QueryRowContext(ctx, `SELECT id FROM proxy_hosts`).Scan(&newHostID); err != nil {
+		t.Fatal(err)
+	}
+	wantRefs := []string{
+		"prio:" + newHostID + " prio.example.com",
+		"prio:global gprio.example.com",
+		"rl:" + newHostID + " rl.example.com",
+		"rl:global grl.example.com",
+		"trusted trusted.example.com",
+		"uri:" + newHostID + " uri.example.com",
+		"uri:global guri.example.com",
+	}
+	if refs := backupTestReferences(t, db); !reflect.DeepEqual(refs, wantRefs) {
+		t.Errorf("restored lists use:\n got  %q\n want %q", refs, wantRefs)
+	}
+	if st := backupTestStateOf(t, db, "gprio.example.com"); st.Status != model.DNSStatusNeedsReview ||
+		st.ReviewReason != model.DNSReviewCNAMEChanged || st.CanonicalName != "edge.example.com" || len(st.Published) != 0 {
+		t.Errorf("gprio = %+v, want needs_review (cname_changed) with the backup's pin, nothing published", st)
+	}
+	if st := backupTestStateOf(t, db, "trusted.example.com"); st.Status != model.DNSStatusPending || len(st.Published) != 0 {
+		t.Errorf("trusted = %+v, want pending, nothing published", st)
+	}
+}
+
+// A backup made before the exception lists held domain names restores every
+// list without names, even where this install has some. The trusted names
+// are emptied too, not kept: the backup's trusted IPs replace the live
+// ones, and keeping today's names next to them would make a set no install
+// ever had. The tunables, which such a backup does not carry either, keep
+// their live value.
+func TestImportOfAnOlderBackupLeavesNoExceptionDomains(t *testing.T) {
+	db := openBackupTestDB(t)
+	repo := NewBackupRepository(db)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	hostID := insertTestProxyHost(t, db, "app.example.com")
+	fillExceptionLists(t, db, hostID,
+		[]string{"uri.example.com"}, []string{"guri.example.com"},
+		[]string{"prio.example.com"}, []string{"gprio.example.com"},
+		[]string{"rl.example.com"}, []string{"grl.example.com"},
+		[]string{"trusted.example.com"})
+	mustExec(t, db, `UPDATE system_settings SET global_trusted_ips = '192.0.2.40'`)
+	export, err := repo.ExportAllData(ctx)
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	older := backupFileRoundTrip(t, export, "exception_hostnames", "allowed_hostnames", "whitelist_hostnames",
+		"global_trusted_hostnames", "dns_entry_settings", "dns_entry_states")
+
+	// This install, later: other trusted IPs and tunables, the same names.
+	const live = `{"enabled": false, "check_interval_seconds": 120}`
+	mustExec(t, db, `UPDATE system_settings SET global_trusted_ips = '192.0.2.41', dns_entry_settings = '`+live+`'`)
+	if len(backupTestReferences(t, db)) != 7 {
+		t.Fatalf("the install should use a name in each of the seven lists: %q", backupTestReferences(t, db))
+	}
+	if _, err := repo.ImportAllData(ctx, older); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	if refs := backupTestReferences(t, db); len(refs) != 0 {
+		t.Errorf("after the older backup the lists use %q, want no names", refs)
+	}
+	var trustedIPs string
+	var tunables []byte
+	if err := db.QueryRowContext(ctx, `SELECT global_trusted_ips, dns_entry_settings FROM system_settings`).Scan(&trustedIPs, &tunables); err != nil {
+		t.Fatal(err)
+	}
+	if trustedIPs != "192.0.2.40" {
+		t.Errorf("global_trusted_ips = %q, want the backup's 192.0.2.40", trustedIPs)
+	}
+	if got, want := model.ParseDNSEntrySettings(tunables), model.ParseDNSEntrySettings([]byte(live)); got != want {
+		t.Errorf("tunables = %+v, want the live %+v", got, want)
+	}
+}
+
+// The restore audit names every domain name the lists use, an access list
+// or any exception list, the global trusted IPs too, each once, and those of
+// them waiting for review.
+func TestRestoredDNSEntriesCoversEveryList(t *testing.T) {
+	db := openBackupTestDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	hostID := insertTestProxyHost(t, db, "app.example.com")
+	var listID string
+	if err := db.QueryRowContext(ctx, `INSERT INTO access_lists (name) VALUES ('partners') RETURNING id`).Scan(&listID); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, db, `INSERT INTO access_list_items (access_list_id, directive, address, hostname) VALUES ('`+listID+`', 'deny', 'all', 'acl.example.com')`)
+	fillExceptionLists(t, db, hostID,
+		[]string{"uri.example.com"}, []string{"guri.example.com"},
+		[]string{"prio.example.com", "both.example.com"}, []string{"gprio.example.com"},
+		[]string{"rl.example.com"}, []string{"grl.example.com"},
+		[]string{"trusted.example.com", "both.example.com"})
+	mustExec(t, db,
+		`INSERT INTO dns_entry_states (hostname, status, review_reason) VALUES ('trusted.example.com', 'needs_review', 'reappeared')`,
+		`INSERT INTO dns_entry_states (hostname, status) VALUES ('uri.example.com', 'ok')`,
+	)
+
+	got, err := NewBackupRepository(db).RestoredDNSEntries(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := model.DNSRestoreSummary{
+		Names: []string{"acl.example.com", "both.example.com", "gprio.example.com", "grl.example.com", "guri.example.com",
+			"prio.example.com", "rl.example.com", "trusted.example.com", "uri.example.com"},
+		NeedsReview: []string{"trusted.example.com"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("summary = %+v\nwant      %+v", got, want)
 	}
 }

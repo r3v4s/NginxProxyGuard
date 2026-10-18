@@ -195,7 +195,8 @@ func (r *BackupRepository) exportBannedIPs(ctx context.Context) ([]model.BannedI
 
 func (r *BackupRepository) exportURIBlocks(ctx context.Context) ([]model.URIBlockExport, error) {
 	query := `
-		SELECT proxy_host_id, enabled, rules, COALESCE(exception_ips, '{}'), COALESCE(allow_private_ips, true)
+		SELECT proxy_host_id, enabled, rules, COALESCE(exception_ips, '{}'), COALESCE(allow_private_ips, true),
+		       exception_hostnames
 		FROM uri_blocks ORDER BY proxy_host_id
 	`
 
@@ -211,7 +212,8 @@ func (r *BackupRepository) exportURIBlocks(ctx context.Context) ([]model.URIBloc
 		var rulesJSON []byte
 		var exceptionIPs pq.StringArray
 
-		err := rows.Scan(&ub.ProxyHostID, &ub.Enabled, &rulesJSON, &exceptionIPs, &ub.AllowPrivateIPs)
+		err := rows.Scan(&ub.ProxyHostID, &ub.Enabled, &rulesJSON, &exceptionIPs, &ub.AllowPrivateIPs,
+			pq.Array(&ub.ExceptionHostnames))
 		if err != nil {
 			return nil, err
 		}
@@ -239,12 +241,14 @@ func (r *BackupRepository) exportURIBlocks(ctx context.Context) ([]model.URIBloc
 // when no row exists (older installs / never configured).
 func (r *BackupRepository) exportGlobalGeo(ctx context.Context) (*model.GlobalGeoRestrictionExport, error) {
 	query := `
-		SELECT enabled, mode, countries, COALESCE(allowed_ips, '{}'), allow_private_ips, allow_search_bots, challenge_mode
+		SELECT enabled, mode, countries, COALESCE(allowed_ips, '{}'), allow_private_ips, allow_search_bots, challenge_mode,
+		       allowed_hostnames
 		FROM global_geo_restrictions LIMIT 1
 	`
 	var g model.GlobalGeoRestrictionExport
 	err := r.db.QueryRowContext(ctx, query).Scan(
 		&g.Enabled, &g.Mode, pq.Array(&g.Countries), pq.Array(&g.AllowedIPs), &g.AllowPrivateIPs, &g.AllowSearchBots, &g.ChallengeMode,
+		pq.Array(&g.AllowedHostnames),
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -342,14 +346,15 @@ func (r *BackupRepository) exportGlobalCloudProviders(ctx context.Context) (*mod
 // (#198 slice 5). Returns nil when no row exists.
 func (r *BackupRepository) exportGlobalRateLimit(ctx context.Context) (*model.GlobalRateLimitExport, error) {
 	query := `
-		SELECT enabled, requests_per_second, burst_size, zone_size, limit_by, limit_response, whitelist_ips
+		SELECT enabled, requests_per_second, burst_size, zone_size, limit_by, limit_response, whitelist_ips,
+		       whitelist_hostnames
 		FROM global_rate_limits LIMIT 1
 	`
 	var g model.GlobalRateLimitExport
 	var whitelistIPs sql.NullString
 	err := r.db.QueryRowContext(ctx, query).Scan(
 		&g.Enabled, &g.RequestsPerSecond, &g.BurstSize, &g.ZoneSize,
-		&g.LimitBy, &g.LimitResponse, &whitelistIPs,
+		&g.LimitBy, &g.LimitResponse, &whitelistIPs, pq.Array(&g.WhitelistHostnames),
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -401,7 +406,8 @@ func (r *BackupRepository) exportGlobalWAF(ctx context.Context) (*model.GlobalWA
 
 func (r *BackupRepository) exportGlobalURIBlock(ctx context.Context) (*model.GlobalURIBlockExport, error) {
 	query := `
-		SELECT enabled, rules, COALESCE(exception_ips, '{}'), COALESCE(allow_private_ips, true)
+		SELECT enabled, rules, COALESCE(exception_ips, '{}'), COALESCE(allow_private_ips, true),
+		       exception_hostnames
 		FROM global_uri_blocks LIMIT 1
 	`
 
@@ -409,7 +415,8 @@ func (r *BackupRepository) exportGlobalURIBlock(ctx context.Context) (*model.Glo
 	var rulesJSON []byte
 	var exceptionIPs pq.StringArray
 
-	err := r.db.QueryRowContext(ctx, query).Scan(&ub.Enabled, &rulesJSON, &exceptionIPs, &ub.AllowPrivateIPs)
+	err := r.db.QueryRowContext(ctx, query).Scan(&ub.Enabled, &rulesJSON, &exceptionIPs, &ub.AllowPrivateIPs,
+		pq.Array(&ub.ExceptionHostnames))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

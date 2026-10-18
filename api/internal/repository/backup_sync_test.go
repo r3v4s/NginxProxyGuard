@@ -188,8 +188,9 @@ func TestBackupSyncCriticalTables(t *testing.T) {
 			},
 		},
 		{
-			// #320: the domain entry tunables, one jsonb column, on the raw
-			// log settings' function pair.
+			// #320: the domain entry tunables, one jsonb column, and the
+			// domain names of the global trusted IPs, on the raw log
+			// settings' function pair.
 			name:       "system_settings (domain entries)",
 			exportFile: "backup_export_settings.go",
 			exportFunc: "exportSystemSettings",
@@ -197,6 +198,116 @@ func TestBackupSyncCriticalTables(t *testing.T) {
 			importFunc: "importSystemSettings",
 			columns: []string{
 				"dns_entry_settings",
+				"global_trusted_hostnames",
+			},
+		},
+		{
+			// #320: the six exception lists keep their domain names in a
+			// text[] column next to their addresses. A column dropped on
+			// either side restores the list without its names, and the
+			// partner it let through is blocked or limited again.
+			name:       "uri_blocks",
+			exportFile: "backup_export_security.go",
+			exportFunc: "exportURIBlocks",
+			importFile: "backup_import_security.go",
+			importFunc: "importURIBlock",
+			columns: []string{
+				"allow_private_ips",
+				"enabled",
+				"exception_hostnames",
+				"exception_ips",
+				"proxy_host_id",
+				"rules",
+			},
+		},
+		{
+			name:       "global_uri_blocks",
+			exportFile: "backup_export_security.go",
+			exportFunc: "exportGlobalURIBlock",
+			importFile: "backup_import_security.go",
+			importFunc: "importGlobalURIBlock",
+			columns: []string{
+				"allow_private_ips",
+				"enabled",
+				"exception_hostnames",
+				"exception_ips",
+				"rules",
+			},
+		},
+		{
+			name:       "geo_restrictions",
+			exportFile: "backup_export_proxy.go",
+			exportFunc: "getProxyHostGeoRestriction",
+			importFile: "backup_import_proxy.go",
+			importFunc: "importGeoRestriction",
+			columns: []string{
+				"allow_private_ips",
+				"allow_search_bots",
+				"allow_search_bots_cloud_providers",
+				"allowed_hostnames",
+				"allowed_ips",
+				"blocked_cloud_providers",
+				"challenge_cloud_providers",
+				"challenge_mode",
+				"cloud_disable_global",
+				"countries",
+				"disable_global",
+				"enabled",
+				"mode",
+				"proxy_host_id",
+			},
+		},
+		{
+			name:       "global_geo_restrictions",
+			exportFile: "backup_export_security.go",
+			exportFunc: "exportGlobalGeo",
+			importFile: "backup_import_security.go",
+			importFunc: "importGlobalGeo",
+			columns: []string{
+				"allow_private_ips",
+				"allow_search_bots",
+				"allowed_hostnames",
+				"allowed_ips",
+				"challenge_mode",
+				"countries",
+				"enabled",
+				"mode",
+			},
+		},
+		{
+			name:       "rate_limits",
+			exportFile: "backup_export_proxy.go",
+			exportFunc: "getProxyHostRateLimit",
+			importFile: "backup_import_proxy.go",
+			importFunc: "importRateLimit",
+			columns: []string{
+				"burst_size",
+				"disable_global",
+				"enabled",
+				"limit_by",
+				"limit_response",
+				"proxy_host_id",
+				"requests_per_second",
+				"whitelist_hostnames",
+				"whitelist_ips",
+				"zone_size",
+			},
+		},
+		{
+			name:       "global_rate_limits",
+			exportFile: "backup_export_security.go",
+			exportFunc: "exportGlobalRateLimit",
+			importFile: "backup_import_security.go",
+			importFunc: "importGlobalRateLimit",
+			columns: []string{
+				"burst_size",
+				"enabled",
+				"limit_by",
+				"limit_response",
+				"requests_per_second",
+				"whitelist_hostnames",
+				"whitelist_ips",
+				"zone_size",
 			},
 		},
 		{

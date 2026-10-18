@@ -8,6 +8,7 @@ package repository
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
@@ -259,7 +260,7 @@ func TestExportAccessListsKeepsDomainRowsAsStored(t *testing.T) {
 	if len(lists) != 1 || !reflect.DeepEqual(lists[0].AccessList.Items, want) {
 		t.Fatalf("exported lists = %+v, want one list with rules %+v", lists, want)
 	}
-	if got := exportedDNSNames(lists); !reflect.DeepEqual(got, []string{"partner.example.com"}) {
+	if got := exportedDNSNames(&model.ExportData{AccessLists: lists}); !reflect.DeepEqual(got, []string{"partner.example.com"}) {
 		t.Errorf("exportedDNSNames = %q, want [partner.example.com]", got)
 	}
 }
@@ -390,7 +391,7 @@ func TestImportSystemSettingsRestoresDNSEntrySettings(t *testing.T) {
 	} {
 		repo, tx, mock := beginMockTx(t)
 		var got string
-		args := make([]driver.Value, 62)
+		args := make([]driver.Value, 63)
 		for i := range args {
 			args[i] = sqlmock.AnyArg()
 		}
@@ -400,7 +401,7 @@ func TestImportSystemSettingsRestoresDNSEntrySettings(t *testing.T) {
 		mock.ExpectExec(`dns_entry_settings = COALESCE\(\$62::jsonb, dns_entry_settings\)`).
 			WithArgs(args...).
 			WillReturnResult(sqlmock.NewResult(0, 1))
-		if err := repo.importSystemSettings(context.Background(), tx, &model.SystemSettingsExport{DNSEntrySettings: tc.raw}); err != nil {
+		if _, err := repo.importSystemSettings(context.Background(), tx, &model.SystemSettingsExport{DNSEntrySettings: tc.raw}); err != nil {
 			t.Fatalf("import %q: %v", tc.raw, err)
 		}
 		if got != tc.want {
@@ -410,10 +411,12 @@ func TestImportSystemSettingsRestoresDNSEntrySettings(t *testing.T) {
 }
 
 // The restore audit reads back every name the restored lists use and which
-// of them wait for review.
+// of them wait for review. It reads the lists the DNS checks read, the
+// global trusted IPs among them (TestRestoredDNSEntriesCoversEveryList runs
+// the query).
 func TestRestoredDNSEntries(t *testing.T) {
 	repo, mock := newBackupRepoMock(t)
-	mock.ExpectQuery(`LEFT JOIN dns_entry_states`).
+	mock.ExpectQuery(`unnest\(s\.global_trusted_hostnames\)[\s\S]*LEFT JOIN dns_entry_states`).
 		WithArgs(model.DNSStatusNeedsReview).
 		WillReturnRows(sqlmock.NewRows([]string{"hostname", "needs_review"}).
 			AddRow("office.example.com", false).
@@ -428,5 +431,138 @@ func TestRestoredDNSEntries(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("summary = %+v, want %+v", got, want)
+	}
+}
+
+// The state records a backup carries are those of the names any exported
+// list uses: an access list, a host's or the global URI block exceptions,
+// priority allow list or rate limit exceptions, and the global trusted IPs.
+// Each name once, sorted.
+func TestExportedDNSNamesReadsEveryList(t *testing.T) {
+	trusted := []string{"trusted.example.com", "both.example.com"}
+	data := &model.ExportData{
+		AccessLists: []model.AccessListExport{{AccessList: model.AccessListData{Items: []model.AccessListItemData{
+			{Directive: "allow", Address: "192.0.2.10"},
+			{Directive: "deny", Address: "all", Hostname: "acl.example.com"},
+		}}}},
+		ProxyHosts: []model.ProxyHostExport{
+			{
+				GeoRestriction: &model.GeoRestrictionExport{AllowedHostnames: []string{"prio.example.com"}},
+				RateLimit:      &model.RateLimitExport{WhitelistHostnames: []string{"rl.example.com", "both.example.com"}},
+			},
+			{}, // a host with neither
+		},
+		URIBlocks:            []model.URIBlockExport{{ExceptionHostnames: []string{"uri.example.com"}}},
+		GlobalURIBlock:       &model.GlobalURIBlockExport{ExceptionHostnames: []string{"guri.example.com"}},
+		GlobalGeoRestriction: &model.GlobalGeoRestrictionExport{AllowedHostnames: []string{"gprio.example.com"}},
+		GlobalRateLimit:      &model.GlobalRateLimitExport{WhitelistHostnames: []string{"grl.example.com"}},
+		SystemSettings:       &model.SystemSettingsExport{GlobalTrustedHostnames: &trusted},
+	}
+	want := []string{"acl.example.com", "both.example.com", "gprio.example.com", "grl.example.com", "guri.example.com",
+		"prio.example.com", "rl.example.com", "trusted.example.com", "uri.example.com"}
+	if got := exportedDNSNames(data); !reflect.DeepEqual(got, want) {
+		t.Errorf("exportedDNSNames = %q\nwant              %q", got, want)
+	}
+	if got := exportedDNSNames(&model.ExportData{}); len(got) != 0 {
+		t.Errorf("no lists: %q, want no names", got)
+	}
+}
+
+// A restored exception list keeps the names a save would take, normalized
+// and each once, and leaves out the others with one [Backup] line each; the
+// restore goes on. The names kept are written to the list's column and
+// handed back for the state record merge. The size of the list is not
+// checked.
+func TestImportDropsExceptionNamesTheRulesRefuse(t *testing.T) {
+	var logged bytes.Buffer
+	flags := log.Flags()
+	log.SetOutput(&logged)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(os.Stderr)
+		log.SetFlags(flags)
+	})
+	const hostID = "00000000-0000-0000-0000-000000000001"
+	in := []string{"Partner.Example.COM.", "bad_name", "192.0.2.1", "partner.example.com", "office.example.com"}
+	want := []string{"partner.example.com", "office.example.com"}
+	// withNames is n arguments that may hold anything but the last, the
+	// names column, which holds the names kept.
+	withNames := func(n int) []driver.Value {
+		args := make([]driver.Value, n)
+		for i := range args {
+			args[i] = sqlmock.AnyArg()
+		}
+		args[n-1] = `{"partner.example.com","office.example.com"}`
+		return args
+	}
+	done := sqlmock.NewResult(0, 1)
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name   string
+		expect func(mock sqlmock.Sqlmock)
+		run    func(repo *BackupRepository, tx *sql.Tx) ([]string, error)
+	}{
+		{"uri_blocks", func(mock sqlmock.Sqlmock) {
+			mock.ExpectExec(`INSERT INTO uri_blocks \(.*, exception_hostnames\)`).WithArgs(withNames(6)...).WillReturnResult(done)
+		}, func(repo *BackupRepository, tx *sql.Tx) ([]string, error) {
+			return repo.importURIBlock(ctx, tx, &model.URIBlockExport{ProxyHostID: hostID, ExceptionHostnames: in})
+		}},
+		{"global_uri_blocks", func(mock sqlmock.Sqlmock) {
+			mock.ExpectExec(`DELETE FROM global_uri_blocks`).WillReturnResult(done)
+			mock.ExpectExec(`INSERT INTO global_uri_blocks \(.*, exception_hostnames\)`).WithArgs(withNames(5)...).WillReturnResult(done)
+		}, func(repo *BackupRepository, tx *sql.Tx) ([]string, error) {
+			return repo.importGlobalURIBlock(ctx, tx, &model.GlobalURIBlockExport{ExceptionHostnames: in})
+		}},
+		{"geo_restrictions", func(mock sqlmock.Sqlmock) {
+			mock.ExpectExec(`INSERT INTO geo_restrictions \(.*, allowed_hostnames\)`).WithArgs(withNames(14)...).WillReturnResult(done)
+		}, func(repo *BackupRepository, tx *sql.Tx) ([]string, error) {
+			return repo.importGeoRestriction(ctx, tx, hostID, &model.GeoRestrictionExport{Mode: "blacklist", AllowedHostnames: in})
+		}},
+		{"global_geo_restrictions", func(mock sqlmock.Sqlmock) {
+			mock.ExpectExec(`DELETE FROM global_geo_restrictions`).WillReturnResult(done)
+			mock.ExpectExec(`INSERT INTO global_geo_restrictions \(.*, allowed_hostnames\)`).WithArgs(withNames(8)...).WillReturnResult(done)
+		}, func(repo *BackupRepository, tx *sql.Tx) ([]string, error) {
+			return repo.importGlobalGeo(ctx, tx, &model.GlobalGeoRestrictionExport{Mode: "blacklist", AllowedHostnames: in})
+		}},
+		{"rate_limits", func(mock sqlmock.Sqlmock) {
+			mock.ExpectExec(`INSERT INTO rate_limits \(.*, whitelist_hostnames\)`).WithArgs(withNames(10)...).WillReturnResult(done)
+		}, func(repo *BackupRepository, tx *sql.Tx) ([]string, error) {
+			return repo.importRateLimit(ctx, tx, hostID, &model.RateLimitExport{WhitelistHostnames: in})
+		}},
+		{"global_rate_limits", func(mock sqlmock.Sqlmock) {
+			mock.ExpectExec(`DELETE FROM global_rate_limits`).WillReturnResult(done)
+			mock.ExpectExec(`INSERT INTO global_rate_limits \(.*, whitelist_hostnames\)`).WithArgs(withNames(8)...).WillReturnResult(done)
+		}, func(repo *BackupRepository, tx *sql.Tx) ([]string, error) {
+			return repo.importGlobalRateLimit(ctx, tx, &model.GlobalRateLimitExport{WhitelistHostnames: in})
+		}},
+		{"system_settings", func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery(`SELECT created_at FROM system_settings`).
+				WillReturnRows(sqlmock.NewRows([]string{"created_at"}).AddRow(time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)))
+			mock.ExpectExec(`global_trusted_hostnames = \$63,`).WithArgs(withNames(63)...).WillReturnResult(done)
+		}, func(repo *BackupRepository, tx *sql.Tx) ([]string, error) {
+			return repo.importSystemSettings(ctx, tx, &model.SystemSettingsExport{GlobalTrustedHostnames: &in})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logged.Reset()
+			repo, tx, mock := beginMockTx(t)
+			tc.expect(mock)
+			got, err := tc.run(repo, tx)
+			if err != nil {
+				t.Fatalf("import: %v", err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("names handed back = %q, want %q", got, want)
+			}
+			for _, refused := range []string{`"bad_name"`, `"192.0.2.1"`} {
+				if !strings.Contains(logged.String(), "[Backup] Skipped domain name "+refused) {
+					t.Errorf("no [Backup] line for %s: %q", refused, logged.String())
+				}
+			}
+			if n := strings.Count(logged.String(), "[Backup] "); n != 2 {
+				t.Errorf("%d [Backup] lines, want one per refused name: %q", n, logged.String())
+			}
+		})
 	}
 }

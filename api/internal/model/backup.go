@@ -447,6 +447,10 @@ type RateLimitExport struct {
 	LimitResponse     int    `json:"limit_response"`
 	WhitelistIPs      string `json:"whitelist_ips,omitempty"`
 	DisableGlobal     bool   `json:"disable_global"`
+
+	// WhitelistHostnames are the domain names of the exceptions (#320). A
+	// backup without them restores the list without names.
+	WhitelistHostnames []string `json:"whitelist_hostnames,omitempty"`
 }
 
 // Fail2banExport represents fail2ban config for export
@@ -531,6 +535,10 @@ type GeoRestrictionExport struct {
 	AllowSearchBotsCloudProviders bool     `json:"allow_search_bots_cloud_providers"`
 	DisableGlobal                 bool     `json:"disable_global"`
 	CloudDisableGlobal            bool     `json:"cloud_disable_global"`
+
+	// AllowedHostnames are the domain names of the priority allow list
+	// (#320). A backup without them restores the list without names.
+	AllowedHostnames []string `json:"allowed_hostnames,omitempty"`
 }
 
 // GlobalCloudProvidersExport represents the singleton global cloud-provider default (#198).
@@ -564,6 +572,9 @@ type GlobalRateLimitExport struct {
 	LimitBy           string `json:"limit_by"`
 	LimitResponse     int    `json:"limit_response"`
 	WhitelistIPs      string `json:"whitelist_ips,omitempty"`
+
+	// WhitelistHostnames: as RateLimitExport's (#320).
+	WhitelistHostnames []string `json:"whitelist_hostnames,omitempty"`
 }
 
 // GlobalWAFExport represents the singleton global WAF default (#198 slice 6).
@@ -650,6 +661,9 @@ type GlobalGeoRestrictionExport struct {
 	AllowPrivateIPs bool     `json:"allow_private_ips"`
 	AllowSearchBots bool     `json:"allow_search_bots"`
 	ChallengeMode   bool     `json:"challenge_mode"`
+
+	// AllowedHostnames: as GeoRestrictionExport's (#320).
+	AllowedHostnames []string `json:"allowed_hostnames,omitempty"`
 }
 
 // UpstreamExport represents upstream config for export
@@ -718,7 +732,7 @@ type DNSEntryStateExport struct {
 }
 
 // DNSRestoreSummary lists, after a restore, the domain names the restored
-// access lists use (Names) and those of them in needs_review (NeedsReview).
+// lists use (Names) and those of them in needs_review (NeedsReview).
 type DNSRestoreSummary struct {
 	Names       []string
 	NeedsReview []string
@@ -816,6 +830,10 @@ type URIBlockExport struct {
 	Rules           []interface{} `json:"rules"`
 	ExceptionIPs    []string      `json:"exception_ips"`
 	AllowPrivateIPs bool          `json:"allow_private_ips"`
+
+	// ExceptionHostnames are the domain names of the exceptions (#320). A
+	// backup without them restores the list without names.
+	ExceptionHostnames []string `json:"exception_hostnames,omitempty"`
 }
 
 // GlobalURIBlockExport represents global URI blocking settings
@@ -824,6 +842,9 @@ type GlobalURIBlockExport struct {
 	Rules           []interface{} `json:"rules"`
 	ExceptionIPs    []string      `json:"exception_ips"`
 	AllowPrivateIPs bool          `json:"allow_private_ips"`
+
+	// ExceptionHostnames: as URIBlockExport's (#320).
+	ExceptionHostnames []string `json:"exception_hostnames,omitempty"`
 }
 
 // ChallengeConfigExport represents challenge/CAPTCHA config for export
@@ -1027,6 +1048,13 @@ type SystemSettingsExport struct {
 	// existed) or a JSON null (the 4 bytes "null"). Any other value is read
 	// through ParseDNSEntrySettings, so "{}" restores the defaults.
 	DNSEntrySettings json.RawMessage `json:"dns_entry_settings,omitempty"`
+
+	// Domain names of the global trusted IPs (#320). Unlike the fields
+	// above, a backup without them (nil) restores none: they grant trust,
+	// and the backup's global_trusted_ips replace the live ones, so keeping
+	// the live names would pair them with addresses they were never saved
+	// with. The export always writes the list, [] when empty.
+	GlobalTrustedHostnames *[]string `json:"global_trusted_hostnames,omitempty"`
 }
 
 // LogSettingsExport represents the log_settings table for export. Only the
