@@ -83,6 +83,8 @@ func TestDNS01ProviderWrapperRedactsEveryCredentialField(t *testing.T) {
 			[]string{"aws/secret+key0123456789", "aws%2Fsecret%2Bkey0123456789"}, []string{"AKIAEXAMPLEKEYID"}},
 		{"dynu", model.DynuCredentials{APIKey: "dynu-key-0123456789"}, []string{"dynu-key-0123456789"}, nil},
 		{"duckdns", model.DuckDNSCredentials{Token: duckTestToken}, []string{duckTestToken}, nil},
+		{"ionos", model.IonosCredentials{APIKeyPrefix: "pubprefix0123", APIKey: "ionos+secret/0123456789"},
+			[]string{"ionos+secret/0123456789", "ionos%2Bsecret%2F0123456789"}, []string{"pubprefix0123"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

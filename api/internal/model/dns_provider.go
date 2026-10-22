@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -63,6 +64,20 @@ type DynuCredentials struct {
 type IonosCredentials struct {
 	APIKeyPrefix string `json:"api_key_prefix" validate:"required"`
 	APIKey       string `json:"api_key" validate:"required"`
+}
+
+// Normalized returns the pair as it is checked, stored and sent to IONOS:
+// both halves trimmed, and the secret without a copy of the prefix in front.
+// Pasting the whole key (prefix.secret) into the secret field is the easy
+// mistake; lego would then send prefix.prefix.secret, which IONOS refuses
+// only when a certificate is issued.
+func (c IonosCredentials) Normalized() IonosCredentials {
+	c.APIKeyPrefix = strings.TrimSpace(c.APIKeyPrefix)
+	c.APIKey = strings.TrimSpace(c.APIKey)
+	if c.APIKeyPrefix != "" {
+		c.APIKey = strings.TrimPrefix(c.APIKey, c.APIKeyPrefix+".")
+	}
+	return c
 }
 
 // CreateDNSProviderRequest is the request body for creating a DNS provider

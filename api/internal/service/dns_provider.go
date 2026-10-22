@@ -38,8 +38,30 @@ func (s *DNSProviderService) SetInUseChecker(cb DNSProviderInUseChecker) {
 	s.inUseChecker = cb
 }
 
+// normalizedCredentials returns credentials as they are checked and stored.
+// Only IONOS credentials change (model.IonosCredentials.Normalized: halves
+// trimmed, a pasted copy of the prefix dropped from the secret), so the row
+// holds exactly what IONOS is sent. Credentials that do not parse pass
+// unchanged, and TestConnection refuses them.
+func normalizedCredentials(providerType string, creds json.RawMessage) json.RawMessage {
+	if providerType != model.DNSProviderIonos {
+		return creds
+	}
+	var ionos model.IonosCredentials
+	if err := json.Unmarshal(creds, &ionos); err != nil {
+		return creds
+	}
+	normalized, err := json.Marshal(ionos.Normalized())
+	if err != nil {
+		return creds
+	}
+	return normalized
+}
+
 // Create creates a new DNS provider
 func (s *DNSProviderService) Create(ctx context.Context, req *model.CreateDNSProviderRequest) (*model.DNSProvider, error) {
+	req.Credentials = normalizedCredentials(req.ProviderType, req.Credentials)
+
 	// Validate credentials format
 	if err := s.repo.TestConnection(ctx, req.ProviderType, req.Credentials); err != nil {
 		// Pass the error through unchanged: it already carries a sentinel
@@ -104,6 +126,8 @@ func (s *DNSProviderService) Update(ctx context.Context, id string, req *model.U
 			return nil, model.ErrNotFound
 		}
 
+		normalized := normalizedCredentials(existing.ProviderType, *req.Credentials)
+		req.Credentials = &normalized
 		if err := s.repo.TestConnection(ctx, existing.ProviderType, *req.Credentials); err != nil {
 			return nil, err
 		}

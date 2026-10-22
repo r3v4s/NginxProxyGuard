@@ -33,8 +33,9 @@ import (
 
 // dnsProviderSecrets lists the credential values of a DNS provider: the
 // Cloudflare token and global API key, the DuckDNS token, the Route53 secret
-// key and the Dynu API key. Identifiers that are not credentials — an e-mail
-// address, a zone ID, a region, an access key ID — stay readable.
+// key, the Dynu API key and the IONOS secret key (api_key). Identifiers that
+// are not credentials — an e-mail address, a zone ID, a region, an access key
+// ID, an IONOS key prefix — stay readable.
 func dnsProviderSecrets(provider *model.DNSProvider) *redact.Secrets {
 	var creds struct {
 		APIToken        string `json:"api_token"`

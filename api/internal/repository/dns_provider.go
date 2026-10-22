@@ -278,12 +278,16 @@ func (r *DNSProviderRepository) TestConnection(ctx context.Context, providerType
 			return model.ErrInvalidCredentials
 		}
 	case model.DNSProviderIonos:
-		// The IONOS api_key has no read-only endpoint worth calling here; the
-		// format check below mirrors the dynu case.
+		// A format check only, like Dynu's: nothing is sent to IONOS, so
+		// "credentials are valid" means both halves are filled in. (IONOS has
+		// a read-only call, GET /dns/v1/zones, the first request lego makes,
+		// but it is not made here.) Halves are checked as they are stored and
+		// sent, trimmed, so a blank one does not pass.
 		var creds model.IonosCredentials
 		if err := json.Unmarshal(credentials, &creds); err != nil {
 			return fmt.Errorf("%w: ionos credentials are not valid JSON: %v", model.ErrInvalidCredentials, err)
 		}
+		creds = creds.Normalized()
 		if creds.APIKeyPrefix == "" || creds.APIKey == "" {
 			// IONOS hands the credential over as a pair, and lego only ever
 			// sees the dot-joined value, so naming the halves beats the

@@ -232,10 +232,10 @@
         "title": "IONOS Credentials",
         "apiKeyPrefix": "API Key Prefix",
         "apiKeyPrefixPlaceholder": "Enter your IONOS API key prefix",
-        "apiKeyPrefixHelp": "IONOS hands credentials out as a pair: the public prefix shown next to the key in IONOS Account > API Credentials (certbot stores it as dns_ionos_prefix)",
+        "apiKeyPrefixHelp": "An API key from the IONOS developer portal (developer.hosting.ionos.com) has two parts: a public prefix and a secret. Enter the public prefix here; it is certbot's dns_ionos_prefix. IONOS Cloud DNS is not supported.",
         "apiKey": "API Key",
-        "apiKeyPlaceholder": "Enter your IONOS API key",
-        "apiKeyHelp": "The secret half paired with the prefix, from IONOS Account > API Credentials (the one you use with the ACME/certbot plugin; certbot stores it as dns_ionos_secret)"
+        "apiKeyPlaceholder": "Enter your IONOS API key secret",
+        "apiKeyHelp": "The secret that goes with the prefix. Enter only the secret, without the prefix and the dot; it is certbot's dns_ionos_secret."
       },
       "test": {
         "button": "Test Connection",

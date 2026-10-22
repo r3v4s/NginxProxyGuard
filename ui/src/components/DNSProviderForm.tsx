@@ -528,7 +528,7 @@ export default function DNSProviderForm({ provider, onClose, onSuccess }: DNSPro
                   type="text"
                   value={ionosKeyPrefix}
                   onChange={(e) => { setIonosKeyPrefix(e.target.value); setCredentialsModified(true) }}
-                  placeholder={t('dnsProviders.form.ionos.apiKeyPrefixPlaceholder')}
+                  placeholder={hasExistingCredentials ? '••••••••' : t('dnsProviders.form.ionos.apiKeyPrefixPlaceholder')}
                   className="w-full rounded-lg border border-slate-300 dark:border-slate-600 px-4 py-2.5 text-sm focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 transition-colors placeholder:text-slate-400 bg-white dark:bg-slate-700 dark:text-white font-mono"
                 />
                 <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">

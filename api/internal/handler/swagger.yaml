@@ -13061,7 +13061,7 @@ components:
           type: string
         provider_type:
           type: string
-          enum: [cloudflare, route53, duckdns, dynu, manual]
+          enum: [cloudflare, route53, duckdns, dynu, ionos, manual]
         is_default:
           type: boolean
         has_credentials:
@@ -13083,13 +13083,15 @@ components:
           type: string
         provider_type:
           type: string
-          enum: [cloudflare, route53, duckdns, dynu, manual]
+          enum: [cloudflare, route53, duckdns, dynu, ionos, manual]
         credentials:
           type: object
           description: >-
             Provider-specific object. cloudflare: api_token (or api_key + email), plus
             optional zone_id. route53: access_key_id, secret_access_key, optional region
-            and hosted_zone_id. duckdns: token. dynu: api_key. manual: none required.
+            and hosted_zone_id. duckdns: token. dynu: api_key. ionos: api_key_prefix and
+            api_key (IONOS public prefix and secret; sent to IONOS as prefix.secret).
+            manual: none required.
         is_default:
           type: boolean
     RedirectHost:

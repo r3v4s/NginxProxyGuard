@@ -49,7 +49,7 @@
 **강력한 보안, 쉬운 관리** - Nginx의 복잡함은 줄이고, 보안은 극대화
 
 ### 🔒 SSL 자동화
-Let's Encrypt 통합 및 자동 갱신. DNS-01 챌린지를 통한 와일드카드 인증서 지원. **Cloudflare**, **AWS Route 53**, **DuckDNS**, **Dynu** 등 다양한 DNS 프로바이더 지원.
+Let's Encrypt 통합 및 자동 갱신. DNS-01 챌린지를 통한 와일드카드 인증서 지원. **Cloudflare**, **AWS Route 53**, **DuckDNS**, **Dynu**, **IONOS** 등 다양한 DNS 프로바이더 지원.
 
 ### 🤖 봇 보호
 80개 이상의 악성 봇과 50개 이상의 AI 크롤러를 자동 차단. 검색 엔진 허용 목록으로 정상 트래픽 보장. 의심스러운 요청에 대한 CAPTCHA 챌린지 모드.

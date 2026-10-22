@@ -671,6 +671,15 @@ func (s *Service) createUser(email string) (*ACMEUser, error) {
 	}, nil
 }
 
+// ionosPropagationTimeout and ionosPollingInterval are how long lego waits for
+// an IONOS record to show and how often it looks. IONOS nameservers are slow
+// to agree, and lego's own default is 15 minutes, but a renewal holds its lock
+// for 10 (certRenewalLockTTL in internal/service), so the wait is Dynu's.
+const (
+	ionosPropagationTimeout = 10 * time.Minute
+	ionosPollingInterval    = 10 * time.Second
+)
+
 // createDNSProvider creates a DNS provider based on type and credentials
 func (s *Service) createDNSProvider(provider *model.DNSProvider) (challenge.Provider, error) {
 	if provider == nil {
@@ -750,9 +759,19 @@ func (s *Service) createDNSProvider(provider *model.DNSProvider) (challenge.Prov
 			return nil, fmt.Errorf("invalid ionos credentials: %w", err)
 		}
 
+		// The API normalises and checks the pair on create and update, but a
+		// row restored from a backup was never checked, so it is done again
+		// here. Joined, a missing half would still make a key ("." or
+		// "prefix."), lego's own "credentials missing" check would not fire,
+		// and the row would fail only at IONOS, as a 401.
+		creds = creds.Normalized()
+		if creds.APIKeyPrefix == "" || creds.APIKey == "" {
+			return nil, fmt.Errorf("ionos: api_key_prefix and api_key are both required")
+		}
+
 		cfg := ionos.NewDefaultConfig()
-		cfg.PropagationTimeout = 180 * time.Second
-		cfg.PollingInterval = 5 * time.Second
+		cfg.PropagationTimeout = ionosPropagationTimeout
+		cfg.PollingInterval = ionosPollingInterval
 		// IONOS hands the credential over as a pair, an API key prefix and a
 		// secret key; lego puts the dot-joined pair in the X-Api-Key header of
 		// every request, and the zone and subdomain come from the certificate

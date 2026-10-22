@@ -44,3 +44,14 @@ func TestDiagnoseDNS01ErrorReportsRejectedCredentialsForEveryProvider(t *testing
 		}
 	}
 }
+
+// lego's IONOS provider says "no matching zone found for domain" when the
+// account has no zone for the name, which is the zone-not-found case.
+func TestDiagnoseDNS01ErrorReportsIonosMissingZone(t *testing.T) {
+	missing := errors.New("error: one or more domains had a problem:\n" +
+		"[www.example.com] acme: error presenting token: ionos: no matching zone found for domain")
+	got := diagnoseDNS01Error(missing, model.DNSProviderIonos)
+	if !strings.HasPrefix(got, "Zone not found:") || !strings.Contains(got, missing.Error()) {
+		t.Errorf("%s", got)
+	}
+}

@@ -230,12 +230,12 @@
       },
       "ionos": {
         "title": "IONOS 자격 증명",
-        "apiKeyPrefix": "API 키 Prefix",
-        "apiKeyPrefixPlaceholder": "IONOS API 키 Prefix 입력",
-        "apiKeyPrefixHelp": "IONOS 계정 > API Credentials에서 API 키를 확인하세요（certbot DNS plugin・public half: dns_ionos_prefix・）",
+        "apiKeyPrefix": "API 키 접두사",
+        "apiKeyPrefixPlaceholder": "IONOS API 키 접두사 입력",
+        "apiKeyPrefixHelp": "IONOS 개발자 포털(developer.hosting.ionos.com)에서 발급하는 API 키는 공개 접두사와 비밀 키 두 부분으로 되어 있습니다. 여기에는 공개 접두사를 입력하세요. certbot의 dns_ionos_prefix 값과 같습니다. IONOS Cloud DNS는 지원하지 않습니다.",
         "apiKey": "API 키",
-        "apiKeyPlaceholder": "IONOS API 키 입력",
-        "apiKeyHelp": "IONOS 계정 > API Credentials에서 API 키를 확인하세요（certbot DNS plugin・secret half: dns_ionos_secret・）"
+        "apiKeyPlaceholder": "IONOS API 비밀 키 입력",
+        "apiKeyHelp": "공개 접두사와 짝을 이루는 비밀 키입니다. 접두사와 점(.)은 빼고 비밀 키만 입력하세요. certbot의 dns_ionos_secret 값과 같습니다."
       },
       "test": {
         "button": "연결 테스트",

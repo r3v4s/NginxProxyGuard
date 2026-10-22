@@ -520,7 +520,9 @@ func diagnoseDNS01Error(err error, providerType string) string {
 			"Please check that your API token or API key is valid and has not expired. Original error: %v", err)
 	}
 
-	if strings.Contains(msg, "could not find zone") || strings.Contains(msg, "zone not found") {
+	// "no matching zone found" is lego's IONOS wording.
+	if strings.Contains(msg, "could not find zone") || strings.Contains(msg, "zone not found") ||
+		strings.Contains(msg, "no matching zone found") {
 		return fmt.Sprintf("Zone not found: The DNS provider could not find the DNS zone for your domain. "+
 			"Please ensure the domain is added to your DNS provider account and the API token has access to it. Original error: %v", err)
 	}
