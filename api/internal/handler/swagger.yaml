@@ -9306,6 +9306,78 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /filter-subscriptions/match:
+    get:
+      tags: [Filter Subscriptions]
+      summary: Find the subscriptions that list an IP address or a user-agent
+      description: |
+        Tells which subscription a `filter_subscription` block came from. nginx checks the entries
+        of every subscription through one shared file, so the access log only records that some
+        list matched; the log viewer calls this route for such a block (#230).
+
+        - `ip` is looked up in the entries of `ip` and `cidr` subscriptions: an address entry
+          matches when its stored text is exactly `ip`, a CIDR entry when the block contains `ip`.
+        - `user_agent` is looked up in `user_agent` subscriptions: an entry matches when it occurs
+          in `user_agent`, ignoring case.
+        - Disabled subscriptions are included (`enabled: false`), and neither entry exclusions nor
+          host exclusions are applied, so a value can be listed here that nginx does not block.
+        - One item per matching entry: a subscription that lists both an address and a block
+          containing it appears twice. Each array lists enabled subscriptions first, then sorts by
+          subscription name.
+
+        Permissions: route permission `waf:read`; an API token additionally needs the legacy
+        `proxy:read` scope attached in routes.go. A token with only one of the two gets 403.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: ip
+          in: query
+          description: |
+            IPv4 or IPv6 address; surrounding spaces are trimmed. A CIDR block or any other value
+            that does not parse as an address is a 400. At least one of `ip` and `user_agent` is
+            required.
+          schema:
+            type: string
+          example: 192.0.2.1
+        - name: user_agent
+          in: query
+          description: |
+            User-agent string, matched as given. A value of only spaces counts as not given.
+          schema:
+            type: string
+          example: Mozilla/5.0 (compatible; ExampleBot/1.0)
+      responses:
+        '200':
+          description: The matching entries; both arrays are always present and `[]` when nothing matched
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FilterSubscriptionMatchResponse'
+        '400':
+          description: |
+            `{"error": "ip or user_agent is required"}` when both parameters are missing or blank;
+            `{"error": "ip is not a valid address"}` when `ip` does not parse as an address.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: |
+            `{"error": "insufficient permissions", "required": "waf:read"}` when the caller's role
+            (or the token) lacks `waf:read`; `"required": "proxy:read"` when an API token lacks
+            `proxy:read`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 'Database error: `{"error": "Failed to match against subscriptions"}`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /filter-subscriptions/catalog:
     get:
       tags: [Filter Subscriptions]
@@ -18911,6 +18983,44 @@ components:
           type: string
           description: Must parse as an IP address or a CIDR block.
           example: 203.0.113.10
+    FilterSubscriptionMatchResponse:
+      type: object
+      required: [ip_matches, user_agent_matches]
+      properties:
+        ip_matches:
+          type: array
+          description: Entries of `ip` and `cidr` subscriptions that match `ip`. `[]` when `ip` was not given.
+          items:
+            $ref: '#/components/schemas/FilterSubscriptionMatch'
+        user_agent_matches:
+          type: array
+          description: Entries of `user_agent` subscriptions found in `user_agent`. `[]` when `user_agent` was not given.
+          items:
+            $ref: '#/components/schemas/FilterSubscriptionMatch'
+    FilterSubscriptionMatch:
+      type: object
+      description: One stored entry that matched, with the subscription it belongs to.
+      required: [subscription_id, subscription_name, type, matched_value, enabled]
+      properties:
+        subscription_id:
+          type: string
+          format: uuid
+        subscription_name:
+          type: string
+        type:
+          type: string
+          description: The subscription's type.
+          enum: [ip, cidr, user_agent]
+        matched_value:
+          type: string
+          description: The entry that matched — the address itself, a CIDR block containing it, or a user-agent substring.
+          example: 192.0.2.0/24
+        enabled:
+          type: boolean
+          description: Whether the subscription is enabled. Only enabled subscriptions are applied by nginx.
+        reason:
+          type: string
+          description: The entry's reason, from NPG-JSON lists that carry one. Omitted when empty.
     DDNSRecord:
       type: object
       description: |
