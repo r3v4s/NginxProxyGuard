@@ -145,7 +145,7 @@ export function ProxyHostForm({ host, initialTab, onClose }: ProxyHostFormProps)
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-xl w-full max-w-3xl min-h-[600px] max-h-[90vh] overflow-hidden flex flex-col transition-colors">
+      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-xl w-full max-w-4xl min-h-[600px] max-h-[90vh] overflow-hidden flex flex-col transition-colors">
         {/* Header */}
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between bg-slate-50 dark:bg-slate-800/50">
           <div className="flex items-center gap-4">
@@ -186,13 +186,13 @@ export function ProxyHostForm({ host, initialTab, onClose }: ProxyHostFormProps)
 
         {/* Tabs */}
         <div className="px-6 border-b border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
-          <nav className="flex gap-1 -mb-px">
+          <nav className="flex gap-1 -mb-px overflow-x-auto scrollbar-hide">
             {tabs.map(tab => (
               <button
                 key={tab.id}
                 type="button"
                 onClick={() => setActiveTab(tab.id)}
-                className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${activeTab === tab.id
+                className={`px-3 py-3 text-sm font-medium border-b-2 transition-colors flex items-center gap-1.5 whitespace-nowrap ${activeTab === tab.id
                   ? 'border-primary-600 text-primary-600 dark:text-primary-400'
                   : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:border-slate-300 dark:hover:border-slate-600'
                   }`}

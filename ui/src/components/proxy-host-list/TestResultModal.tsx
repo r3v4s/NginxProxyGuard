@@ -104,12 +104,12 @@ export function TestResultModal({
           <>
             {/* Tabs */}
             <div className="px-6 border-b border-slate-200 dark:border-slate-700">
-              <nav className="flex gap-1 -mb-px">
+              <nav className="flex gap-1 -mb-px overflow-x-auto scrollbar-hide">
                 {tabs.map(tab => (
                   <button
                     key={tab.id}
                     onClick={() => setActiveTab(tab.id as typeof activeTab)}
-                    className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${activeTab === tab.id
+                    className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === tab.id
                       ? 'border-primary-600 text-primary-600 dark:text-primary-400'
                       : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
                       }`}
